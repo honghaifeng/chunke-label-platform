@@ -350,7 +350,7 @@ def run_prelabel(tid: int, body: dict | None = None, user: dict = Depends(me)):
         labels = json.loads((proj or {}).get("label_config") or "{}")
         classes = labels.get("目标类别") or ["商品主体", "价签", "货架", "遮挡"]
         engine = body.get("engine") or "auto"
-        min_conf = float(body.get("min_conf") or 0.15)
+        min_conf = float(body.get("min_conf") or 0.25)
         result = prelabel.prelabel_image(media_path, classes=classes, engine=engine, min_conf=min_conf)
         if not result.get("ok"):
             raise HTTPException(400, result.get("error") or "预识别失败")

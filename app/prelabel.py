@@ -156,7 +156,7 @@ def prelabel_image(
     image_path: str,
     classes: list[str] | None = None,
     engine: str = "auto",
-    min_conf: float = 0.15,
+    min_conf: float = 0.25,
 ) -> dict:
     """图片预标注：调 detect_worker 跑 Grounding DINO（默认）或 YOLOv8n。
 

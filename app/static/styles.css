@@ -176,7 +176,7 @@ table.table{width:100%;border-collapse:collapse;font-size:12.5px}
 .engine a{margin-left:auto;font-size:11px;color:var(--primary);white-space:nowrap}
 
 /* ---------- 标注工作台 ---------- */
-.wb{display:flex;flex-direction:column;gap:12px;height:100%}
+.wb{display:flex;flex-direction:column;gap:12px;min-height:100%;height:auto}
 .wb-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 .wb-head h1{font-size:17px;font-weight:600;margin:0}
 .wb-meta{display:flex;gap:8px;align-items:center;color:var(--muted);font-size:12px}

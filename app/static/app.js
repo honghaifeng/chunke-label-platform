@@ -439,11 +439,17 @@ async function pageAnnotate(id) {
   const classes = labels['目标类别'] || ['商品主体', '价签', '货架', '遮挡'];
   const wb = {
     task, project, labels, canEdit: can_edit,
-    mediaType, mediaName,
+    mediaType, mediaName, pre,
     // 音频
     segments: (payload.segments && payload.segments.length ? payload.segments : pre.segments || []).map((s) => ({ ...s, events: s.events || [] })),
     // 图片
-    boxes: Array.isArray(payload.boxes) ? payload.boxes : [],
+    boxes: Array.isArray(payload.boxes) && payload.boxes.length
+      ? payload.boxes
+      : (Array.isArray(pre.boxes) ? pre.boxes.map((b) => ({
+          cls: classes.includes(b.cls) ? b.cls : classes[0],
+          auto_cls: b.auto_cls || b.cls,
+          conf: b.conf, x: b.x, y: b.y, w: b.w, h: b.h,
+        })) : []),
     img: null, imgLoaded: false, imgW: 0, imgH: 0,
     // 共用
     summary: payload.summary || '',
@@ -460,9 +466,44 @@ async function pageAnnotate(id) {
 
   if (mediaType === 'image') {
     renderImageWorkbench(wb, classes, qc);
-  } else {
+  } else if (mediaType === 'audio') {
     renderAudioWorkbench(wb, labels, qc, mediaName);
+  } else {
+    renderOtherWorkbench(wb);
   }
+}
+
+function renderOtherWorkbench(wb) {
+  const { task, project, mediaType, mediaName } = wb;
+  const typeLabel = { pointcloud: '点云', video: '视频' }[mediaType] || mediaType;
+  const engineUrl = project && project.engine_url;
+  const content = `
+  <div class="wb" id="wb">
+    <div class="wb-head">
+      <a class="btn ghost sm" href="#/tasks">← 返回</a>
+      <div><h1>${esc(task.name)}</h1>
+        <div class="wb-meta">${esc(project ? project.name : '')} · <span class="tag">${typeLabel}</span> ${statusChip(task.status)}</div></div>
+    </div>
+    <div class="card" style="padding:28px;max-width:720px;margin:24px auto">
+      <div class="empty" style="text-align:center">
+        <b>暂不支持在线标注（${typeLabel}）</b>
+        <p class="hint" style="margin-top:10px;line-height:1.8">
+          ${mediaName ? `已挂载媒体：${esc(mediaName)}<br/>` : '该任务还没有上传媒体文件。<br/>'}
+          本平台内置工作台目前支持 语音 / 图片 两类标注，${typeLabel}标注请在对应引擎中完成。
+        </p>
+        ${engineUrl
+          ? `<a class="btn primary" href="${esc(engineUrl)}" target="_blank" rel="noopener" style="margin-top:16px">打开 ${esc(project.engine || '标注引擎')} →</a>`
+          : '<div class="hint" style="margin-top:12px">该项目未配置外部标注引擎地址。</div>'}
+      </div>
+      <div class="panel-section" style="margin-top:20px">
+        <div class="panel-label">任务信息</div>
+        <div class="kv"><span>项目</span><b>${esc(project ? project.name : '')}</b></div>
+        <div class="kv"><span>批次</span><b>${esc(task.batch || '—')}</b></div>
+        <div class="kv"><span>标注员</span><b>${esc(task.assignee_name || '未分配')}</b></div>
+      </div>
+    </div>
+  </div>`;
+  mount('tasks', '标注工作台', content);
 }
 
 function renderAudioWorkbench(wb, labels, qc, mediaName) {
@@ -594,8 +635,8 @@ function renderImageWorkbench(wb, classes, qc) {
           <div class="panel-head">${icon('spark')} AI 预识别</div>
           <div class="panel-body">
             <div class="ai-card">
-              <b>${icon('box')} YOLOv8n 本地检测</b>
-              <p>COCO 80 类预训练 · 纯 CPU · 二次推理 ~1s<br/>检出后按类别手工调整到业务类</p>
+              <b>${icon('box')} Grounding DINO 本地检测</b>
+              <p>零样本开放词汇 · 纯 CPU · 首次加载后 ~7s/次<br/>中文业务类 → 英文 prompt 检测 → 自动回填中文类别</p>
               <div class="ai-actions">
                 <button class="btn sm primary" id="btn-img-prelabel" ${canEdit && mediaName ? '' : 'disabled'}>开始预识别</button>
               </div>
@@ -967,12 +1008,12 @@ function bindImageWorkbench(wb, classes) {
       const bizCls = (wb.labels['目标类别'] || classes)[0];
       let added = 0, skipped = 0;
       for (const b of detected) {
-        // 跳过极低置信度的 person / backpack 等与货架无关的
+        // 跳过极低置信度的噪声框
         if (b.conf < 0.10) { skipped++; continue; }
-        // 把 YOLO 原始类存在 auto_cls 里，默认映射到第一个业务类（人工在列表里改）
+        // 保留 AI 判定的业务类；不在当前项目类别里才回退到第一个业务类
         wb.boxes.push({
-          cls: bizCls,      // 默认业务类，人工后改
-          auto_cls: b.cls,  // YOLO 原始类（apple, banana, person...）
+          cls: classes.includes(b.cls) ? b.cls : bizCls,
+          auto_cls: b.auto_cls || b.cls,  // Grounding DINO 原始英文 label
           conf: b.conf,
           x: b.x, y: b.y, w: b.w, h: b.h,
         });

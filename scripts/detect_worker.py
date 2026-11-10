@@ -40,9 +40,9 @@ GD_HF_MODEL = "IDEA-Research/grounding-dino-tiny"
 # ---------------------------------------------------------------------------
 ZH_TO_EN: dict[str, list[str]] = {
     # 零售货架巡检
-    "商品主体": ["a grocery product", "a retail product", "a product on shelf",
+    "商品主体": ["a grocery product", "a retail product",
                  "a bottle", "a box", "a can", "a package"],
-    "价签":     ["a retail price tag", "a price tag", "a product label", "a shelf label"],
+    "价签":     ["a retail price tag", "a price tag"],
     "货架":     ["a store shelf", "a shelf panel", "a product shelf", "a grocery shelf"],
     "遮挡":     ["an occluded area", "an occlusion", "blocked view", "partially covered"],
     "清晰":     [],   # 质量类 Grounding DINO 无法检测（不是物体）
@@ -57,8 +57,9 @@ ZH_TO_EN: dict[str, list[str]] = {
 
 # Grounding DINO 输出的英文 label → 中文业务类（关键字模糊匹配）
 EN_TO_BIZ_KEYWORDS: list[tuple[str, list[str]]] = [
+    # 价签必须排在货架前：短语 "a shelf price label" 同时含 shelf/price，应判为价签
+    ("价签",     ["price tag", "price label", "price", "retail tag", "tag", "label sticker", "label"]),
     ("货架",     ["shelf", "display", "panel", "rack", "stand"]),
-    ("价签",     ["price tag", "price label", "price", "retail tag", "tag", "label sticker"]),
     ("商品主体", ["product", "grocery", "bottle", "box", "can", "package", "beverage",
                   "item", "goods", "merchandise"]),
     ("遮挡",     ["occluded", "occlusion", "blocked", "hidden", "covered", "occluded area"]),
@@ -91,14 +92,17 @@ def zh_classes_to_prompt(classes: list[str]) -> tuple[str, dict[int, str]]:
 
 
 def en_label_to_zh(label: str) -> str:
-    """Grounding DINO 返回的英文 label → 中文业务类（关键字模糊匹配）"""
+    """Grounding DINO 返回的英文 label → 中文业务类（关键字模糊匹配）
+
+    匹配不到任何业务关键字（如 "view"、裸 "product" 这类整图/噪声框）时返回空串，
+    由调用方丢弃，避免把无意义框兜底成「商品主体」。
+    """
     low = label.lower().strip()
     for zh, kws in EN_TO_BIZ_KEYWORDS:
         for kw in kws:
             if kw in low:
                 return zh
-    # 兜底：取第一个业务类
-    return "商品主体"
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -145,8 +149,15 @@ def run_grounding_dino_hf(image_path: str, classes: list[str], min_conf: float =
     for i in range(len(scores)):
         x1, y1, x2, y2 = boxes[i].tolist()
         en_label = raw_labels[i] if isinstance(raw_labels[i], str) else str(raw_labels[i])
+        bw, bh = x2 - x1, y2 - y1
         # Grounding DINO 可能返回组合 label，如 "a shelf a display"，按关键词取第一个匹配的中文类
         zh_cls = en_label_to_zh(en_label)
+        if not zh_cls:
+            # 匹配不到业务类的噪声框（如整图 "view"）直接丢弃
+            continue
+        # 过滤行级噪声框：商品/价签若横跨画面大半宽且很矮，说明检出的是「整排」而不是单个目标
+        if zh_cls in ("商品主体", "价签") and bw / W > 0.5 and bh / H < 0.12:
+            continue
         out.append({
             "cls": zh_cls,
             "cls_id": i,                # 内部序号
@@ -157,8 +168,8 @@ def run_grounding_dino_hf(image_path: str, classes: list[str], min_conf: float =
             "auto_cls": en_label[:60],  # Grounding DINO 原始英文 label（最多 60 字符）
         })
 
-    # 按业务类做 NMS，避免同个区域多个框
-    out = _nms_by_cls(out, iou_thr=0.5)
+    # 按业务类做 NMS，避免同个区域多个框（Grounding DINO 多短语易在同一物体上重复命中）
+    out = _nms_by_cls(out, iou_thr=0.30)
     # 置信度降序
     out.sort(key=lambda x: -x["conf"])
     return out, {"w": W, "h": H}
