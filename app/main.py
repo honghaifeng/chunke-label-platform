@@ -21,6 +21,16 @@ STATIC_DIR = os.path.join(BASE_DIR, "app", "static")
 app = FastAPI(title="春科数据标注平台", version="1.0.0")
 
 
+@app.middleware("http")
+async def no_cache_frontend(request: Request, call_next):
+    """前端页面与静态资源每次都向服务端校验，避免浏览器拿旧 JS/CSS。"""
+    resp = await call_next(request)
+    path = request.url.path
+    if path == "/" or path.startswith("/static/"):
+        resp.headers["Cache-Control"] = "no-cache, must-revalidate"
+    return resp
+
+
 @app.on_event("startup")
 def _startup() -> None:
     db.init_db()

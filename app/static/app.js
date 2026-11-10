@@ -70,6 +70,20 @@ const BOX_COLORS = {
   '行人': '#A855F7', '骑行者': '#06B6D4', '轿车': '#22D3EE', '卡车': '#EC4899',
 };
 const boxColor = (c) => BOX_COLORS[c] || '#64748B';
+/* 按类型给出的常用名称候选，供名称输入框下拉快速选择 */
+const NAME_SUGGEST = {
+  '商品主体': ['瓶装饮料', '罐装饮料', '瓶装水', '袋装零食', '盒装麦片', '袋装咖啡', '罐装食品', '瓶装洗护', '盒装洗护', '牛奶', '饼干', '方便面'],
+  '价签': ['价签', '促销价签', '电子价签', '手写价签', '缺货价签'],
+  '货架': ['货架', '端架', '堆头', '陈列架', '层板'],
+  '遮挡': ['遮挡', '被遮挡商品', '反光遮挡', '人物遮挡', '杂物遮挡'],
+  '清晰': ['清晰'], '模糊': ['模糊'], '过曝': ['过曝'],
+  '行人': ['顾客', '店员', '行人'],
+  '骑行者': ['外卖骑手', '骑行者'],
+  '轿车': ['轿车', 'SUV', '出租车'],
+  '卡车': ['货车', '公交车', '卡车'],
+};
+const nameSuggestOf = (cls) => NAME_SUGGEST[cls] || [];
+const sugId = (wb, cls) => `nm-${Math.max(0, clsOptions(wb).indexOf(cls))}`;
 /* 目标在画面中的纵向上/中/下分区（货架分层用） */
 const bandOf = (b) => {
   const cy = (b.y || 0) + (b.h || 0) / 2;
@@ -658,6 +672,7 @@ function renderImageWorkbench(wb, classes, qc) {
             <button class="btn sm ghost" id="btn-export-boxes" ${boxes.length ? '' : 'disabled'}>${icon('download')} 导出 CSV</button>
           </div>
           <div class="box-tools" id="box-tools">${boxTools(wb)}</div>
+          <div id="name-datalists" style="display:contents">${nameDatalistsHTML(wb)}</div>
           <div class="box-list" id="box-list">${boxHead()}${boxRows(wb)}</div>
         </div>
       </div>
@@ -729,8 +744,16 @@ function visibleIndexes(wb) {
   return wb.boxes.map((b, i) => (f === 'all' || b.cls === f ? i : -1)).filter((i) => i >= 0);
 }
 
+function nameDatalistsHTML(wb) {
+  return clsOptions(wb).map((c) => {
+    const opts = nameSuggestOf(c);
+    if (!opts.length) return '';
+    return `<datalist id="${sugId(wb, c)}">${opts.map((n) => `<option value="${esc(n)}"></option>`).join('')}</datalist>`;
+  }).join('');
+}
+
 function boxHead() {
-  return `<div class="box-thead"><span>编号</span><span>名称（可编辑）</span><span>类型</span><span>坐标 X,Y</span><span>尺寸 W×H</span><span>置信度</span><span>来源</span><span></span></div>`;
+  return `<div class="box-thead"><span>编号</span><span>名称（可下拉选择）</span><span>类型</span><span>坐标 X,Y</span><span>尺寸 W×H</span><span>置信度</span><span>来源</span><span></span></div>`;
 }
 
 function boxRowHTML(wb, b, i) {
@@ -738,7 +761,7 @@ function boxRowHTML(wb, b, i) {
   const sel = wb.selected === i;
   return `<div class="box-row ${b.auto_cls ? 'auto' : ''} ${sel ? 'sel' : ''}" data-i="${i}">
     <span class="box-idx"><i class="bdot" style="background:${boxColor(b.cls)}"></i>#${String(i + 1).padStart(2, '0')}</span>
-    <input class="box-name" data-f="name" value="${esc(b.name || '')}" placeholder="${esc(b.cls)}" title="点击命名这个目标" />
+    <input class="box-name" data-f="name" value="${esc(b.name || '')}" placeholder="${esc(b.cls)}" list="${sugId(wb, b.cls)}" title="点击选择或输入名称" />
     <select class="box-cls" data-f="cls">${clsOptions(wb).map((x) => `<option ${x === b.cls ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>
     <span class="box-pos">${(b.x * 100).toFixed(1)}, ${(b.y * 100).toFixed(1)}</span>
     <span class="box-size">${(b.w * 100).toFixed(1)}×${(b.h * 100).toFixed(1)}</span>
@@ -830,7 +853,7 @@ function detailHTML(b, i, wb) {
       <span class="src-badge ${conf == null ? 'human' : 'ai'}">${conf == null ? '人工' : 'AI'}</span>
     </div>
     <div class="detail-field"><label>目标名称</label>
-      <input class="detail-name" data-i="${i}" value="${esc(b.name || '')}" placeholder="${esc(b.cls)}（可自定义名称）" /></div>
+      <input class="detail-name" data-i="${i}" value="${esc(b.name || '')}" placeholder="${esc(b.cls)}（可选择或输入）" list="${sugId(wb, b.cls)}" /></div>
     <div class="detail-field"><label>目标类型</label>
       <select class="detail-cls" data-i="${i}">${clsOptions(wb).map((x) => `<option ${x === b.cls ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></div>
     <div class="detail-grid">
@@ -1391,6 +1414,7 @@ function refreshBoxUI(wb) {
     list.scrollTop = top;
   }
   const tools = $('#box-tools'); if (tools) tools.innerHTML = boxTools(wb);
+  const dls = $('#name-datalists'); if (dls) dls.innerHTML = nameDatalistsHTML(wb);
   const picker = $('#cls-picker'); if (picker) picker.innerHTML = clsPickerHTML(wb);
   const rp = $('#result-panel'); if (rp) rp.innerHTML = resultPanelHTML(wb);
   const total = wb.boxes.length;
