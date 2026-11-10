@@ -75,6 +75,13 @@ const bandOf = (b) => {
   const cy = (b.y || 0) + (b.h || 0) / 2;
   return cy < 0.4 ? 0 : cy < 0.66 ? 1 : 2;
 };
+const iouBox = (a, b) => {
+  const ix1 = Math.max(a.x, b.x), iy1 = Math.max(a.y, b.y);
+  const ix2 = Math.min(a.x + a.w, b.x + b.w), iy2 = Math.min(a.y + a.h, b.y + b.h);
+  const inter = Math.max(0, ix2 - ix1) * Math.max(0, iy2 - iy1);
+  const union = a.w * a.h + b.w * b.h - inter;
+  return union > 0 ? inter / union : 0;
+};
 
 const state = {
   user: null,
@@ -457,9 +464,17 @@ async function pageAnnotate(id) {
     segments: (payload.segments && payload.segments.length ? payload.segments : pre.segments || []).map((s) => ({ ...s, events: s.events || [] })),
     // 图片
     boxes: Array.isArray(payload.boxes) && payload.boxes.length
-      ? payload.boxes
+      ? payload.boxes.map((b) => ({
+          cls: classes.includes(b.cls) ? b.cls : classes[0],
+          name: b.name || '',
+          source: b.source || (typeof b.conf === 'number' ? 'ai' : 'manual'),
+          auto_cls: b.auto_cls || '',
+          conf: b.conf, x: b.x, y: b.y, w: b.w, h: b.h,
+        }))
       : (Array.isArray(pre.boxes) ? pre.boxes.map((b) => ({
           cls: classes.includes(b.cls) ? b.cls : classes[0],
+          name: '',
+          source: 'ai',
           auto_cls: b.auto_cls || b.cls,
           conf: b.conf, x: b.x, y: b.y, w: b.w, h: b.h,
         })) : []),
@@ -715,7 +730,7 @@ function visibleIndexes(wb) {
 }
 
 function boxHead() {
-  return `<div class="box-thead"><span>编号</span><span>类别</span><span>置信度</span><span>位置 X,Y</span><span>尺寸 W×H</span><span>检测短语</span><span></span></div>`;
+  return `<div class="box-thead"><span>编号</span><span>名称（可编辑）</span><span>类型</span><span>坐标 X,Y</span><span>尺寸 W×H</span><span>置信度</span><span>来源</span><span></span></div>`;
 }
 
 function boxRowHTML(wb, b, i) {
@@ -723,13 +738,14 @@ function boxRowHTML(wb, b, i) {
   const sel = wb.selected === i;
   return `<div class="box-row ${b.auto_cls ? 'auto' : ''} ${sel ? 'sel' : ''}" data-i="${i}">
     <span class="box-idx"><i class="bdot" style="background:${boxColor(b.cls)}"></i>#${String(i + 1).padStart(2, '0')}</span>
+    <input class="box-name" data-f="name" value="${esc(b.name || '')}" placeholder="${esc(b.cls)}" title="点击命名这个目标" />
     <select class="box-cls" data-f="cls">${clsOptions(wb).map((x) => `<option ${x === b.cls ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>
-    <span class="box-conf">${conf == null
-      ? '<em>人工</em>'
-      : `<span class="cbar"><i style="width:${Math.round(conf * 100)}%"></i></span>${Math.round(conf * 100)}%`}</span>
     <span class="box-pos">${(b.x * 100).toFixed(1)}, ${(b.y * 100).toFixed(1)}</span>
     <span class="box-size">${(b.w * 100).toFixed(1)}×${(b.h * 100).toFixed(1)}</span>
-    <span class="box-auto" title="${esc(b.auto_cls || '人工标注')}">${esc(b.auto_cls || '—')}</span>
+    <span class="box-conf">${conf == null
+      ? '<em>—</em>'
+      : `<span class="cbar"><i style="width:${Math.round(conf * 100)}%"></i></span>${Math.round(conf * 100)}%`}</span>
+    <span class="box-src ${conf == null ? 'human' : 'ai'}">${conf == null ? '人工' : 'AI'}</span>
     <button class="box-del" data-del="${i}" title="删除">${icon('x')}</button>
   </div>`;
 }
@@ -769,12 +785,12 @@ function boxTools(wb) {
 
 function exportBoxes(wb) {
   if (!wb.boxes.length) return toast('当前没有可导出的结果', 'warn');
-  const head = ['编号', '类别', '来源', '置信度%', 'X%', 'Y%', '宽%', '高%', '中心X%', '中心Y%', '面积占比%', '画面分区', '检测短语'];
+  const head = ['目标编号', '名称', '类型', '来源', '置信度%', '坐标X%', '坐标Y%', '宽%', '高%', '中心X%', '中心Y%', '面积占比%', '画面分区', '检测短语'];
   const rows = wb.boxes.map((b, i) => {
     const cx = ((b.x || 0) + (b.w || 0) / 2) * 100;
     const cy = ((b.y || 0) + (b.h || 0) / 2) * 100;
     return [
-      i + 1, b.cls, typeof b.conf === 'number' ? 'AI' : '人工',
+      `#${String(i + 1).padStart(2, '0')}`, b.name || '', b.cls, typeof b.conf === 'number' ? 'AI' : '人工',
       typeof b.conf === 'number' ? Math.round(b.conf * 100) : '',
       ((b.x || 0) * 100).toFixed(1), ((b.y || 0) * 100).toFixed(1),
       ((b.w || 0) * 100).toFixed(1), ((b.h || 0) * 100).toFixed(1),
@@ -809,16 +825,18 @@ function detailHTML(b, i, wb) {
   const region = `${cx < 40 ? '左' : cx > 60 ? '右' : '中'}·${cy < 40 ? '上' : cy > 66 ? '下' : '中'}`;
   return `
     <div class="detail-head">
-      <span class="box-no">#${String(i + 1).padStart(2, '0')}</span>
-      <span class="cls-badge" style="--cc:${boxColor(b.cls)}">${esc(b.cls)}</span>
+      <span class="box-no">目标 #${String(i + 1).padStart(2, '0')}</span>
       <span class="spacer"></span>
       <span class="src-badge ${conf == null ? 'human' : 'ai'}">${conf == null ? '人工' : 'AI'}</span>
     </div>
-    <select class="detail-cls" data-i="${i}">${clsOptions(wb).map((x) => `<option ${x === b.cls ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>
+    <div class="detail-field"><label>目标名称</label>
+      <input class="detail-name" data-i="${i}" value="${esc(b.name || '')}" placeholder="${esc(b.cls)}（可自定义名称）" /></div>
+    <div class="detail-field"><label>目标类型</label>
+      <select class="detail-cls" data-i="${i}">${clsOptions(wb).map((x) => `<option ${x === b.cls ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></div>
     <div class="detail-grid">
       <div><span>置信度</span><b>${conf == null ? '—' : conf + '%'}</b></div>
       <div><span>画面分区</span><b>${region}</b></div>
-      <div><span>位置 X / Y</span><b class="mono">${((b.x || 0) * 100).toFixed(1)}% / ${((b.y || 0) * 100).toFixed(1)}%</b></div>
+      <div><span>坐标 X / Y</span><b class="mono">${((b.x || 0) * 100).toFixed(1)}% / ${((b.y || 0) * 100).toFixed(1)}%</b></div>
       <div><span>尺寸 W × H</span><b class="mono">${((b.w || 0) * 100).toFixed(1)}% × ${((b.h || 0) * 100).toFixed(1)}%</b></div>
       <div><span>中心点</span><b class="mono">${cx.toFixed(1)}% / ${cy.toFixed(1)}%</b></div>
       <div><span>面积占比</span><b>${((b.w || 0) * (b.h || 0) * 100).toFixed(1)}%</b></div>
@@ -1115,6 +1133,15 @@ function bindImageWorkbench(wb, classes) {
   const rp = $('#result-panel');
   if (rp) {
     rp.onclick = (e) => { const b = e.target.closest('[data-filter]'); if (b) applyFilter(b.dataset.filter); };
+    rp.oninput = (e) => {
+      if (!e.target.classList.contains('detail-name')) return;
+      const i = Number(e.target.dataset.i);
+      if (!wb.boxes[i]) return;
+      wb.boxes[i].name = e.target.value;
+      const row = $(`#box-list .box-row[data-i="${i}"] input.box-name`);
+      if (row) row.value = e.target.value;
+      markDirty(wb); drawImageBoxes(wb);
+    };
     rp.onchange = (e) => {
       if (!e.target.classList.contains('detail-cls')) return;
       const i = Number(e.target.dataset.i);
@@ -1164,7 +1191,7 @@ function bindImageWorkbench(wb, classes) {
     wb._dragRect = null;
     drawImageBoxes(wb);
     if (r && r.w > 0.005 && r.h > 0.005) {
-      wb.boxes.push({ cls: wb.activeCls || (wb.labels['目标类别'] || classes)[0], ...r });
+      wb.boxes.push({ cls: wb.activeCls || (wb.labels['目标类别'] || classes)[0], name: '', source: 'manual', ...r });
       wb.selected = wb.boxes.length - 1;
       refreshBoxUI(wb); drawImageBoxes(wb); markDirty(wb);
     }
@@ -1183,7 +1210,14 @@ function bindImageWorkbench(wb, classes) {
       return;
     }
     const row = e.target.closest('.box-row');
-    if (row && !e.target.closest('select')) selectBox(wb, Number(row.dataset.i));
+    if (row && !e.target.closest('select,input')) selectBox(wb, Number(row.dataset.i));
+  };
+  // 名称就地编辑：只同步数据与画布标签，不重绘列表以免打断输入
+  list.oninput = (e) => {
+    if (e.target.dataset.f !== 'name') return;
+    const row = e.target.closest('.box-row'); if (!row) return;
+    wb.boxes[Number(row.dataset.i)].name = e.target.value;
+    markDirty(wb); drawImageBoxes(wb);
   };
   list.onchange = (e) => {
     const row = e.target.closest('.box-row'); if (!row) return;
@@ -1231,15 +1265,22 @@ function bindImageWorkbench(wb, classes) {
       const detected = pre.boxes || [];
       wb.prelabel = pre;
       wb.imgLoaded = true; wb.imgW = pre.img_size?.w || wb.imgW; wb.imgH = pre.img_size?.h || wb.imgH;
-      // 追加到现有 boxes，不覆盖人工已画的
+      // 每次识别都用新结果整体替换上一次 AI 目标，避免重复点击不断叠加；人工画的框保留
+      const oldAI = wb.boxes.filter((b) => b.source === 'ai');
+      const manual = wb.boxes.filter((b) => b.source !== 'ai');
+      wb.boxes = manual;
       const bizCls = (wb.labels['目标类别'] || classes)[0];
       let added = 0, skipped = 0;
       for (const b of detected) {
         // 跳过极低置信度的噪声框
         if (b.conf < 0.10) { skipped++; continue; }
+        // 同一位置重识别时沿用上次已填写的名称，避免重复劳动
+        const prev = oldAI.find((o) => iouBox(o, b) > 0.5);
         // 保留 AI 判定的业务类；不在当前项目类别里才回退到第一个业务类
         wb.boxes.push({
           cls: classes.includes(b.cls) ? b.cls : bizCls,
+          name: prev ? prev.name || '' : '',
+          source: 'ai',
           auto_cls: b.auto_cls || b.cls,  // Grounding DINO 原始英文 label
           conf: b.conf,
           x: b.x, y: b.y, w: b.w, h: b.h,
@@ -1250,9 +1291,9 @@ function bindImageWorkbench(wb, classes) {
       wb.selected = -1;
       refreshBoxUI(wb);
       drawImageBoxes(wb);
-      toast(`AI 检出 ${detected.length} 个，新增 ${added} 个（跳过 ${skipped} 个）· ${(pre.elapsed_ms / 1000).toFixed(1)}s`, 'ok');
-      btn.textContent = '重新预识别';
-      if (status) status.textContent = `AI 检出 ${detected.length} / 已入库 ${added}`;
+      toast(`已用本次 AI 结果替换上次 AI 目标：入库 ${added} 个，保留人工 ${manual.length} 个${skipped ? `，忽略 ${skipped} 个低分框` : ''} · ${(pre.elapsed_ms / 1000).toFixed(1)}s`, 'ok');
+      btn.textContent = '重新识别';
+      if (status) status.textContent = `AI 检出 ${added} 个 / 人工补框 ${manual.length} 个`;
     } catch (err) {
       toast(err.message, 'err');
     } finally {
@@ -1318,9 +1359,9 @@ function drawOneBox(ctx, b, i, sw, sh, alpha = 1, selected = false) {
   ctx.strokeRect(x, y, w, h);
   ctx.fillStyle = col + (selected ? '40' : '24');
   ctx.fillRect(x, y, w, h);
-  // 标签：#编号 类别
+  // 标签：#编号 名称（未命名时显示类型）
   ctx.font = '600 11px ui-sans-serif, system-ui';
-  const label = `#${i + 1} ${b.cls}`;
+  const label = `#${i + 1} ${b.name || b.cls}`;
   const tw = ctx.measureText(label).width + 9;
   const ly = y - 16 < 0 ? y : y - 16;
   ctx.fillStyle = col;
@@ -1534,6 +1575,8 @@ function payloadOf(wb) {
       img_size: { w: wb.imgW || 0, h: wb.imgH || 0 },
       boxes: wb.boxes.map((b) => ({
         cls: b.cls || '商品主体',
+        name: b.name || '',
+        source: b.source || 'manual',
         x: Number(b.x) || 0, y: Number(b.y) || 0,
         w: Number(b.w) || 0, h: Number(b.h) || 0,
         ...(typeof b.conf === 'number' ? { conf: b.conf } : {}),
