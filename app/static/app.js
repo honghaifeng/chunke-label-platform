@@ -550,7 +550,8 @@ function renderAudioWorkbench(wb, labels, qc, mediaName) {
 }
 
 function renderImageWorkbench(wb, classes, qc) {
-  const { task, project, canEdit, mediaName, boxes } = wb;
+  const { task, project, canEdit, mediaName, boxes, pre } = wb;
+  const lastPrelabel = pre && pre.engine ? `${pre.engine} · ${pre.boxes?.length || 0} 框 · ${(pre.elapsed_ms / 1000).toFixed(1)}s` : '—';
   const content = `
   <div class="wb" id="wb">
     <div class="wb-head">
@@ -583,17 +584,25 @@ function renderImageWorkbench(wb, classes, qc) {
         </div>
         <div class="card" style="flex:1;min-height:0;display:flex;flex-direction:column">
           <div class="card-head"><h3 class="card-title">标注框列表</h3>
-            <span class="card-sub">${boxes.length} 个目标 · 拖拽图片画矩形框</span>
+            <span class="card-sub">${boxes.length} 个目标 · 拖拽图片画矩形框，或按侧栏 AI 自动生成</span>
           </div>
           <div class="box-list" id="box-list">${boxRows(wb)}</div>
         </div>
       </div>
       <div class="col" style="min-height:0">
         <div class="side-panel" style="flex:1">
-          <div class="panel-head">${icon('tag')} 图片标注</div>
+          <div class="panel-head">${icon('spark')} AI 预识别</div>
           <div class="panel-body">
+            <div class="ai-card">
+              <b>${icon('box')} YOLOv8n 本地检测</b>
+              <p>COCO 80 类预训练 · 纯 CPU · 二次推理 ~1s<br/>检出后按类别手工调整到业务类</p>
+              <div class="ai-actions">
+                <button class="btn sm primary" id="btn-img-prelabel" ${canEdit && mediaName ? '' : 'disabled'}>开始预识别</button>
+              </div>
+              <div class="hint" style="margin-top:8px">上次：${lastPrelabel}</div>
+            </div>
             <div class="panel-section">
-              <div class="panel-label">目标类别（画框时按住 Shift 快速选）</div>
+              <div class="panel-label">目标类别（检测后按这里分类）</div>
               <div class="cls-picker" id="cls-picker">
                 ${classes.map((c, i) => `<button class="cls-btn ${i === 0 ? 'on' : ''}" data-cls="${esc(c)}">${esc(c)}</button>`).join('')}
               </div>
@@ -601,10 +610,10 @@ function renderImageWorkbench(wb, classes, qc) {
             <div class="panel-section">
               <div class="panel-label">操作提示</div>
               <div class="hint" style="line-height:1.8">
-                • 在图片上鼠标拖拽画矩形<br/>
-                • 松开后自动新建一个标注框<br/>
-                • 点击已有框可删除或改类别<br/>
-                • 滚轮缩放，Shift + 拖拽平移
+                • 先点「开始预识别」AI 自动检出<br/>
+                • 结果合并到框列表，改类别即可<br/>
+                • 多余的框直接删，遗漏的手动画<br/>
+                • 所有调整在框列表里即时同步
               </div>
             </div>
             ${qc ? `<div class="panel-section">
@@ -630,11 +639,12 @@ function renderImageWorkbench(wb, classes, qc) {
 }
 
 function boxRows(wb) {
-  if (!wb.boxes.length) return '<div class="empty"><b>还没有标注框</b>在图片上拖拽画第一个矩形</div>';
+  if (!wb.boxes.length) return '<div class="empty"><b>还没有标注框</b>在图片上拖拽画第一个矩形，或先让 AI 预识别</div>';
   return wb.boxes.map((b, i) => `
-    <div class="box-row" data-i="${i}">
-      <span class="box-idx">#${String(i + 1).padStart(2, '0')}</span>
+    <div class="box-row ${b.auto_cls ? 'auto' : ''}" data-i="${i}">
+      <span class="box-idx">#${String(i + 1).padStart(2, '0')}${b.auto_cls ? `·${Math.round((b.conf || 0) * 100)}%` : ''}</span>
       <select class="box-cls" data-f="cls">${(wb.labels['目标类别'] || ['商品主体']).map((x) => `<option ${x === b.cls ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>
+      ${b.auto_cls ? `<span class="box-auto">${esc(b.auto_cls)}</span>` : ''}
       <span class="box-pos">${Math.round(b.x * 1000) / 10}%, ${Math.round(b.y * 1000) / 10}%</span>
       <button class="box-del" data-del="${i}" title="删除">${icon('x')}</button>
     </div>`).join('');
@@ -941,6 +951,44 @@ function bindImageWorkbench(wb, classes) {
       toast('已提交质检', 'ok');
       setTimeout(() => (location.hash = '#/tasks'), 500);
     } catch (err) { toast(err.message, 'err'); }
+  };
+
+  // AI 预识别
+  $('#btn-img-prelabel').onclick = async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true; btn.textContent = '检测中…';
+    try {
+      const resp = await api(`/api/tasks/${wb.task.id}/prelabel`, { method: 'POST', body: {} });
+      const pre = resp.prelabel || {};
+      const detected = pre.boxes || [];
+      wb.prelabel = pre;
+      wb.imgLoaded = true; wb.imgW = pre.img_size?.w || wb.imgW; wb.imgH = pre.img_size?.h || wb.imgH;
+      // 追加到现有 boxes，不覆盖人工已画的
+      const bizCls = (wb.labels['目标类别'] || classes)[0];
+      let added = 0, skipped = 0;
+      for (const b of detected) {
+        // 跳过极低置信度的 person / backpack 等与货架无关的
+        if (b.conf < 0.10) { skipped++; continue; }
+        // 把 YOLO 原始类存在 auto_cls 里，默认映射到第一个业务类（人工在列表里改）
+        wb.boxes.push({
+          cls: bizCls,      // 默认业务类，人工后改
+          auto_cls: b.cls,  // YOLO 原始类（apple, banana, person...）
+          conf: b.conf,
+          x: b.x, y: b.y, w: b.w, h: b.h,
+        });
+        added++;
+      }
+      markDirty(wb);
+      refreshBoxUI(wb);
+      drawImageBoxes(wb);
+      toast(`AI 检出 ${detected.length} 个，新增 ${added} 个（跳过 ${skipped} 个）· ${(pre.elapsed_ms / 1000).toFixed(1)}s`, 'ok');
+      btn.textContent = '重新预识别';
+      if (status) status.textContent = `AI 检出 ${detected.length} / 已入库 ${added}`;
+    } catch (err) {
+      toast(err.message, 'err');
+    } finally {
+      btn.disabled = !wb.canEdit;
+    }
   };
 
   window.addEventListener('resize', () => { fitStage(wb); drawImageBoxes(wb); });

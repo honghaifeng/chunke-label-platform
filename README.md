@@ -84,7 +84,9 @@ rm -f data/chunke.db* data/tmp/*
 - 点击已有框 → confirm 删除；侧栏列表也能删、能改类别
 - Canvas 顶部带颜色编码的 `#N 类别` 标签
 
-### 3. AI 预识别（语音）
+### 3. AI 预识别
+
+#### 语音（FunASR 本地）
 
 ```
 音频输入（16k 单声道）
@@ -103,6 +105,24 @@ rm -f data/chunke.db* data/tmp/*
 性能：纯 CPU，RTF ≈ 0.075，10s 音频约 0.75s 出结果（首次加载模型 ~10-20s）。
 
 入口：`POST /api/tasks/{tid}/prelabel`（body: `{ emotion: true/false }`）。
+
+#### 图片（YOLOv8n 本地）
+
+```
+图片输入
+  │
+  └── YOLOv8n（COCO 80 类预训练权重）
+        二次推理 ~1s（纯 CPU）
+        返回 {cls, cls_id, conf, x, y, w, h}（归一化坐标 0..1）
+```
+
+- COCO 类别（apple, banana, bottle, cup, handbag, backpack, person…）检出后，**默认映射到项目第一个业务类**（比如「商品主体」），原始 COCO 类保存在 `auto_cls` 字段里供人工快速判断是否保留。
+- 人工在框列表里下拉改业务类，或直接删掉不相关的框（person/handbag 等）。
+- 这样 AI 先检出 → 人工在这个基础上改类别/删框/补遗漏，**比纯手工画框效率高 3-5 倍**。
+
+入口：`POST /api/tasks/{tid}/prelabel`（body: `{}`，自动根据项目 `label_config` 取目标类别做业务映射）。
+
+> Grounding DINO tiny ONNX（开放词汇检测）权重 685MB 已下载，但 tokenizer 对中文大多返回 `[UNK]`，暂切 YOLOv8n 路线。后续换英文类 + 调参可能启用。
 
 ### 4. 质检闭环
 

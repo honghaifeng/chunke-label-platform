@@ -339,25 +339,45 @@ async def upload_media(tid: int, file: UploadFile = File(...), user: dict = Depe
 def run_prelabel(tid: int, body: dict | None = None, user: dict = Depends(me)):
     task = _get_task(tid, user)
     body = body or {}
-    cfg = {r["key"]: r["value"] for r in db.rows("SELECT key,value FROM settings")}
-    hotwords = [w.strip() for w in (cfg.get("hotwords") or "").replace("，", ",").split(",") if w.strip()]
-    spk_num = int(cfg.get("spk_num") or 0) or None
-    result = prelabel.prelabel_audio(
-        task["media_path"],
-        hotwords=hotwords,
-        spk_num=spk_num,
-        with_emotion=bool(body.get("emotion")),
-    )
-    if not result.get("ok"):
-        raise HTTPException(400, result.get("error") or "预识别失败")
+    media_type = task.get("media_type") or "audio"
+    media_path = task["media_path"]
+    if not media_path:
+        raise HTTPException(400, "该任务尚未上传媒体文件")
 
-    try:
-        from . import overlap
+    if media_type == "image":
+        # 图片预标注
+        proj = db.row("SELECT label_config FROM projects WHERE id=?", (task["project_id"],)) or {}
+        labels = json.loads((proj or {}).get("label_config") or "{}")
+        classes = labels.get("目标类别") or ["商品主体", "价签", "货架", "遮挡"]
+        engine = body.get("engine") or "yolo"
+        min_conf = float(body.get("min_conf") or 0.10)
+        result = prelabel.prelabel_image(media_path, classes=classes, engine=engine, min_conf=min_conf)
+        if not result.get("ok"):
+            raise HTTPException(400, result.get("error") or "预识别失败")
+        prelabel_json = json.dumps(result, ensure_ascii=False)
+        seg_count = len(result.get("boxes", []))
+    else:
+        # 音频预识别
+        cfg = {r["key"]: r["value"] for r in db.rows("SELECT key,value FROM settings")}
+        hotwords = [w.strip() for w in (cfg.get("hotwords") or "").replace("，", ",").split(",") if w.strip()]
+        spk_num = int(cfg.get("spk_num") or 0) or None
+        result = prelabel.prelabel_audio(
+            media_path,
+            hotwords=hotwords,
+            spk_num=spk_num,
+            with_emotion=bool(body.get("emotion")),
+        )
+        if not result.get("ok"):
+            raise HTTPException(400, result.get("error") or "预识别失败")
 
-        ov = overlap.annotate(result.get("segments") or [], task["media_path"])
-        result["overlap"] = ov
-    except Exception as exc:  # noqa: BLE001
-        result["overlap"] = {"ok": False, "reason": str(exc)[:200]}
+        try:
+            from . import overlap
+            ov = overlap.annotate(result.get("segments") or [], media_path)
+            result["overlap"] = ov
+        except Exception as exc:
+            result["overlap"] = {"ok": False, "reason": str(exc)[:200]}
+        prelabel_json = json.dumps(result, ensure_ascii=False)
+        seg_count = len(result.get("segments", []))
 
     ann = db.row(
         "SELECT * FROM annotations WHERE task_id=? ORDER BY updated_at DESC, id DESC LIMIT 1", (tid,)
@@ -365,19 +385,20 @@ def run_prelabel(tid: int, body: dict | None = None, user: dict = Depends(me)):
     if ann:
         db.execute(
             "UPDATE annotations SET prelabel=?, updated_at=? WHERE id=?",
-            (json.dumps(result, ensure_ascii=False), db.now(), ann["id"]),
+            (prelabel_json, db.now(), ann["id"]),
         )
     else:
         db.execute(
             "INSERT INTO annotations(task_id,user_id,payload,prelabel,status,version,created_at,updated_at)"
             " VALUES(?,?,?,?,?,?,?,?)",
-            (tid, user["id"], "{}", json.dumps(result, ensure_ascii=False), "draft", 1, db.now(), db.now()),
+            (tid, user["id"], "{}", prelabel_json, "draft", 1, db.now(), db.now()),
         )
     if task["status"] == "pending":
         db.execute("UPDATE tasks SET status='annotating', updated_at=? WHERE id=?", (db.now(), tid))
     if result.get("duration"):
         db.execute("UPDATE tasks SET duration=? WHERE id=?", (result["duration"], tid))
-    db.log(user["id"], "prelabel", f"task:{tid}", f"{result.get('elapsed_ms')}ms / {len(result.get('segments', []))} 段")
+    kind = "图片" if media_type == "image" else "音频"
+    db.log(user["id"], "prelabel", f"task:{tid}", f"{kind}·{result.get('elapsed_ms')}ms / {seg_count} 个")
     return {"ok": True, "prelabel": result}
 
 

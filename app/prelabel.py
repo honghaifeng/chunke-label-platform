@@ -12,7 +12,8 @@ from . import db
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FUNASR_PY = "/Users/haifeng2026/Desktop/mini2026/voice-repos/FunASR/.venv/bin/python"
 FUNASR_CWD = "/Users/haifeng2026/Desktop/mini2026/voice-repos/FunASR"
-WORKER = os.path.join(BASE_DIR, "scripts", "asr_worker.py")
+WORKER_ASR = os.path.join(BASE_DIR, "scripts", "asr_worker.py")
+WORKER_DETECT = os.path.join(BASE_DIR, "scripts", "detect_worker.py")
 
 ENV = {
     **os.environ,
@@ -28,7 +29,11 @@ def settings() -> dict:
 
 
 def worker_ready() -> bool:
-    return os.path.exists(FUNASR_PY) and os.path.exists(WORKER)
+    return os.path.exists(FUNASR_PY) and os.path.exists(WORKER_ASR)
+
+
+def detect_worker_ready() -> bool:
+    return os.path.exists(FUNASR_PY) and os.path.exists(WORKER_DETECT) and os.path.exists("/Volumes/ORICO/voice-ai/models/detect/yolov8n.pt")
 
 
 def prelabel_audio(
@@ -60,7 +65,7 @@ def prelabel_audio(
     started = time.time()
     try:
         proc = subprocess.run(
-            [FUNASR_PY, WORKER, "--in", req_path, "--out", out_path],
+            [FUNASR_PY, WORKER_ASR, "--in", req_path, "--out", out_path],
             cwd=FUNASR_CWD,
             env=ENV,
             capture_output=True,
@@ -124,3 +129,66 @@ def asr_model_ready() -> bool:
         return db.row("SELECT value FROM settings WHERE key='asr_engine'") is not None and worker_ready()
     except Exception:
         return False
+
+
+def prelabel_image(
+    image_path: str,
+    classes: list[str] | None = None,
+    engine: str = "yolo",
+    min_conf: float = 0.10,
+) -> dict:
+    """图片预标注：调 detect_worker 跑 YOLOv8n 或 Grounding DINO。
+
+    输出:
+    {
+      ok, engine, img_size, elapsed_ms,
+      boxes: [{cls, cls_id, conf, x, y, w, h}],
+      error (可选)
+    }
+    """
+    if not os.path.exists(image_path):
+        return {"ok": False, "error": "图片文件不存在，请先上传"}
+    if not detect_worker_ready():
+        return {"ok": False, "error": "本地检测引擎未就绪（缺权重或依赖）"}
+
+    token = uuid.uuid4().hex[:12]
+    out_path = os.path.join(db.TMP_DIR, f"detect-{token}.json")
+
+    cmd = [
+        FUNASR_PY, WORKER_DETECT,
+        "--in", os.path.abspath(image_path),
+        "--out", out_path,
+        "--engine", engine,
+        "--min-conf", str(min_conf),
+    ]
+    if classes:
+        cmd += ["--classes", ",".join(classes)]
+
+    started = time.time()
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=FUNASR_CWD,
+            env=ENV,
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "检测超时（180 秒）"}
+
+    if not os.path.exists(out_path):
+        tail = (proc.stderr or proc.stdout or "")[-600:]
+        return {"ok": False, "error": f"检测失败：{tail.strip() or 'worker 无输出'}"}
+
+    try:
+        with open(out_path, encoding="utf-8") as f:
+            result = json.load(f)
+    finally:
+        try:
+            os.remove(out_path)
+        except OSError:
+            pass
+
+    result["elapsed_ms"] = int((time.time() - started) * 1000)
+    return result
