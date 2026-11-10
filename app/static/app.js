@@ -63,6 +63,19 @@ const statusChip = (s) => {
 const MODALITY_ICON = { audio: 'audio', image: 'image', video: 'video', pointcloud: 'cloud' };
 const SPK_COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#8B5CF6', '#06B6D4', '#EF4444'];
 
+/* 目标类别配色：画布、列表、结果面板统一取色 */
+const BOX_COLORS = {
+  '商品主体': '#3B82F6', '价签': '#10B981', '货架': '#F59E0B', '遮挡': '#EF4444',
+  '清晰': '#22C55E', '模糊': '#F97316', '过曝': '#E879F9',
+  '行人': '#A855F7', '骑行者': '#06B6D4', '轿车': '#22D3EE', '卡车': '#EC4899',
+};
+const boxColor = (c) => BOX_COLORS[c] || '#64748B';
+/* 目标在画面中的纵向上/中/下分区（货架分层用） */
+const bandOf = (b) => {
+  const cy = (b.y || 0) + (b.h || 0) / 2;
+  return cy < 0.4 ? 0 : cy < 0.66 ? 1 : 2;
+};
+
 const state = {
   user: null,
   settings: {},
@@ -461,6 +474,7 @@ async function pageAnnotate(id) {
     audio: null, peaks: [], playing: false, currentTime: 0,
     // 图片专属
     imgDrag: null, scale: 1, showBox: true,
+    filter: 'all', selected: -1, activeCls: classes[0],
   };
   state.wb = wb;
 
@@ -624,10 +638,12 @@ function renderImageWorkbench(wb, classes, qc) {
           <div class="image-status" id="img-status">加载中…</div>
         </div>
         <div class="card" style="flex:1;min-height:0;display:flex;flex-direction:column">
-          <div class="card-head"><h3 class="card-title">标注框列表</h3>
-            <span class="card-sub">${boxes.length} 个目标 · 拖拽图片画矩形框，或按侧栏 AI 自动生成</span>
+          <div class="card-head"><h3 class="card-title">识别结果</h3>
+            <span class="card-sub" id="box-sub">${boxes.length} 个目标 · ${boxStats(wb).length} 类</span>
+            <button class="btn sm ghost" id="btn-export-boxes" ${boxes.length ? '' : 'disabled'}>${icon('download')} 导出 CSV</button>
           </div>
-          <div class="box-list" id="box-list">${boxRows(wb)}</div>
+          <div class="box-tools" id="box-tools">${boxTools(wb)}</div>
+          <div class="box-list" id="box-list">${boxHead()}${boxRows(wb)}</div>
         </div>
       </div>
       <div class="col" style="min-height:0">
@@ -642,20 +658,11 @@ function renderImageWorkbench(wb, classes, qc) {
               </div>
               <div class="hint" style="margin-top:8px">上次：${lastPrelabel}</div>
             </div>
+            <div class="panel-section" id="result-panel">${resultPanelHTML(wb)}</div>
             <div class="panel-section">
-              <div class="panel-label">目标类别（检测后按这里分类）</div>
-              <div class="cls-picker" id="cls-picker">
-                ${classes.map((c, i) => `<button class="cls-btn ${i === 0 ? 'on' : ''}" data-cls="${esc(c)}">${esc(c)}</button>`).join('')}
-              </div>
-            </div>
-            <div class="panel-section">
-              <div class="panel-label">操作提示</div>
-              <div class="hint" style="line-height:1.8">
-                • 先点「开始预识别」AI 自动检出<br/>
-                • 结果合并到框列表，改类别即可<br/>
-                • 多余的框直接删，遗漏的手动画<br/>
-                • 所有调整在框列表里即时同步
-              </div>
+              <div class="panel-label">筛选 / 画框类别</div>
+              <div class="cls-picker" id="cls-picker">${clsPickerHTML(wb)}</div>
+              <div class="hint" style="margin-top:6px">点类别只显示该类目标；在图片上拖拽时按当前选中类别画框。</div>
             </div>
             ${qc ? `<div class="panel-section">
               <div class="panel-label">质检结论</div>
@@ -679,17 +686,210 @@ function renderImageWorkbench(wb, classes, qc) {
   bindImageWorkbench(wb, classes);
 }
 
-function boxRows(wb) {
-  if (!wb.boxes.length) return '<div class="empty"><b>还没有标注框</b>在图片上拖拽画第一个矩形，或先让 AI 预识别</div>';
-  return wb.boxes.map((b, i) => `
-    <div class="box-row ${b.auto_cls ? 'auto' : ''}" data-i="${i}">
-      <span class="box-idx">#${String(i + 1).padStart(2, '0')}${b.auto_cls ? `·${Math.round((b.conf || 0) * 100)}%` : ''}</span>
-      <select class="box-cls" data-f="cls">${(wb.labels['目标类别'] || ['商品主体']).map((x) => `<option ${x === b.cls ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>
-      ${b.auto_cls ? `<span class="box-auto">${esc(b.auto_cls)}</span>` : ''}
-      <span class="box-pos">${Math.round(b.x * 1000) / 10}%, ${Math.round(b.y * 1000) / 10}%</span>
-      <button class="box-del" data-del="${i}" title="删除">${icon('x')}</button>
-    </div>`).join('');
+/* ------------ 图片结果：统计 / 筛选 / 结构化展示 ------------ */
+function clsOptions(wb) {
+  const base = (wb.labels['目标类别'] || ['商品主体']).slice();
+  wb.boxes.forEach((b) => { if (b.cls && !base.includes(b.cls)) base.push(b.cls); });
+  return base;
 }
+
+function boxStats(wb) {
+  const map = new Map();
+  wb.boxes.forEach((b) => {
+    const s = map.get(b.cls) || { cls: b.cls, n: 0, confSum: 0, confN: 0, area: 0 };
+    s.n += 1;
+    s.area += (b.w || 0) * (b.h || 0);
+    if (typeof b.conf === 'number') { s.confSum += b.conf; s.confN += 1; }
+    map.set(b.cls, s);
+  });
+  const order = wb.labels['目标类别'] || [];
+  return Array.from(map.values()).sort((a, b) => {
+    const ia = order.indexOf(a.cls), ib = order.indexOf(b.cls);
+    return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib) || b.n - a.n;
+  });
+}
+
+function visibleIndexes(wb) {
+  const f = wb.filter || 'all';
+  return wb.boxes.map((b, i) => (f === 'all' || b.cls === f ? i : -1)).filter((i) => i >= 0);
+}
+
+function boxHead() {
+  return `<div class="box-thead"><span>编号</span><span>类别</span><span>置信度</span><span>位置 X,Y</span><span>尺寸 W×H</span><span>检测短语</span><span></span></div>`;
+}
+
+function boxRowHTML(wb, b, i) {
+  const conf = typeof b.conf === 'number' ? b.conf : null;
+  const sel = wb.selected === i;
+  return `<div class="box-row ${b.auto_cls ? 'auto' : ''} ${sel ? 'sel' : ''}" data-i="${i}">
+    <span class="box-idx"><i class="bdot" style="background:${boxColor(b.cls)}"></i>#${String(i + 1).padStart(2, '0')}</span>
+    <select class="box-cls" data-f="cls">${clsOptions(wb).map((x) => `<option ${x === b.cls ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>
+    <span class="box-conf">${conf == null
+      ? '<em>人工</em>'
+      : `<span class="cbar"><i style="width:${Math.round(conf * 100)}%"></i></span>${Math.round(conf * 100)}%`}</span>
+    <span class="box-pos">${(b.x * 100).toFixed(1)}, ${(b.y * 100).toFixed(1)}</span>
+    <span class="box-size">${(b.w * 100).toFixed(1)}×${(b.h * 100).toFixed(1)}</span>
+    <span class="box-auto" title="${esc(b.auto_cls || '人工标注')}">${esc(b.auto_cls || '—')}</span>
+    <button class="box-del" data-del="${i}" title="删除">${icon('x')}</button>
+  </div>`;
+}
+
+function boxRows(wb) {
+  const total = wb.boxes.length;
+  if (!total) return '<div class="empty"><b>还没有标注框</b>在图片上拖拽画第一个矩形，或先让 AI 预识别</div>';
+  const filter = wb.filter || 'all';
+  const groups = boxStats(wb).filter((s) => filter === 'all' || s.cls === filter);
+  if (!groups.length) {
+    return `<div class="empty"><b>「${esc(filter)}」暂无目标</b>切换上方筛选查看其他类别</div>`;
+  }
+  return groups.map((g) => {
+    const rows = wb.boxes.map((b, i) => ({ b, i })).filter(({ b }) => b.cls === g.cls);
+    return `<div class="box-group">
+        <i style="background:${boxColor(g.cls)}"></i><b>${esc(g.cls)}</b>
+        <span class="bg-n">${g.n} 个</span>
+        ${g.confN ? `<span>平均置信度 ${Math.round((g.confSum / g.confN) * 100)}%</span>` : '<span>人工标注</span>'}
+        <span class="spacer"></span>
+        <span>画面占比 ${(g.area * 100).toFixed(1)}%</span>
+      </div>
+      ${rows.map(({ b, i }) => boxRowHTML(wb, b, i)).join('')}`;
+  }).join('');
+}
+
+function boxTools(wb) {
+  const total = wb.boxes.length;
+  const filter = wb.filter || 'all';
+  const stats = boxStats(wb);
+  return `<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
+      <button class="fchip ${filter === 'all' ? 'on' : ''}" data-filter="all">全部 <b>${total}</b></button>
+      ${stats.map((s) => `<button class="fchip ${filter === s.cls ? 'on' : ''}" data-filter="${esc(s.cls)}"><i style="background:${boxColor(s.cls)}"></i>${esc(s.cls)} <b>${s.n}</b></button>`).join('')}
+    </div>
+    <span class="spacer"></span>
+    <span class="box-count">显示 ${visibleIndexes(wb).length} / ${total}</span>`;
+}
+
+function exportBoxes(wb) {
+  if (!wb.boxes.length) return toast('当前没有可导出的结果', 'warn');
+  const head = ['编号', '类别', '来源', '置信度%', 'X%', 'Y%', '宽%', '高%', '中心X%', '中心Y%', '面积占比%', '画面分区', '检测短语'];
+  const rows = wb.boxes.map((b, i) => {
+    const cx = ((b.x || 0) + (b.w || 0) / 2) * 100;
+    const cy = ((b.y || 0) + (b.h || 0) / 2) * 100;
+    return [
+      i + 1, b.cls, typeof b.conf === 'number' ? 'AI' : '人工',
+      typeof b.conf === 'number' ? Math.round(b.conf * 100) : '',
+      ((b.x || 0) * 100).toFixed(1), ((b.y || 0) * 100).toFixed(1),
+      ((b.w || 0) * 100).toFixed(1), ((b.h || 0) * 100).toFixed(1),
+      cx.toFixed(1), cy.toFixed(1), ((b.w || 0) * (b.h || 0) * 100).toFixed(2),
+      `${cx < 40 ? '左' : cx > 60 ? '右' : '中'}·${cy < 40 ? '上' : cy > 66 ? '下' : '中'}`,
+      b.auto_cls || '',
+    ];
+  });
+  const csv = [head, ...rows].map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
+  const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `识别结果-${wb.task.name}-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast(`已导出 ${wb.boxes.length} 条结构化结果`, 'ok');
+}
+
+function clsPickerHTML(wb) {
+  const filter = wb.filter || 'all';
+  return `<button class="cls-btn ${filter === 'all' ? 'on' : ''}" data-filter="all">全部 <b>${wb.boxes.length}</b></button>
+    ${clsOptions(wb).map((c) => {
+      const n = wb.boxes.filter((b) => b.cls === c).length;
+      return `<button class="cls-btn ${filter === c ? 'on' : ''}" data-filter="${esc(c)}" style="--cc:${boxColor(c)}"><i></i>${esc(c)} <b>${n}</b></button>`;
+    }).join('')}`;
+}
+
+function detailHTML(b, i, wb) {
+  const cx = ((b.x || 0) + (b.w || 0) / 2) * 100;
+  const cy = ((b.y || 0) + (b.h || 0) / 2) * 100;
+  const conf = typeof b.conf === 'number' ? Math.round(b.conf * 100) : null;
+  const region = `${cx < 40 ? '左' : cx > 60 ? '右' : '中'}·${cy < 40 ? '上' : cy > 66 ? '下' : '中'}`;
+  return `
+    <div class="detail-head">
+      <span class="box-no">#${String(i + 1).padStart(2, '0')}</span>
+      <span class="cls-badge" style="--cc:${boxColor(b.cls)}">${esc(b.cls)}</span>
+      <span class="spacer"></span>
+      <span class="src-badge ${conf == null ? 'human' : 'ai'}">${conf == null ? '人工' : 'AI'}</span>
+    </div>
+    <select class="detail-cls" data-i="${i}">${clsOptions(wb).map((x) => `<option ${x === b.cls ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>
+    <div class="detail-grid">
+      <div><span>置信度</span><b>${conf == null ? '—' : conf + '%'}</b></div>
+      <div><span>画面分区</span><b>${region}</b></div>
+      <div><span>位置 X / Y</span><b class="mono">${((b.x || 0) * 100).toFixed(1)}% / ${((b.y || 0) * 100).toFixed(1)}%</b></div>
+      <div><span>尺寸 W × H</span><b class="mono">${((b.w || 0) * 100).toFixed(1)}% × ${((b.h || 0) * 100).toFixed(1)}%</b></div>
+      <div><span>中心点</span><b class="mono">${cx.toFixed(1)}% / ${cy.toFixed(1)}%</b></div>
+      <div><span>面积占比</span><b>${((b.w || 0) * (b.h || 0) * 100).toFixed(1)}%</b></div>
+    </div>
+    ${b.auto_cls ? `<div class="detail-auto"><span>检测短语</span><code title="${esc(b.auto_cls)}">${esc(b.auto_cls)}</code></div>` : ''}
+    ${conf == null ? '' : `<div class="conf-meter"><i style="width:${conf}%;background:${boxColor(b.cls)}"></i></div>`}`;
+}
+
+function resultPanelHTML(wb) {
+  const total = wb.boxes.length;
+  if (!total) {
+    return `<div class="panel-label">识别结果</div>
+      <div class="hint" style="line-height:1.8">暂无结果。点「开始预识别」用 Grounding DINO 自动检出，或在图片上拖拽手动画框。</div>`;
+  }
+  const stats = boxStats(wb);
+  const ai = wb.boxes.filter((b) => typeof b.conf === 'number').length;
+  const max = Math.max(...stats.map((s) => s.n));
+  const filter = wb.filter || 'all';
+  const selIdx = wb.selected >= 0 && wb.boxes[wb.selected] ? wb.selected : -1;
+  const prods = wb.boxes.filter((b) => b.cls === '商品主体');
+  return `
+    <div class="panel-label">识别结果概览</div>
+    <div class="res-kpi">
+      <div><b>${total}</b><span>目标总数</span></div>
+      <div><b>${stats.length}</b><span>类别数</span></div>
+      <div><b>${ai}</b><span>AI 检出</span></div>
+      <div><b>${total - ai}</b><span>人工补框</span></div>
+    </div>
+    <div class="panel-label" style="margin-top:12px">类别分布 · 点击筛选</div>
+    <div class="dist-list">
+      ${stats.map((s) => `<div class="dist-row ${filter === s.cls ? 'on' : ''}" data-filter="${esc(s.cls)}" title="只看 ${esc(s.cls)}">
+        <i style="background:${boxColor(s.cls)}"></i>
+        <span class="dist-name">${esc(s.cls)}</span>
+        <span class="dist-bar"><i style="width:${Math.max(6, (s.n / max) * 100)}%;background:${boxColor(s.cls)}"></i></span>
+        <b>${s.n}</b></div>`).join('')}
+    </div>
+    ${prods.length ? `<div class="panel-label" style="margin-top:12px">商品分层分布</div>
+      ${['上部', '中部', '下部'].map((name, k) => {
+        const n = prods.filter((b) => bandOf(b) === k).length;
+        return `<div class="band-row"><span style="min-width:26px">${name}</span>
+          <span class="band-bar"><i style="width:${(n / prods.length) * 100}%"></i></span><b class="mono">${n}</b></div>`;
+      }).join('')}` : ''}
+    <div class="panel-label" style="margin-top:12px">选中目标详情</div>
+    ${selIdx >= 0 ? detailHTML(wb.boxes[selIdx], selIdx, wb)
+      : '<div class="hint">点击列表中的行或图片上的目标框，查看置信度、坐标、尺寸等结构化信息。</div>'}`;
+}
+
+function setFilter(wb, cls) {
+  const next = cls && cls !== 'all' ? cls : 'all';
+  wb.filter = next;
+  if (next !== 'all') wb.activeCls = next;
+  if (wb.selected >= 0 && next !== 'all' && wb.boxes[wb.selected] && wb.boxes[wb.selected].cls !== next) {
+    wb.selected = -1;
+  }
+  refreshBoxUI(wb);
+  drawImageBoxes(wb);
+}
+
+function selectBox(wb, i) {
+  wb.selected = wb.selected === i ? -1 : i;
+  const list = $('#box-list');
+  if (list) {
+    list.querySelectorAll('.box-row').forEach((el) => el.classList.toggle('sel', Number(el.dataset.i) === wb.selected));
+    const row = list.querySelector(`.box-row[data-i="${wb.selected}"]`);
+    if (row) row.scrollIntoView({ block: 'nearest' });
+  }
+  const rp = $('#result-panel');
+  if (rp) rp.innerHTML = resultPanelHTML(wb);
+  drawImageBoxes(wb);
+}
+
 
 function segRows(wb) {
   if (!wb.segments.length) return '<div class="empty"><b>还没有标注内容</b>点击「开始预识别」自动生成，或手动新增段</div>';
@@ -906,20 +1106,29 @@ function bindImageWorkbench(wb, classes) {
   $('#toggle-box').onchange = (e) => { wb.showBox = e.target.checked; drawImageBoxes(wb); };
   $('#btn-reset').onclick = () => { wb.scale = 1; imgEl.style.transform = 'scale(1)'; drawImageBoxes(wb); };
 
-  // 类别按钮
-  const clsPicker = $('#cls-picker');
-  let activeCls = (wb.labels['目标类别'] || classes)[0];
-  clsPicker.onclick = (e) => {
-    const b = e.target.closest('.cls-btn');
-    if (!b) return;
-    clsPicker.querySelectorAll('.cls-btn').forEach((x) => x.classList.remove('on'));
-    b.classList.add('on');
-    activeCls = b.dataset.cls;
-  };
+  // 类别筛选：右侧类别按钮、类别分布、左侧筛选条共用同一状态
+  const applyFilter = (cls) => setFilter(wb, cls);
+  const picker = $('#cls-picker');
+  if (picker) picker.onclick = (e) => { const b = e.target.closest('[data-filter]'); if (b) applyFilter(b.dataset.filter); };
+  const tools = $('#box-tools');
+  if (tools) tools.onclick = (e) => { const b = e.target.closest('[data-filter]'); if (b) applyFilter(b.dataset.filter); };
+  const rp = $('#result-panel');
+  if (rp) {
+    rp.onclick = (e) => { const b = e.target.closest('[data-filter]'); if (b) applyFilter(b.dataset.filter); };
+    rp.onchange = (e) => {
+      if (!e.target.classList.contains('detail-cls')) return;
+      const i = Number(e.target.dataset.i);
+      if (!wb.boxes[i]) return;
+      wb.boxes[i].cls = e.target.value;
+      markDirty(wb);
+      refreshBoxUI(wb);
+      drawImageBoxes(wb);
+    };
+  }
 
-  // 拖拽画框
+  // 拖拽画框（以 canvas 实际显示区域为坐标系，避免留白导致偏移）
   const getPos = (e) => {
-    const rect = stage.getBoundingClientRect();
+    const rect = cvs.getBoundingClientRect();
     const x = (e.clientX - rect.left) / rect.width;
     const y = (e.clientY - rect.top) / rect.height;
     return { x: Math.max(0, Math.min(1, x)), y: Math.max(0, Math.min(1, y)) };
@@ -929,17 +1138,13 @@ function bindImageWorkbench(wb, classes) {
   cvs.addEventListener('mousedown', (e) => {
     if (!wb.canEdit) return;
     if (e.button !== 0) return;
-    // 先检查是否点中已有框 → 选中/删除
     const p = getPos(e);
-    const hit = wb.boxes.findIndex((b) => p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h);
-    if (hit >= 0 && !e.shiftKey) {
-      // 右键或者点 shift 新建
-      if (confirm(`删除 #${hit + 1} ${wb.boxes[hit].cls}？`)) {
-        wb.boxes.splice(hit, 1);
-        refreshBoxUI(wb); drawImageBoxes(wb); markDirty(wb);
-      }
-      return;
-    }
+    // 命中已有目标 → 选中并高亮（删除走列表按钮或 Delete 键），按住 Shift 可叠加画新框
+    const hit = visibleIndexes(wb).find((i) => {
+      const b = wb.boxes[i];
+      return p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h;
+    });
+    if (hit !== undefined && !e.shiftKey) { selectBox(wb, hit); return; }
     dragStart = p;
     wb._dragging = true;
   });
@@ -959,7 +1164,8 @@ function bindImageWorkbench(wb, classes) {
     wb._dragRect = null;
     drawImageBoxes(wb);
     if (r && r.w > 0.005 && r.h > 0.005) {
-      wb.boxes.push({ cls: activeCls, ...r });
+      wb.boxes.push({ cls: wb.activeCls || (wb.labels['目标类别'] || classes)[0], ...r });
+      wb.selected = wb.boxes.length - 1;
       refreshBoxUI(wb); drawImageBoxes(wb); markDirty(wb);
     }
   });
@@ -969,23 +1175,44 @@ function bindImageWorkbench(wb, classes) {
   list.onclick = (e) => {
     const del = e.target.closest('[data-del]');
     if (del) {
-      wb.boxes.splice(Number(del.dataset.del), 1);
+      const i = Number(del.dataset.del);
+      wb.boxes.splice(i, 1);
+      if (wb.selected === i) wb.selected = -1;
+      else if (wb.selected > i) wb.selected -= 1;
       refreshBoxUI(wb); drawImageBoxes(wb); markDirty(wb);
+      return;
     }
     const row = e.target.closest('.box-row');
-    if (row && !e.target.closest('select')) {
-      const i = Number(row.dataset.i);
-      flashBox(wb, i);
-    }
+    if (row && !e.target.closest('select')) selectBox(wb, Number(row.dataset.i));
   };
   list.onchange = (e) => {
     const row = e.target.closest('.box-row'); if (!row) return;
     const i = Number(row.dataset.i); const f = e.target.dataset.f;
-    if (f === 'cls') { wb.boxes[i].cls = e.target.value; markDirty(wb); }
+    if (f === 'cls') {
+      wb.boxes[i].cls = e.target.value;
+      markDirty(wb); refreshBoxUI(wb); drawImageBoxes(wb);
+    }
+  };
+
+  // 快捷键：Delete 删除选中目标，Esc 清除筛选/选中
+  document.onkeydown = (e) => {
+    if (!document.body.contains($('#wb'))) return;
+    if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return;
+    if ((e.key === 'Delete' || e.key === 'Backspace') && wb.canEdit && wb.selected >= 0) {
+      e.preventDefault();
+      wb.boxes.splice(wb.selected, 1);
+      wb.selected = -1;
+      markDirty(wb); refreshBoxUI(wb); drawImageBoxes(wb);
+    }
+    if (e.key === 'Escape') {
+      wb.selected = -1;
+      setFilter(wb, 'all');
+    }
   };
 
   // 顶部按钮
   $('#btn-save').onclick = () => save(wb);
+  $('#btn-export-boxes').onclick = () => exportBoxes(wb);
   $('#btn-submit').onclick = async () => {
     try {
       await api(`/api/tasks/${wb.task.id}/submit`, { method: 'POST', body: { payload: payloadOf(wb) } });
@@ -1020,6 +1247,7 @@ function bindImageWorkbench(wb, classes) {
         added++;
       }
       markDirty(wb);
+      wb.selected = -1;
       refreshBoxUI(wb);
       drawImageBoxes(wb);
       toast(`AI 检出 ${detected.length} 个，新增 ${added} 个（跳过 ${skipped} 个）· ${(pre.elapsed_ms / 1000).toFixed(1)}s`, 'ok');
@@ -1061,25 +1289,15 @@ function drawImageBoxes(wb) {
   const ctx = cvs.getContext('2d');
   ctx.clearRect(0, 0, cvs.width, cvs.height);
   const sw = cvs.width, sh = cvs.height;
-  const COLORS = { '商品主体': '#3B82F6', '价签': '#10B981', '货架': '#F59E0B', '遮挡': '#EF4444', '行人': '#A855F7', '轿车': '#06B6D4', '卡车': '#EC4899' };
-  const col = (c) => COLORS[c] || '#64748B';
+  const hasSel = wb.selected >= 0 && !!wb.boxes[wb.selected];
 
   if (wb.showBox) {
-    wb.boxes.forEach((b, i) => {
-      const x = b.x * sw, y = b.y * sh, w = b.w * sw, h = b.h * sh;
-      ctx.strokeStyle = col(b.cls); ctx.lineWidth = 2;
-      ctx.strokeRect(x, y, w, h);
-      ctx.fillStyle = col(b.cls) + '33';
-      ctx.fillRect(x, y, w, h);
-      // 标签
-      ctx.font = '11px ui-sans-serif, system-ui';
-      const label = `#${i + 1} ${b.cls}`;
-      const tw = ctx.measureText(label).width + 8;
-      ctx.fillStyle = col(b.cls);
-      ctx.fillRect(x, Math.max(0, y - 16), tw, 16);
-      ctx.fillStyle = '#fff';
-      ctx.fillText(label, x + 4, Math.max(12, y - 4));
+    // 按筛选条件绘制：非选中目标在选中态下淡化，突出当前目标
+    visibleIndexes(wb).forEach((i) => {
+      if (i === wb.selected) return;
+      drawOneBox(ctx, wb.boxes[i], i, sw, sh, hasSel ? 0.3 : 1, false);
     });
+    if (hasSel) drawOneBox(ctx, wb.boxes[wb.selected], wb.selected, sw, sh, 1, true);
   }
   // 正在拖的预览框
   if (wb._dragRect) {
@@ -1090,26 +1308,58 @@ function drawImageBoxes(wb) {
   }
 }
 
-function refreshBoxUI(wb) {
-  const list = $('#box-list'); if (!list) return;
-  list.innerHTML = boxRows(wb);
-  const sub = list.parentElement.querySelector('.card-sub');
-  if (sub) sub.textContent = `${wb.boxes.length} 个目标 · 拖拽图片画矩形框`;
-  const toolbarHint = $('#wb .image-toolbar .hint');
-  if (toolbarHint) toolbarHint.textContent = `${wb.boxes.length} 个框`;
+function drawOneBox(ctx, b, i, sw, sh, alpha = 1, selected = false) {
+  const x = b.x * sw, y = b.y * sh, w = b.w * sw, h = b.h * sh;
+  const col = boxColor(b.cls);
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.strokeStyle = col;
+  ctx.lineWidth = selected ? 2.5 : 1.6;
+  ctx.strokeRect(x, y, w, h);
+  ctx.fillStyle = col + (selected ? '40' : '24');
+  ctx.fillRect(x, y, w, h);
+  // 标签：#编号 类别
+  ctx.font = '600 11px ui-sans-serif, system-ui';
+  const label = `#${i + 1} ${b.cls}`;
+  const tw = ctx.measureText(label).width + 9;
+  const ly = y - 16 < 0 ? y : y - 16;
+  ctx.fillStyle = col;
+  ctx.fillRect(x, ly, tw, 16);
+  ctx.fillStyle = '#fff';
+  ctx.fillText(label, x + 4, ly + 12);
+  if (selected) {
+    // 选中目标：四角把手 + 白色虚线内框
+    ctx.setLineDash([4, 3]);
+    ctx.strokeStyle = 'rgba(255,255,255,.85)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x + 1.5, y + 1.5, Math.max(1, w - 3), Math.max(1, h - 3));
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#fff';
+    [[x, y], [x + w, y], [x, y + h], [x + w, y + h]].forEach(([hx, hy]) => {
+      ctx.fillRect(hx - 3, hy - 3, 6, 6);
+    });
+  }
+  ctx.restore();
 }
 
-function flashBox(wb, i) {
-  // 简单实现：红框闪烁一下
-  const cvs = $('#box-canvas'); if (!cvs) return;
-  const sw = cvs.width, sh = cvs.height;
-  const b = wb.boxes[i]; if (!b) return;
-  const ctx = cvs.getContext('2d');
-  ctx.save();
-  ctx.strokeStyle = '#EF4444'; ctx.lineWidth = 3;
-  ctx.strokeRect(b.x * sw - 2, b.y * sh - 2, b.w * sw + 4, b.h * sh + 4);
-  ctx.restore();
-  setTimeout(() => drawImageBoxes(wb), 400);
+function refreshBoxUI(wb) {
+  const list = $('#box-list');
+  if (list) {
+    const top = list.scrollTop;
+    list.innerHTML = boxHead() + boxRows(wb);
+    list.scrollTop = top;
+  }
+  const tools = $('#box-tools'); if (tools) tools.innerHTML = boxTools(wb);
+  const picker = $('#cls-picker'); if (picker) picker.innerHTML = clsPickerHTML(wb);
+  const rp = $('#result-panel'); if (rp) rp.innerHTML = resultPanelHTML(wb);
+  const total = wb.boxes.length;
+  const sub = $('#box-sub'); if (sub) sub.textContent = `${total} 个目标 · ${boxStats(wb).length} 类`;
+  const exp = $('#btn-export-boxes'); if (exp) exp.disabled = !total;
+  const toolbarHint = $('#wb .image-toolbar .hint');
+  if (toolbarHint) {
+    const shown = visibleIndexes(wb).length;
+    toolbarHint.textContent = wb.filter && wb.filter !== 'all' ? `${shown} / ${total} 个框` : `${total} 个框`;
+  }
 }
 
 function bindWorkbench(wb, mediaName) {
@@ -1286,6 +1536,8 @@ function payloadOf(wb) {
         cls: b.cls || '商品主体',
         x: Number(b.x) || 0, y: Number(b.y) || 0,
         w: Number(b.w) || 0, h: Number(b.h) || 0,
+        ...(typeof b.conf === 'number' ? { conf: b.conf } : {}),
+        ...(b.auto_cls ? { auto_cls: b.auto_cls } : {}),
       })),
       summary: wb.summary || '',
       quality_score: wb.quality || 0,
