@@ -4,8 +4,10 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import time
 import uuid
+from pathlib import Path
 
 from . import db
 
@@ -14,6 +16,10 @@ FUNASR_PY = "/Users/haifeng2026/Desktop/mini2026/voice-repos/FunASR/.venv/bin/py
 FUNASR_CWD = "/Users/haifeng2026/Desktop/mini2026/voice-repos/FunASR"
 WORKER_ASR = os.path.join(BASE_DIR, "scripts", "asr_worker.py")
 WORKER_DETECT = os.path.join(BASE_DIR, "scripts", "detect_worker.py")
+
+# YOLOv8n baseline 权重路径（和 detect_worker.py 保持一致）
+_MODELS_DIR = Path("/Volumes/ORICO/voice-ai/models")
+YOLO_WEIGHTS = _MODELS_DIR / "detect" / "yolov8n.pt"
 
 ENV = {
     **os.environ,
@@ -33,7 +39,22 @@ def worker_ready() -> bool:
 
 
 def detect_worker_ready() -> bool:
-    return os.path.exists(FUNASR_PY) and os.path.exists(WORKER_DETECT) and os.path.exists("/Volumes/ORICO/voice-ai/models/detect/yolov8n.pt")
+    """detect_worker 就绪：脚本存在 + 至少一个引擎的权重可用
+
+    注意：Grounding DINO HF 用平台 venv（sys.executable），不依赖 FunASR venv。
+    所以这里只检查 WORKER_DETECT 脚本 + 权重文件，不检查 FUNASR_PY。
+    """
+    if not os.path.exists(WORKER_DETECT):
+        return False
+    # Grounding DINO HF tiny 权重（HF cache）
+    gd_hf_cache = Path.home() / ".cache" / "huggingface" / "hub" / "models--IDEA-Research--grounding-dino-tiny"
+    gd_ok = gd_hf_cache.exists() and any(
+        (p.name.startswith("model") and p.suffix in (".safetensors", ".bin"))
+        for p in gd_hf_cache.rglob("*")
+    )
+    # YOLOv8n 权重
+    yolo_ok = YOLO_WEIGHTS.exists()
+    return gd_ok or yolo_ok
 
 
 def prelabel_audio(
@@ -134,17 +155,15 @@ def asr_model_ready() -> bool:
 def prelabel_image(
     image_path: str,
     classes: list[str] | None = None,
-    engine: str = "yolo",
-    min_conf: float = 0.10,
+    engine: str = "auto",
+    min_conf: float = 0.15,
 ) -> dict:
-    """图片预标注：调 detect_worker 跑 YOLOv8n 或 Grounding DINO。
+    """图片预标注：调 detect_worker 跑 Grounding DINO（默认）或 YOLOv8n。
 
-    输出:
-    {
-      ok, engine, img_size, elapsed_ms,
-      boxes: [{cls, cls_id, conf, x, y, w, h}],
-      error (可选)
-    }
+    默认 engine="auto"，让 worker 自己按依赖可用性选 Grounding DINO HF 或 YOLO。
+    worker 用 **当前 Python**（sys.executable）执行，这样：
+      - 用平台 venv 跑 → 有 transformers + torch → Grounding DINO HF
+      - 用 FunASR venv 跑 → 只有 opencv + tokenizers → 回退 YOLOv8n
     """
     if not os.path.exists(image_path):
         return {"ok": False, "error": "图片文件不存在，请先上传"}
@@ -154,8 +173,10 @@ def prelabel_image(
     token = uuid.uuid4().hex[:12]
     out_path = os.path.join(db.TMP_DIR, f"detect-{token}.json")
 
+    # 用当前 Python 执行 detect_worker（而非 FUNASR_PY）
+    current_py = sys.executable or FUNASR_PY
     cmd = [
-        FUNASR_PY, WORKER_DETECT,
+        current_py, WORKER_DETECT,
         "--in", os.path.abspath(image_path),
         "--out", out_path,
         "--engine", engine,

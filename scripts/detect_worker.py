@@ -4,47 +4,172 @@
 用法:
     python scripts/detect_worker.py --in shelf.jpg --out result.json
     python scripts/detect_worker.py --in shelf.jpg --out result.json \
-        --engine grounding-dino --classes "商品主体,价签,货架,遮挡"
+        --engine grounding-dino-hf --classes "商品主体,价签,货架,遮挡"
 
 引擎:
-    yolo           - ultralytics YOLOv8n，COCO 80 类（需要 torch）
-    grounding-dino - ONNX 开放词汇检测（需要 tokenizers + onnxruntime）
+    grounding-dino-hf - Grounding DINO tiny 原版（HF transformers）
+                       英文 prompt → 零样本开放词汇检测 → 中文业务类回填
+                       纯 CPU ~2.6s/次，检出质量远高于 YOLOv8n
+    yolo              - ultralytics YOLOv8n COCO 80 类 baseline
 
 输出 JSON 结构:
 {
   "ok": true,
-  "engine": "grounding-dino",
+  "engine": "grounding-dino-hf",
   "img_size": {"w": 1400, "h": 933},
-  "elapsed_ms": 842,
+  "elapsed_ms": 2640,
   "boxes": [
-    {"cls": "商品主体", "cls_id": 0, "conf": 0.87, "x": 0.12, "y": 0.23, "w": 0.18, "h": 0.41}
+    {"cls": "商品主体", "cls_id": 0, "conf": 0.87, "x": 0.12, "y": 0.23, "w": 0.18, "h": 0.41,
+     "auto_cls": "a grocery product"}
   ]
 }
 """
 from __future__ import annotations
-import argparse, json, os, sys, time
+import argparse, json, os, re, sys, time
 from pathlib import Path
 
-# 模型路径
 MODELS_DIR = Path("/Volumes/ORICO/voice-ai/models")
 YOLO_WEIGHTS = MODELS_DIR / "detect" / "yolov8n.pt"
-GD_BASE = MODELS_DIR / "detect" / "grounding-dino-tiny"
-GD_ONNX = GD_BASE / "onnx" / "model.onnx"
-GD_TOKENIZER = GD_BASE / "tokenizer.json"
-GD_PRE = GD_BASE / "preprocessor_config.json"
+GD_HF_MODEL = "IDEA-Research/grounding-dino-tiny"
 
-# YOLO COCO → 业务类别粗映射（baseline 用）
-COCO_TO_BIZ = {
-    "person": "行人", "bicycle": "骑行者", "car": "轿车", "truck": "卡车",
-    "bottle": "商品主体", "cup": "商品主体", "wine glass": "商品主体",
-    "handbag": "商品主体", "backpack": "商品主体",
+# ---------------------------------------------------------------------------
+# 中英类别映射表
+# Grounding DINO 的 text encoder 是 bert-base-uncased（英文），
+# 把中文业务类翻译成高质量英文 prompt 才能让模型检出东西。
+# 每个中文类 → 多组英文候选短语（Grounding DINO 对丰富描述效果更好）
+# ---------------------------------------------------------------------------
+ZH_TO_EN: dict[str, list[str]] = {
+    # 零售货架巡检
+    "商品主体": ["a grocery product", "a retail product", "a product on shelf",
+                 "a bottle", "a box", "a can", "a package"],
+    "价签":     ["a retail price tag", "a price tag", "a product label", "a shelf label"],
+    "货架":     ["a store shelf", "a shelf panel", "a product shelf", "a grocery shelf"],
+    "遮挡":     ["an occluded area", "an occlusion", "blocked view", "partially covered"],
+    "清晰":     [],   # 质量类 Grounding DINO 无法检测（不是物体）
+    "模糊":     [],
+    "过曝":     [],
+    # 智驾 3D 场景（COCO 里有的，Grounding DINO 也能检出）
+    "行人":     ["a person", "a pedestrian", "a walking person"],
+    "骑行者":   ["a bicycle", "a motorcycle", "a cyclist"],
+    "轿车":     ["a car", "a sedan", "a motor vehicle"],
+    "卡车":     ["a truck", "a lorry", "a large vehicle"],
 }
 
+# Grounding DINO 输出的英文 label → 中文业务类（关键字模糊匹配）
+EN_TO_BIZ_KEYWORDS: list[tuple[str, list[str]]] = [
+    ("货架",     ["shelf", "display", "panel", "rack", "stand"]),
+    ("价签",     ["price tag", "price label", "price", "retail tag", "tag", "label sticker"]),
+    ("商品主体", ["product", "grocery", "bottle", "box", "can", "package", "beverage",
+                  "item", "goods", "merchandise"]),
+    ("遮挡",     ["occluded", "occlusion", "blocked", "hidden", "covered", "occluded area"]),
+    ("行人",     ["person", "pedestrian", "man", "woman", "boy", "girl", "child", "baby"]),
+    ("骑行者",   ["bicycle", "bike", "motorcycle", "cyclist", "rider"]),
+    ("轿车",     ["car", "sedan", "automobile", "vehicle"]),
+    ("卡车",     ["truck", "lorry", "bus"]),
+]
 
+
+def zh_classes_to_prompt(classes: list[str]) -> tuple[str, dict[int, str]]:
+    """中文业务类 → Grounding DINO 英文 prompt + 映射表
+
+    返回 (prompt, idx_to_zh)
+      prompt: "a grocery product. a retail price tag. a store shelf. an occluded area."
+      idx_to_zh: {0: "商品主体", 1: "价签", 2: "货架", 3: "遮挡"}
+    """
+    prompt_parts: list[str] = []
+    idx_to_zh: dict[int, str] = {}
+    idx = 0
+    for zh in classes:
+        phrases = ZH_TO_EN.get(zh) or [f"a {zh}"]   # 兜底：a 中文（肯定无效）
+        # 用第一个作为主短语，其他加到 prompt 里让 Grounding DINO 多种说法都能命中
+        for phrase in phrases:
+            prompt_parts.append(phrase)
+            idx_to_zh[idx] = zh
+            idx += 1
+    prompt = " . ".join(prompt_parts) + " ."
+    return prompt, idx_to_zh
+
+
+def en_label_to_zh(label: str) -> str:
+    """Grounding DINO 返回的英文 label → 中文业务类（关键字模糊匹配）"""
+    low = label.lower().strip()
+    for zh, kws in EN_TO_BIZ_KEYWORDS:
+        for kw in kws:
+            if kw in low:
+                return zh
+    # 兜底：取第一个业务类
+    return "商品主体"
+
+
+# ---------------------------------------------------------------------------
+# Grounding DINO HF 原版（推荐引擎）
+# ---------------------------------------------------------------------------
+def run_grounding_dino_hf(image_path: str, classes: list[str], min_conf: float = 0.15):
+    """Grounding DINO tiny 原版（HF transformers）
+
+    英文 prompt → 零样本检测 → 中文业务类回填。
+
+    模型缓存路径: ~/.cache/huggingface/hub/models--IDEA-Research--grounding-dino-tiny/
+    首次加载约 20-30s，之后每次推理 2.5-3s（纯 CPU）。
+    """
+    import torch
+    from PIL import Image
+    from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
+
+    # 懒加载（每次调用都加载，因为 worker 是 subprocess 模式；模型会缓存到 HF hub）
+    processor = AutoProcessor.from_pretrained(GD_HF_MODEL)
+    model = AutoModelForZeroShotObjectDetection.from_pretrained(GD_HF_MODEL)
+    model.eval()
+
+    img = Image.open(image_path).convert("RGB")
+    W, H = img.size
+
+    prompt, idx_to_zh = zh_classes_to_prompt(classes)
+    print(f"[debug] 中文类: {classes}", file=sys.stderr)
+    print(f"[debug] 英文 prompt: {prompt[:200]}...", file=sys.stderr)
+
+    inputs = processor(images=img, text=prompt, return_tensors="pt")
+    with torch.no_grad():
+        outputs = model(**inputs)
+
+    # transformers 5.x API: processor.post_process_grounded_object_detection(outputs, input_ids, threshold, ...)
+    results = processor.post_process_grounded_object_detection(
+        outputs, inputs.input_ids, threshold=min_conf, text_threshold=min_conf,
+        target_sizes=[img.size[::-1]],
+    )
+    boxes, scores = results[0]["boxes"], results[0]["scores"]
+    # v4.51.0+ 返回 text_labels（字符串），之前版本返回 labels（可能是整数 id）
+    raw_labels = results[0].get("text_labels") or results[0].get("labels") or []
+
+    out = []
+    for i in range(len(scores)):
+        x1, y1, x2, y2 = boxes[i].tolist()
+        en_label = raw_labels[i] if isinstance(raw_labels[i], str) else str(raw_labels[i])
+        # Grounding DINO 可能返回组合 label，如 "a shelf a display"，按关键词取第一个匹配的中文类
+        zh_cls = en_label_to_zh(en_label)
+        out.append({
+            "cls": zh_cls,
+            "cls_id": i,                # 内部序号
+            "conf": round(float(scores[i]), 3),
+            "x": round(x1 / W, 4), "y": round(y1 / H, 4),
+            "w": round(max(0.001, (x2 - x1) / W), 4),
+            "h": round(max(0.001, (y2 - y1) / H), 4),
+            "auto_cls": en_label[:60],  # Grounding DINO 原始英文 label（最多 60 字符）
+        })
+
+    # 按业务类做 NMS，避免同个区域多个框
+    out = _nms_by_cls(out, iou_thr=0.5)
+    # 置信度降序
+    out.sort(key=lambda x: -x["conf"])
+    return out, {"w": W, "h": H}
+
+
+# ---------------------------------------------------------------------------
+# YOLOv8n COCO 80 类 baseline（回退）
+# ---------------------------------------------------------------------------
 def run_yolo(image_path: str, min_conf: float = 0.35):
     import cv2
     from ultralytics import YOLO
-    # 首次调用自动下载 yolov8n.pt (~5MB) 到 ~/.config/Ultralytics/
     model = YOLO(str(YOLO_WEIGHTS) if YOLO_WEIGHTS.exists() else "yolov8n.pt")
     img = cv2.imread(image_path)
     if img is None:
@@ -53,130 +178,21 @@ def run_yolo(image_path: str, min_conf: float = 0.35):
     results = model.predict(img, conf=min_conf, verbose=False)[0]
     boxes = []
     for box in results.boxes:
-        xyxy = box.xyxy[0].tolist()
-        x1, y1, x2, y2 = xyxy
-        cls_name = model.names[int(box.cls)]
+        x1, y1, x2, y2 = box.xyxy[0].tolist()
+        en_name = model.names[int(box.cls)]
+        zh_cls = en_label_to_zh(en_name)
         boxes.append({
-            "cls": COCO_TO_BIZ.get(cls_name, cls_name),
+            "cls": zh_cls,
             "cls_id": int(box.cls),
             "conf": round(float(box.conf), 3),
-            "x": round(x1 / w, 4),
-            "y": round(y1 / h, 4),
-            "w": round((x2 - x1) / w, 4),
-            "h": round((y2 - y1) / h, 4),
+            "x": round(x1 / w, 4), "y": round(y1 / h, 4),
+            "w": round((x2 - x1) / w, 4), "h": round((y2 - y1) / h, 4),
+            "auto_cls": en_name,
         })
     return boxes, {"w": w, "h": h}
 
 
-def run_grounding_dino(image_path: str, classes: list[str], min_conf: float = 0.25):
-    """Grounding DINO tiny ONNX 开放词汇检测
-
-    cls 是一段 text prompt（用 . 或逗号分隔），返回每个 prompt 下所有命中的 box。
-    直接用 tokenizers 库编码 prompt，避免 ~1GB 的 transformers 依赖。
-    """
-    import cv2
-    import numpy as np
-    import onnxruntime as ort
-    from tokenizers import Tokenizer
-
-    if not GD_ONNX.exists():
-        raise RuntimeError(f"Grounding DINO ONNX 未找到: {GD_ONNX}")
-    if not GD_TOKENIZER.exists():
-        raise RuntimeError(f"tokenizer 未找到: {GD_TOKENIZER}")
-
-    tokenizer = Tokenizer.from_file(str(GD_TOKENIZER))
-    # BERT 风格 tokenization → token_ids + type_ids(全0) + attention_mask
-    def encode(prompt: str, max_len: int = 256):
-        enc = tokenizer.encode(prompt)
-        ids = enc.ids[:max_len]
-        n = len(ids)
-        # 补 [PAD]=0 到 max_len
-        if n < max_len:
-            ids = ids + [0] * (max_len - n)
-        attn = [1] * min(n, max_len) + [0] * (max_len - min(n, max_len))
-        type_ids = [0] * max_len  # Grounding DINO 单句输入
-        return (np.array(ids, dtype=np.int64)[None, :],
-                np.array(attn, dtype=np.int64)[None, :],
-                np.array(type_ids, dtype=np.int64)[None, :])
-
-    sess = ort.InferenceSession(str(GD_ONNX), providers=["CPUExecutionProvider"])
-    input_names = [i.name for i in sess.get_inputs()]
-    print(f"[debug] ONNX inputs: {input_names}", file=sys.stderr)
-
-    # 图片预处理（按 preprocessor_config.json 通常是 800x800, ImageNet normalize）
-    pre_cfg = json.loads(GD_PRE.read_text()) if GD_PRE.exists() else {}
-    target = pre_cfg.get("size", {"height": 800, "width": 800})
-    TH, TW = target.get("height", 800), target.get("width", 800)
-
-    img = cv2.imread(image_path)
-    if img is None:
-        raise RuntimeError(f"无法读取图片: {image_path}")
-    h, w = img.shape[:2]
-    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    resized = cv2.resize(rgb, (TW, TH), interpolation=cv2.INTER_LINEAR).astype(np.float32) / 255.0
-    mean = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape(1, 1, 3)
-    std = np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape(1, 1, 3)
-    resized = (resized - mean) / std
-    pixel_values = resized.transpose(2, 0, 1)[None, ...]  # [1,3,TH,TW]
-    # Grounding DINO 需要 pixel_mask（全 1，表示整图有效）
-    pixel_mask = np.ones((1, TH, TW), dtype=np.int64)
-
-    # 文本 prompt: " . ".join(classes) + " ."
-    prompt = " . ".join(classes) + " ."
-    input_ids, attention_mask, token_type_ids = encode(prompt)
-
-    # 组装 feeds（按 ONNX 要求的名称）
-    feeds = {
-        "pixel_values": pixel_values,
-        "input_ids": input_ids,
-        "attention_mask": attention_mask,
-        "token_type_ids": token_type_ids,
-        "pixel_mask": pixel_mask,
-    }
-    print(f"[debug] feeds keys: {list(feeds.keys())}", file=sys.stderr)
-
-    outputs = sess.run(None, feeds)
-    print(f"[debug] outputs: {[o.shape for o in outputs]}", file=sys.stderr)
-    # Grounding DINO ONNX 输出顺序 (onnx-community 版本): logits, pred_boxes (cxcywh),
-    # text_attn (or similar). pred_boxes 是归一化坐标 (0..1).
-    logits = outputs[0]
-    boxes_cxcywh = outputs[1]
-
-    if logits.ndim == 3:
-        logits = logits[0]
-    if boxes_cxcywh.ndim == 3:
-        boxes_cxcywh = boxes_cxcywh[0]
-
-    # 每个 box argmax 取类别 → classes 索引
-    cls_per_box = logits.argmax(axis=1)
-    conf_per_box = logits.max(axis=1)
-
-    results = []
-    for i in range(logits.shape[0]):
-        conf = float(conf_per_box[i])
-        if conf < min_conf:
-            continue
-        cls_id = int(cls_per_box[i])
-        if cls_id >= len(classes):
-            continue
-        name = classes[cls_id]
-        cx, cy, bw, bh = boxes_cxcywh[i].tolist()
-        x1 = max(0.0, cx - bw / 2)
-        y1 = max(0.0, cy - bh / 2)
-        results.append({
-            "cls": name,
-            "cls_id": cls_id,
-            "conf": round(conf, 3),
-            "x": round(x1, 4), "y": round(y1, 4),
-            "w": round(max(0.001, bw), 4), "h": round(max(0.001, bh), 4),
-        })
-
-    results = _nms_by_cls(results, iou_thr=0.5)
-    return results, {"w": w, "h": h}
-
-
 def _nms_by_cls(boxes: list[dict], iou_thr: float = 0.5) -> list[dict]:
-    """简单按类别做 NMS"""
     def iou(a, b):
         ax1, ay1, ax2, ay2 = a["x"], a["y"], a["x"] + a["w"], a["y"] + a["h"]
         bx1, by1, bx2, by2 = b["x"], b["y"], b["x"] + b["w"], b["y"] + b["h"]
@@ -198,22 +214,53 @@ def _nms_by_cls(boxes: list[dict], iou_thr: float = 0.5) -> list[dict]:
     return kept
 
 
+def _engine_available(engine: str) -> bool:
+    if engine == "grounding-dino-hf":
+        try:
+            import transformers, torch
+            return True
+        except ImportError:
+            return False
+    if engine == "yolo":
+        try:
+            import ultralytics, cv2
+            return True
+        except ImportError:
+            return False
+    return False
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--in", dest="inp", required=True)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--engine", default="grounding-dino", choices=["grounding-dino", "yolo"])
+    ap.add_argument("--engine", default="auto",
+                    choices=["auto", "grounding-dino-hf", "yolo", "grounding-dino"])
     ap.add_argument("--classes", default="商品主体,价签,货架,遮挡")
-    ap.add_argument("--min-conf", type=float, default=0.25)
+    ap.add_argument("--min-conf", type=float, default=0.15)
     args = ap.parse_args()
 
     t0 = time.time()
     classes = [c.strip() for c in args.classes.split(",") if c.strip()]
+
+    # auto: 优先 Grounding DINO HF，否则 YOLO
+    engine = args.engine
+    if engine == "auto":
+        if _engine_available("grounding-dino-hf"):
+            engine = "grounding-dino-hf"
+        elif _engine_available("yolo"):
+            engine = "yolo"
+        else:
+            raise SystemExit("无可用检测引擎：需要 transformers+torch 或 ultralytics+opencv")
+
     try:
-        if args.engine == "yolo":
+        if engine == "grounding-dino-hf":
+            boxes, size = run_grounding_dino_hf(args.inp, classes, args.min_conf)
+        elif engine == "yolo":
             boxes, size = run_yolo(args.inp, args.min_conf)
         else:
-            boxes, size = run_grounding_dino(args.inp, classes, args.min_conf)
+            # 旧 ONNX grounding-dino 分支：已废弃，改用 HF 原版
+            raise RuntimeError("grounding-dino(onnx) 已废弃，请改用 grounding-dino-hf")
         ok = True
         err = None
     except Exception as exc:
@@ -225,14 +272,16 @@ def main():
     elapsed_ms = int((time.time() - t0) * 1000)
     result = {
         "ok": ok,
-        "engine": args.engine,
+        "engine": engine,
         "img_size": size,
         "elapsed_ms": elapsed_ms,
         "boxes": boxes,
         "error": err,
     }
     Path(args.out).write_text(json.dumps(result, ensure_ascii=False, indent=2))
-    print(json.dumps({"ok": ok, "boxes": len(boxes), "elapsed_ms": elapsed_ms, "engine": args.engine}, ensure_ascii=False))
+    print(json.dumps({"ok": ok, "boxes": len(boxes), "elapsed_ms": elapsed_ms,
+                       "engine": engine, "class_prompt_separators": zh_classes_to_prompt(classes)[0][:120]},
+                      ensure_ascii=False))
     if not ok:
         sys.exit(2)
 

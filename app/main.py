@@ -349,8 +349,8 @@ def run_prelabel(tid: int, body: dict | None = None, user: dict = Depends(me)):
         proj = db.row("SELECT label_config FROM projects WHERE id=?", (task["project_id"],)) or {}
         labels = json.loads((proj or {}).get("label_config") or "{}")
         classes = labels.get("目标类别") or ["商品主体", "价签", "货架", "遮挡"]
-        engine = body.get("engine") or "yolo"
-        min_conf = float(body.get("min_conf") or 0.10)
+        engine = body.get("engine") or "auto"
+        min_conf = float(body.get("min_conf") or 0.15)
         result = prelabel.prelabel_image(media_path, classes=classes, engine=engine, min_conf=min_conf)
         if not result.get("ok"):
             raise HTTPException(400, result.get("error") or "预识别失败")
