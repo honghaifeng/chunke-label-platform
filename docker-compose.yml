@@ -1,0 +1,33 @@
+services:
+  label-platform:
+    build: .
+    image: chunke/label-platform:1.0.0
+    container_name: chunke-label-platform
+    restart: unless-stopped
+    ports:
+      - "8100:8100"
+    environment:
+      TZ: Asia/Shanghai
+      # 对外访问地址，用于 OIDC 回调拼接
+      CK_PUBLIC_URL: ${CK_PUBLIC_URL:-http://localhost:8100}
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8100/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: chunke-label-nginx
+    restart: unless-stopped
+    depends_on:
+      - label-platform
+    ports:
+      - "8443:443"
+      - "8080:80"
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./deploy/certs:/etc/nginx/certs:ro

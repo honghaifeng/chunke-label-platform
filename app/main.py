@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import shutil
 import subprocess
 import uuid
@@ -13,12 +14,27 @@ from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, db, prelabel
+from . import advanced, auth, db, enterprise, extras, ops, prelabel, workbench
 
 BASE_DIR = db.BASE_DIR
 STATIC_DIR = os.path.join(BASE_DIR, "app", "static")
 
 app = FastAPI(title="春科数据标注平台", version="1.0.0")
+app.include_router(enterprise.router)
+app.include_router(workbench.router)
+app.include_router(ops.router)
+app.include_router(extras.router)
+app.include_router(advanced.router)
+
+
+@app.middleware("http")
+async def ip_allowlist_guard(request: Request, call_next):
+    """访问 IP 白名单：仅拦截业务 API 与 SCIM，静态资源与健康检查保持可用。"""
+    path = request.url.path
+    if (path.startswith("/api/") or path.startswith("/scim/")) and not ops.ip_allowed(request):
+        db.security_event("ip_blocked", "warning", actor="", ip=auth.client_ip(request), detail=path)
+        return JSONResponse({"detail": "当前 IP 不在访问白名单内"}, status_code=403)
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -31,9 +47,17 @@ async def no_cache_frontend(request: Request, call_next):
     return resp
 
 
+@app.middleware("http")
+async def api_v1_guard(request: Request, call_next):
+    """/api/v1/* 的 API Key 鉴权与调用审计。"""
+    return await enterprise.v1_middleware(request, call_next)
+
+
 @app.on_event("startup")
 def _startup() -> None:
     db.init_db()
+    extras.init_schema()
+    advanced.init_schema()
 
 
 def me(request: Request) -> dict:
@@ -58,7 +82,10 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 @app.get("/media/{name}")
-def media(name: str, user: dict = Depends(me)):
+def media(name: str, request: Request, token: str = ""):
+    """媒体文件：登录会话或短时签名 token（供外部播放器/导出链接使用）。"""
+    if not (token and ops.verify_media_token(os.path.basename(name), token)):
+        auth.current_user(request)
     path = os.path.join(db.MEDIA_DIR, os.path.basename(name))
     if not os.path.exists(path):
         raise HTTPException(404, "文件不存在")
@@ -70,14 +97,41 @@ def media(name: str, user: dict = Depends(me)):
 # ---------------------------------------------------------------------------
 
 @app.post("/api/login")
-def login(body: dict):
+def login(body: dict, request: Request):
     username = (body.get("username") or "").strip()
     password = body.get("password") or ""
+    ip = auth.client_ip(request)
+    if username and advanced.locked(username):
+        db.security_event("login_locked", "warning", actor=username, ip=ip, detail="账号已临时锁定")
+        raise HTTPException(429, "登录失败次数过多，请稍后再试")
     user = db.row("SELECT * FROM users WHERE username=?", (username,))
     if not user or not db.verify_password(password, user["password_hash"]):
+        if username:
+            db.execute("INSERT INTO login_attempts(username,ip,success,created_at) VALUES(?,?,0,?)",
+                       (username, ip, db.now()))
+        db.security_event(
+            "login_failed",
+            "warning",
+            actor=username,
+            ip=auth.client_ip(request),
+            detail="账号或密码错误",
+        )
         raise HTTPException(401, "账号或密码错误")
+    db.execute("INSERT INTO login_attempts(username,ip,success,created_at) VALUES(?,?,1,?)",
+               (username, ip, db.now()))
     if user["status"] != "active":
+        db.security_event("login_disabled", "warning", actor=username, ip=auth.client_ip(request), detail="停用账号尝试登录")
         raise HTTPException(403, "账号已停用")
+    code = str(body.get("code") or "").strip()
+    totp = ops.user_totp(user["id"])
+    if totp and totp["enabled"]:
+        if not code:
+            return JSONResponse({"detail": "需要动态口令", "mfa_required": True}, status_code=401)
+        if not ops.verify_totp(totp["secret"], code):
+            db.security_event("mfa_failed", "warning", actor=username, ip=auth.client_ip(request), detail="动态口令错误")
+            return JSONResponse({"detail": "动态口令不正确", "mfa_required": True}, status_code=401)
+    elif ops.get_setting("mfa_required") == "on" and user["platform_role"] == "platform_admin":
+        return JSONResponse({"detail": "管理员必须启用 MFA 后登录", "mfa_setup_required": True}, status_code=403)
     token = auth.create_session(user["id"])
     db.log(user["id"], "login", "system", f"{user['name']} 登录")
     resp = JSONResponse({"ok": True, "user": _public_user(user)})
@@ -95,7 +149,11 @@ def logout(request: Request):
 
 @app.get("/api/me")
 def get_me(user: dict = Depends(me)):
-    return {"user": user, "role_label": auth.PLATFORM_ROLES.get(user["platform_role"], user["platform_role"])}
+    return {
+        "user": user,
+        "role_label": auth.PLATFORM_ROLES.get(user["platform_role"], user["platform_role"]),
+        "permissions": [p for p in db.PERMISSIONS if auth.has_perm(user, p)],
+    }
 
 
 def _public_user(u: dict) -> dict:
@@ -105,6 +163,9 @@ def _public_user(u: dict) -> dict:
         "name": u["name"],
         "platform_role": u["platform_role"],
         "role_label": auth.PLATFORM_ROLES.get(u["platform_role"], u["platform_role"]),
+        "tenant_id": u.get("tenant_id"),
+        "org_id": u.get("org_id"),
+        "team_id": u.get("team_id"),
     }
 
 
@@ -133,6 +194,15 @@ def _project_dict(p: dict, user: dict) -> dict:
     p["my_role"] = auth.project_role(user, p["id"])
     p["my_role_label"] = auth.PROJECT_ROLES.get(p["my_role"], "无")
     p["modality_label"] = db.MODALITY_LABEL.get(p["modality"], p["modality"])
+    tpl = db.row("SELECT id,name,code FROM templates WHERE id=?", (p.get("template_id"),)) if p.get("template_id") else None
+    p["template"] = tpl
+    wf = db.row("SELECT id,name,qc_policy FROM workflows WHERE project_id=? ORDER BY id LIMIT 1", (p["id"],))
+    if wf:
+        wf["qc_policy"] = json.loads(wf["qc_policy"] or "{}")
+    p["workflow"] = wf
+    p["dataset_count"] = (
+        db.row("SELECT COUNT(*) c FROM datasets WHERE project_id=?", (p["id"],)) or {}
+    ).get("c", 0)
     return p
 
 
@@ -154,7 +224,12 @@ def create_project(body: dict, user: dict = Depends(me)):
     if not name:
         raise HTTPException(400, "项目名称不能为空")
     code = (body.get("code") or f"proj-{uuid.uuid4().hex[:6]}").strip()
-    labels = body.get("labels") or db.DEFAULT_LABELS.get(modality, {})
+    tpl = None
+    if body.get("template_id"):
+        tpl = db.row("SELECT * FROM templates WHERE id=?", (int(body["template_id"]),))
+    if not tpl:
+        tpl = db.row("SELECT * FROM templates WHERE modality=? ORDER BY id LIMIT 1", (modality,))
+    labels = body.get("labels") or (json.loads(tpl["label_config"]) if tpl else db.DEFAULT_LABELS.get(modality, {}))
     pid = db.execute(
         "INSERT INTO projects(code,name,modality,description,owner_id,engine,engine_url,label_config,created_at)"
         " VALUES(?,?,?,?,?,?,?,?,?)",
@@ -170,6 +245,26 @@ def create_project(body: dict, user: dict = Depends(me)):
             db.now(),
         ),
     )
+    db.execute(
+        "UPDATE projects SET tenant_id=?, template_id=? WHERE id=?",
+        (user.get("tenant_id"), tpl["id"] if tpl else None, pid),
+    )
+    if tpl:
+        db.execute(
+            "INSERT INTO workflows(name,project_id,template_id,description,steps,qc_policy,status,created_by,created_at)"
+            " VALUES(?,?,?,?,?,?,?,?,?)",
+            (
+                f"{name} · 标准流程",
+                pid,
+                tpl["id"],
+                "标注 → 自检 → 抽审 → 返修 → 交付",
+                json.dumps(["标注", "自检", "抽审", "返修", "交付"], ensure_ascii=False),
+                tpl["qc_config"],
+                "active",
+                user["id"],
+                db.now(),
+            ),
+        )
     db.execute(
         "INSERT OR REPLACE INTO project_members(project_id,user_id,project_role) VALUES(?,?,?)",
         (pid, user["id"], "manager"),
@@ -223,10 +318,11 @@ LEFT JOIN users r ON r.id=t.reviewer_id
 
 
 @app.get("/api/tasks")
-def list_tasks(status: str = "", project_id: int = 0, q: str = "", user: dict = Depends(me)):
+def list_tasks(status: str = "", project_id: int = 0, q: str = "", archived: int = 0,
+               page: int = 1, limit: int = 0, user: dict = Depends(me)):
     where, args = auth.task_scope_sql(user)
-    conds = [where]
-    vals = list(args)
+    conds = [where, "t.deleted=0", "t.archived=?"]
+    vals = list(args) + [1 if archived else 0]
     if status:
         conds.append("t.status=?")
         vals.append(status)
@@ -236,10 +332,18 @@ def list_tasks(status: str = "", project_id: int = 0, q: str = "", user: dict = 
     if q:
         conds.append("(t.name LIKE ? OR p.name LIKE ?)")
         vals.extend([f"%{q}%", f"%{q}%"])
-    items = db.rows(TASK_SQL + " WHERE " + " AND ".join(conds) + " ORDER BY t.id DESC", tuple(vals))
+    total = db.row(
+        "SELECT COUNT(*) c FROM tasks t JOIN projects p ON p.id=t.project_id WHERE " + " AND ".join(conds),
+        tuple(vals),
+    )["c"]
+    sql = TASK_SQL + " WHERE " + " AND ".join(conds) + " ORDER BY t.id DESC"
+    if limit:
+        sql += " LIMIT ? OFFSET ?"
+        vals.extend([max(1, min(500, limit)), max(0, (max(1, page) - 1) * max(1, limit))])
+    items = db.rows(sql, tuple(vals))
     for t in items:
         t["modality_label"] = db.MODALITY_LABEL.get(t["modality"], t["modality"])
-    return {"tasks": items}
+    return {"tasks": items, "total": total, "page": page, "limit": limit}
 
 
 def _get_task(task_id: int, user: dict) -> dict:
@@ -269,15 +373,26 @@ def task_detail(tid: int, user: dict = Depends(me)):
             "updated_at": ann["updated_at"],
         }
     qc = db.row("SELECT * FROM qc_records WHERE task_id=? ORDER BY id DESC LIMIT 1", (tid,))
+    media = db.rows("SELECT id,kind,name,path,meta,created_at FROM task_media WHERE task_id=? ORDER BY id", (tid,))
+    for m in media:
+        m["url"] = "/media/" + os.path.basename(m["path"])
+        try:
+            m["meta"] = json.loads(m["meta"] or "{}")
+        except ValueError:
+            m["meta"] = {}
     return {
         "task": task,
         "project": _project_dict(project, user) if project else None,
         "annotation": annotation,
         "qc": qc,
+        "issues": db.rows("SELECT * FROM issues WHERE task_id=? ORDER BY id DESC", (tid,)),
+        "media": media,
+        "tracks": [
+            {**tr, "keyframes": json.loads(tr["keyframes"] or "[]")}
+            for tr in db.rows("SELECT * FROM tracks WHERE task_id=? ORDER BY id", (tid,))
+        ],
         "my_role": auth.project_role(user, task["project_id"]),
-        "can_edit": user["platform_role"] in ("platform_admin", "project_manager")
-        or task["assignee_id"] == user["id"]
-        or auth.project_role(user, task["project_id"]) == "manager",
+        "can_edit": extras.task_can_edit(user, task),
     }
 
 
@@ -296,6 +411,8 @@ def assign_task(tid: int, body: dict, user: dict = Depends(me)):
         "UPDATE tasks SET assignee_id=?, reviewer_id=?, updated_at=? WHERE id=?",
         (assignee or None, reviewer, db.now(), tid),
     )
+    if assignee:
+        db.notify(assignee, "收到新任务", f"{task['project_name']} · {task['name']}", "assign", f"#/annotate/{tid}")
     db.log(user["id"], "assign_task", f"task:{tid}", f"assignee:{assignee}")
     return {"ok": True}
 
@@ -355,6 +472,14 @@ def _media_kind(ext: str) -> str:
         return "video"
     if ext in POINTCLOUD_EXT:
         return "pointcloud"
+    if ext == ".pdf":
+        return "pdf"
+    if ext in (".txt", ".md"):
+        return "text"
+    if ext in (".json", ".jsonl"):
+        return "llm"
+    if ext == ".csv":
+        return "timeseries"
     return "audio"
 
 
@@ -539,19 +664,36 @@ def save_annotation(tid: int, body: dict, user: dict = Depends(me)):
             boxes.append(item)
         payload["boxes"] = boxes
     else:
-        segments = payload.get("segments") or []
-        for seg in segments:
-            try:
-                seg["start"] = max(0.0, round(float(seg.get("start", 0)), 2))
-                seg["end"] = max(seg["start"], round(float(seg.get("end", 0)), 2))
-            except (TypeError, ValueError):
-                raise HTTPException(400, "时间轴数据格式错误")
-        payload["segments"] = segments
+        if "segments" in payload:
+            segments = payload.get("segments") or []
+            for seg in segments:
+                try:
+                    seg["start"] = max(0.0, round(float(seg.get("start", 0)), 2))
+                    seg["end"] = max(seg["start"], round(float(seg.get("end", 0)), 2))
+                except (TypeError, ValueError):
+                    raise HTTPException(400, "时间轴数据格式错误")
+            payload["segments"] = segments
+        # 视频轨迹：校验关键帧数值
+        for track in payload.get("tracks") or []:
+            for kf in track.get("keyframes") or []:
+                try:
+                    kf["t"] = max(0.0, round(float(kf.get("t", 0)), 3))
+                except (TypeError, ValueError):
+                    raise HTTPException(400, "视频轨迹帧时间格式错误")
 
     ann = db.row(
         "SELECT * FROM annotations WHERE task_id=? AND status='draft' ORDER BY id DESC LIMIT 1", (tid,)
     )
     if ann:
+        old = json.loads(ann["payload"] or "{}")
+        if old != payload:
+            hist = (db.row("SELECT COUNT(*) c FROM annotation_versions WHERE annotation_id=?", (ann["id"],)) or {}).get("c", 0)
+            db.execute(
+                "INSERT INTO annotation_versions(annotation_id,task_id,version,payload,note,created_by,created_at)"
+                " VALUES(?,?,?,?,?,?,?)",
+                (ann["id"], tid, hist + 1, json.dumps(old, ensure_ascii=False),
+                 body.get("note") or "自动保存前快照", user["id"], db.now()),
+            )
         db.execute(
             "UPDATE annotations SET payload=?, updated_at=? WHERE id=?",
             (json.dumps(payload, ensure_ascii=False), db.now(), ann["id"]),
@@ -568,6 +710,23 @@ def save_annotation(tid: int, body: dict, user: dict = Depends(me)):
     return {"ok": True, "annotation_id": aid, "saved_at": db.now()}
 
 
+def _task_qc_policy(task: dict) -> tuple[dict | None, dict]:
+    wf = None
+    if task.get("workflow_id"):
+        wf = db.row("SELECT * FROM workflows WHERE id=?", (task["workflow_id"],))
+    if not wf:
+        wf = db.row(
+            "SELECT * FROM workflows WHERE project_id=? AND status='active' ORDER BY id LIMIT 1",
+            (task["project_id"],),
+        )
+    if not wf and task.get("project_id"):
+        proj = db.row("SELECT template_id FROM projects WHERE id=?", (task["project_id"],))
+        if proj and proj.get("template_id"):
+            tpl = db.row("SELECT qc_config FROM templates WHERE id=?", (proj["template_id"],))
+            return None, json.loads(tpl["qc_config"]) if tpl else {}
+    return wf, json.loads(wf["qc_policy"] or "{}") if wf else {}
+
+
 @app.post("/api/tasks/{tid}/submit")
 def submit_annotation(tid: int, body: dict, user: dict = Depends(me)):
     task = _get_task(tid, user)
@@ -578,21 +737,69 @@ def submit_annotation(tid: int, body: dict, user: dict = Depends(me)):
     ):
         raise HTTPException(403, "仅任务标注员可提交质检")
     payload = body.get("payload") or {}
-    if (task.get("media_type") or "audio") == "image":
+    modality = task.get("media_type") or "audio"
+    if modality == "image":
         if not (payload.get("boxes") or []):
             raise HTTPException(400, "至少需要一个标注目标才能提交")
+    elif modality in ("text", "llm"):
+        if not (payload.get("spans") or payload.get("messages") or str(payload.get("text") or "").strip()):
+            raise HTTPException(400, "请先完成文本标注")
+    elif modality == "video":
+        if not (payload.get("tracks") or payload.get("segments") or payload.get("boxes")):
+            raise HTTPException(400, "至少需要一条视频轨迹才能提交")
+    elif modality == "pointcloud":
+        if not (payload.get("boxes") or payload.get("points")):
+            raise HTTPException(400, "至少需要一个 3D 框才能提交")
+    elif modality == "timeseries":
+        if not (payload.get("rows") or payload.get("intervals") or payload.get("points")):
+            raise HTTPException(400, "请先完成时序标注")
+    elif modality == "multimodal":
+        if not (payload.get("boxes") or payload.get("segments") or payload.get("items")):
+            raise HTTPException(400, "请先完成多模态标注")
     elif not (payload.get("segments") or []):
         raise HTTPException(400, "至少需要一段标注结果才能提交")
     ann = db.row("SELECT * FROM annotations WHERE task_id=? ORDER BY id DESC LIMIT 1", (tid,))
     if not ann:
         raise HTTPException(400, "请先保存标注草稿")
+    wf, policy = _task_qc_policy(task)
+    required, sample, sample_reason = extras.sampling_decision(task, policy)
     db.execute(
         "UPDATE annotations SET payload=?, status='submitted', version=version+1, updated_at=? WHERE id=?",
         (json.dumps(payload, ensure_ascii=False), db.now(), ann["id"]),
     )
-    db.execute("UPDATE tasks SET status='submitted', updated_at=? WHERE id=?", (db.now(), tid))
-    db.log(user["id"], "submit", f"task:{tid}", f"annotation:{ann['id']}")
-    return {"ok": True}
+    if required:
+        db.execute(
+            "UPDATE tasks SET status='submitted', qc_required=1, qc_round=qc_round+1, updated_at=? WHERE id=?",
+            (db.now(), tid),
+        )
+    else:
+        db.execute(
+            "UPDATE annotations SET status='approved', updated_at=? WHERE id=?", (db.now(), ann["id"])
+        )
+        db.execute(
+            "INSERT INTO qc_records(task_id,annotation_id,reviewer_id,result,score,comment,created_at)"
+            " VALUES(?,?,?,?,?,?,?)",
+            (tid, ann["id"], user["id"], "auto_approved", 100, f"按抽审策略自动通过（{sample_reason}）", db.now()),
+        )
+        db.execute(
+            "UPDATE tasks SET status='done', qc_required=0, qc_round=qc_round+1, updated_at=? WHERE id=?",
+            (db.now(), tid),
+        )
+    db.log(
+        user["id"],
+        "submit",
+        f"task:{tid}",
+        f"annotation:{ann['id']} · {'抽审' if required else '策略自动通过'}",
+    )
+    return {
+        "ok": True,
+        "qc_required": required,
+        "auto_approved": not required,
+        "sample_rate": sample,
+        "workflow": wf["name"] if wf else "默认流程",
+        "min_score": policy.get("min_score", 0),
+        "message": f"已提交质检（{sample_reason}）" if required else f"按抽审策略自动通过（{sample_reason}）",
+    }
 
 
 @app.get("/api/qc")
@@ -610,6 +817,9 @@ def qc_queue(user: dict = Depends(me)):
         )
         t["has_annotation"] = bool(ann)
         t["modality_label"] = db.MODALITY_LABEL.get(t["modality"], t["modality"])
+        wf = db.row("SELECT name FROM workflows WHERE id=?", (t.get("workflow_id"),)) if t.get("workflow_id") else None
+        t["workflow_name"] = wf["name"] if wf else "默认流程"
+        t["qc_required_label"] = "抽审" if t.get("qc_required") else "免检"
         out.append(t)
     return {"tasks": out}
 
@@ -628,23 +838,53 @@ def review(tid: int, body: dict, user: dict = Depends(me)):
     if not ann:
         raise HTTPException(400, "任务尚未提交标注")
     score = float(body.get("score") or 0)
+    dims = body.get("dims") or {}
+    item_index = int(body.get("item_index", -1))
+    if dims:
+        try:
+            valid = {k: float(v) for k, v in dims.items() if v is not None}
+        except (TypeError, ValueError):
+            raise HTTPException(400, "维度评分格式错误")
+        if valid and not score:
+            score = round(sum(valid.values()) / len(valid), 1)
+        dims = valid
+    _, policy = _task_qc_policy(task)
+    comment = (body.get("comment") or "").strip()
+    if result == "rejected" and policy.get("require_comment") and not comment:
+        raise HTTPException(400, "该流程要求返修时填写质检意见")
     db.execute(
-        "INSERT INTO qc_records(task_id,annotation_id,reviewer_id,result,score,comment,created_at)"
-        " VALUES(?,?,?,?,?,?,?)",
-        (tid, ann["id"], user["id"], result, score, body.get("comment") or "", db.now()),
+        "INSERT INTO qc_records(task_id,annotation_id,reviewer_id,result,score,comment,dims,item_index,created_at)"
+        " VALUES(?,?,?,?,?,?,?,?,?)",
+        (tid, ann["id"], user["id"], result, score, comment, json.dumps(dims, ensure_ascii=False), item_index, db.now()),
     )
     if result == "approved":
         db.execute(
             "UPDATE annotations SET status='approved', updated_at=? WHERE id=?", (db.now(), ann["id"])
         )
-        db.execute("UPDATE tasks SET status='done', updated_at=? WHERE id=?", (db.now(), tid))
+        db.execute("UPDATE tasks SET status='done', progress=100, updated_at=? WHERE id=?", (db.now(), tid))
+        escalated = False
+        db.notify(task["assignee_id"], "任务质检通过", f"{task['name']} · {score} 分", "qc", f"#/annotate/{tid}")
     else:
         db.execute(
             "UPDATE annotations SET status='rejected', updated_at=? WHERE id=?", (db.now(), ann["id"])
         )
-        db.execute("UPDATE tasks SET status='annotating', updated_at=? WHERE id=?", (db.now(), tid))
-    db.log(user["id"], "review", f"task:{tid}", f"{result} {score}")
-    return {"ok": True}
+        reworks = (task.get("rework_count") or 0) + 1
+        escalated = reworks > int(policy.get("max_rework") or 99)
+        db.execute(
+            "UPDATE tasks SET status='annotating', rework_count=?, priority=? , updated_at=? WHERE id=?",
+            (reworks, "high" if escalated else task.get("priority") or "normal", db.now(), tid),
+        )
+        db.notify(
+            task["assignee_id"], "任务需要返修",
+            f"{task['name']} · {comment[:60] or '请按质检意见修改'}", "rework", f"#/annotate/{tid}",
+        )
+    db.log(
+        user["id"],
+        "review",
+        f"task:{tid}",
+        f"{result} {score}" + (" · 超返修上限升级" if escalated else ""),
+    )
+    return {"ok": True, "escalated": escalated, "max_rework": policy.get("max_rework")}
 
 
 # ---------------------------------------------------------------------------
@@ -733,7 +973,13 @@ def stats(user: dict = Depends(me)):
 def members(user: dict = Depends(me)):
     if not auth.is_admin(user) and user["platform_role"] != "project_manager":
         raise HTTPException(403, "无权查看成员")
-    items = db.rows("SELECT id,username,name,platform_role,status,created_at FROM users ORDER BY id")
+    items = db.rows(
+        "SELECT u.id,u.username,u.name,u.platform_role,u.status,u.created_at,u.tenant_id,u.org_id,u.team_id,"
+        " t.name tenant_name,o.name org_name,tm.name team_name FROM users u"
+        " LEFT JOIN tenants t ON t.id=u.tenant_id"
+        " LEFT JOIN orgs o ON o.id=u.org_id"
+        " LEFT JOIN teams tm ON tm.id=u.team_id ORDER BY u.id"
+    )
     for it in items:
         it["role_label"] = auth.PLATFORM_ROLES.get(it["platform_role"], it["platform_role"])
         it["project_count"] = (
@@ -795,29 +1041,57 @@ def save_settings(body: dict, user: dict = Depends(me)):
 
 
 @app.get("/api/audit")
-def audit(user: dict = Depends(me)):
+def audit(page: int = 1, limit: int = 60, action: str = "", user: dict = Depends(me)):
+    conds, vals = ["1=1"], []
+    if action:
+        conds.append("l.action LIKE ?")
+        vals.append(f"%{action}%")
+    total = db.row("SELECT COUNT(*) c FROM audit_log l WHERE " + " AND ".join(conds), tuple(vals))["c"]
     items = db.rows(
         "SELECT l.*, u.name actor_name FROM audit_log l LEFT JOIN users u ON u.id=l.actor_id"
-        " ORDER BY l.id DESC LIMIT 60"
+        " WHERE " + " AND ".join(conds) + " ORDER BY l.id DESC LIMIT ? OFFSET ?",
+        tuple(vals + [max(1, min(200, limit)), max(0, (max(1, page) - 1) * max(1, limit))]),
     )
-    return {"logs": items}
+    return {"logs": items, "total": total, "page": page, "limit": limit}
 
 
 @app.get("/api/bootstrap")
 def bootstrap(user: dict = Depends(me)):
     projects = list_projects(user)["projects"]
-    tasks = list_tasks("", 0, "", user)["tasks"]
+    tasks = list_tasks("", 0, "", 0, 1, 0, user)["tasks"]
     data = {r["key"]: r["value"] for r in db.rows("SELECT key,value FROM settings")}
     return {
         "user": {**user, "role_label": auth.PLATFORM_ROLES.get(user["platform_role"], "")},
+        "permissions": [p for p in db.PERMISSIONS if auth.has_perm(user, p)],
         "projects": projects,
         "tasks": tasks,
         "engines": prelabel.engine_status(),
         "settings": data,
+        "notifications": {
+            "unread": db.row(
+                "SELECT COUNT(*) c FROM notifications WHERE user_id=? AND read_at IS NULL", (user["id"],)
+            )["c"],
+            "recent": db.rows(
+                "SELECT * FROM notifications WHERE user_id=? ORDER BY id DESC LIMIT 8", (user["id"],)
+            ),
+        },
+        "brand": {
+            "name": data.get("brand_name", "春科数据标注平台"),
+            "short": data.get("brand_short", "春科标注"),
+            "color": data.get("brand_color", "#3B82F6"),
+            "watermark": data.get("watermark", "on") == "on",
+        },
+        "preferences": db.pref_get(user["id"]),
         "counts": {
             "tasks": len(tasks),
             "pending": sum(1 for t in tasks if t["status"] == "pending"),
             "review": sum(1 for t in tasks if t["status"] in ("submitted", "review")),
             "done": sum(1 for t in tasks if t["status"] == "done"),
+            "datasets": (db.row("SELECT COUNT(*) c FROM datasets") or {}).get("c", 0),
+            "templates": (db.row("SELECT COUNT(*) c FROM templates") or {}).get("c", 0),
+            "workflows": (db.row("SELECT COUNT(*) c FROM workflows") or {}).get("c", 0),
+            "api_keys": (db.row("SELECT COUNT(*) c FROM api_keys WHERE status='active'") or {}).get("c", 0),
+            "orgs": (db.row("SELECT COUNT(*) c FROM orgs") or {}).get("c", 0),
+            "teams": (db.row("SELECT COUNT(*) c FROM teams") or {}).get("c", 0),
         },
     }

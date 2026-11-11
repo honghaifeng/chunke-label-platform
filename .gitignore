@@ -16,6 +16,13 @@ env/
 data/*.db
 data/*.db-*
 data/tmp/
+data/backups/
+data/secret.key
+data/media/upload-*
+
+# 招标原始文件与临时上传（不入库）
+/479-*.docx
+data/media/06e83288-img.jpg
 
 # 编辑器 & 系统
 .DS_Store

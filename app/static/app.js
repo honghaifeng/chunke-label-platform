@@ -42,6 +42,9 @@ const ICONS = {
   arrow: '<path d="m9 6 6 6-6 6"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   shield: '<path d="M12 3 5 6v6c0 4.5 3 7.5 7 9 4-1.5 7-4.5 7-9V6l-7-3Z"/>',
+  database: '<ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/>',
+  layers: '<path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 13 9 5 9-5"/>',
+  key: '<circle cx="8" cy="15" r="4"/><path d="m11 12 9-9m-3 3 2 2m-5 1 2 2"/>',
 };
 
 const icon = (name, cls = 'ico') => `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] || ''}</svg>`;
@@ -52,6 +55,8 @@ const STATUS = {
   submitted: ['待质检', 'submitted'],
   review: ['质检中', 'reviewing'],
   done: ['已完成', 'done'],
+  paused: ['已暂停', 'pending'],
+  ended: ['已结束', 'plain'],
   draft: ['草稿', 'plain'],
   approved: ['已通过', 'done'],
   rejected: ['已驳回', 'danger'],
@@ -218,13 +223,25 @@ const NAV = [
   ['tasks', '任务中心', 'tasks'],
   ['qc', '质检中心', 'qc'],
   ['projects', '项目管理', 'projects'],
+  ['datasets', '数据集', 'database'],
+  ['templates', '模板中心', 'layers'],
+  ['workflows', '工作流', 'spark'],
+  ['org', '组织架构', 'shield'],
   ['members', '成员管理', 'members'],
+  ['openapi', '开放平台', 'key'],
   ['stats', '数据统计', 'stats'],
   ['settings', '系统设置', 'settings'],
 ];
 
+const NAV_PERM = {
+  datasets: 'dataset.read', templates: 'template.read', workflows: 'workflow.read',
+  org: 'org.read', members: 'member.read', openapi: 'api.read', settings: 'settings.write',
+};
+
 function shell(active, content, crumb = '') {
-  const nav = NAV.map(([key, label, ico]) => {
+  const extras = (window.CK_NAV || []).filter(([, , , perm]) => !perm || can(perm));
+  const allowed = NAV.concat(extras).filter(([key]) => !NAV_PERM[key] || can(NAV_PERM[key]));
+  const nav = allowed.map(([key, label, ico]) => {
     const href = key === 'tasks' ? '#/tasks' : `#/${key}`;
     return `<a class="nav-item ${active === key ? 'active' : ''}" href="${href}">${icon(ico)}<span>${label}</span>${key === 'qc' ? '<b class="tag" id="nav-qc-count">0</b>' : ''}</a>`;
   }).join('');
@@ -244,7 +261,7 @@ function shell(active, content, crumb = '') {
         <div class="crumb">春科数据 / <b>${esc(crumb)}</b></div>
         <div class="top-actions">
           <div class="search">${icon('search')}<input id="top-search" placeholder="搜索任务或项目，回车" /></div>
-          <button class="icon-btn" title="通知">${icon('bell')}</button>
+          <button class="icon-btn" id="notif-btn" title="通知">${icon('bell')}<b class="tag" id="notif-dot" style="display:none">0</b></button>
           <div class="user-chip" id="user-chip"><div class="avatar">${esc(state.user.name.slice(0, 1))}</div><div><b>${esc(state.user.name)}</b><br/><span>${esc(role)}</span></div></div>
         </div>
       </div>
@@ -263,6 +280,9 @@ function mount(active, crumb, content) {
     if (e.key === 'Enter') location.hash = `#/tasks?q=${encodeURIComponent(e.target.value.trim())}`;
   };
   $('#user-chip').onclick = () => userMenu();
+  const nb = $('#notif-btn');
+  if (nb) nb.onclick = () => { if (window.CK_OPEN_NOTIFICATIONS) window.CK_OPEN_NOTIFICATIONS(); };
+  if (window.CK_AFTER_MOUNT) window.CK_AFTER_MOUNT(active);
 }
 
 async function userMenu() {
@@ -296,13 +316,24 @@ async function route() {
   if (!state.user) return;
   const { page, id, query } = parseHash();
   try {
+    const need = NAV_PERM[page];
+    if (need && !can(need)) {
+      $('#page').innerHTML = `<div class="empty"><b>没有访问权限</b>当前角色未开通该模块，请联系平台管理员调整 RBAC 权限矩阵</div>`;
+      return;
+    }
     if (page === 'dashboard') await pageDashboard();
     else if (page === 'tasks') await pageTasks(query);
     else if (page === 'qc') await pageQC();
     else if (page === 'projects') await pageProjects();
+    else if (page === 'datasets') await pageDatasets();
+    else if (page === 'templates') await pageTemplates();
+    else if (page === 'workflows') await pageWorkflows();
+    else if (page === 'org') await pageOrg();
+    else if (page === 'openapi') await pageOpenapi();
     else if (page === 'members') await pageMembers();
     else if (page === 'stats') await pageStats();
     else if (page === 'settings') await pageSettings();
+    else if (window.CK_PAGES && window.CK_PAGES[page]) await window.CK_PAGES[page](query, id);
     else if (page === 'annotate' && id) await pageAnnotate(id);
     else await pageDashboard();
   } catch (err) {
@@ -618,6 +649,8 @@ async function pageAnnotate(id) {
     renderImageWorkbench(wb, classes, qc);
   } else if (mediaType === 'audio') {
     renderAudioWorkbench(wb, labels, qc, mediaName);
+  } else if (window.CK_WORKBENCH && window.CK_WORKBENCH[mediaType]) {
+    window.CK_WORKBENCH[mediaType](wb, qc);
   } else {
     renderOtherWorkbench(wb);
   }
@@ -1752,6 +1785,7 @@ function bindWorkbench(wb, mediaName) {
 }
 
 function payloadOf(wb) {
+  if (typeof wb.customPayload === 'function') return wb.customPayload();
   if (wb.mediaType === 'image') {
     return {
       media_type: 'image',
@@ -1802,6 +1836,7 @@ async function save(wb, silent = false) {
     wb.dirty = false;
     const ind = $('#save-ind');
     if (ind) ind.textContent = '已保存 ' + r.saved_at.slice(11, 16);
+    if (typeof wb.onSaved === 'function') wb.onSaved(r);
     if (!silent) toast('草稿已保存', 'ok');
   } catch (err) {
     if (!silent) toast(err.message, 'err');
@@ -2149,15 +2184,635 @@ async function pageSettings() {
   };
 }
 
+/* ---------------- 数据集 ---------------- */
+const fmtBytes = (n) => {
+  n = Number(n || 0);
+  if (n > 1024 * 1024 * 1024) return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+  if (n > 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  if (n > 1024) return `${(n / 1024).toFixed(0)} KB`;
+  return `${n} B`;
+};
+const can = (perm) => state.user && (state.user.platform_role === 'platform_admin' || (state.permissions || []).includes(perm));
+const mediaUrl = (name) => `/media/${encodeURIComponent(name || '')}`;
+
+async function pageDatasets() {
+  const [d, p] = await Promise.all([api('/api/datasets'), api('/api/projects')]);
+  state.projects = p.projects;
+  const list = d.datasets || [];
+  const totalItems = list.reduce((s, x) => s + (x.item_count || 0), 0);
+  const totalSize = list.reduce((s, x) => s + (x.size || 0), 0);
+  const totalVersions = list.reduce((s, x) => s + (x.version_count || 0), 0);
+  const content = `
+    <div class="page-head"><div><h1 class="page-title">数据集管理</h1><p class="page-sub">原始数据汇聚、版本快照、预览与导出，支撑交付与训练回流</p></div>
+      <div class="page-actions">${can('dataset.write') ? `<button class="btn primary" id="ds-new">${icon('plus')} 新建数据集</button>` : ''}</div></div>
+    <div class="grid kpi-grid" style="margin-bottom:14px">
+      <div class="kpi"><div class="kpi-label">${icon('database')} 数据集</div><div class="kpi-value">${list.length}</div><div class="kpi-delta">按项目隔离</div></div>
+      <div class="kpi"><div class="kpi-label">${icon('layers')} 数据条目</div><div class="kpi-value">${totalItems}</div><div class="kpi-delta">跨全部版本累计</div></div>
+      <div class="kpi"><div class="kpi-label">${icon('upload')} 存储容量</div><div class="kpi-value">${fmtBytes(totalSize)}</div><div class="kpi-delta">原始媒体文件</div></div>
+      <div class="kpi"><div class="kpi-label">${icon('clock')} 版本快照</div><div class="kpi-value">${totalVersions}</div><div class="kpi-delta">可回滚与导出</div></div>
+    </div>
+    <div class="card"><div class="card-head"><h3 class="card-title">数据集列表</h3><span class="card-sub">${list.length} 个</span></div>
+      <div class="table-wrap"><table class="table"><thead><tr><th>数据集</th><th>项目</th><th>类型</th><th>条目</th><th>版本</th><th>容量</th><th>更新时间</th><th class="right">操作</th></tr></thead><tbody>
+      ${list.map((x) => `<tr data-ds="${x.id}">
+        <td><div class="name">${esc(x.name)}</div><div class="sub mono">${esc(x.code)}</div></td>
+        <td>${esc(x.project_name || '未绑定')}</td>
+        <td><span class="chip info">${esc(x.modality_label)}</span></td>
+        <td><b>${x.item_count}</b></td>
+        <td><span class="tag">v${x.latest_version}</span></td>
+        <td>${fmtBytes(x.size)}</td>
+        <td class="sub">${esc((x.updated_at || '').slice(5, 16))}</td>
+        <td class="right"><button class="btn sm" data-detail="${x.id}">详情</button>
+          <a class="btn sm" href="/api/datasets/${x.id}/export" data-export>导出</a></td>
+      </tr>`).join('') || '<tr><td colspan="8"><div class="empty"><b>暂无数据集</b>先在数据集管理中创建，或从项目任务导入</div></td></tr>'}
+      </tbody></table></div></div>`;
+  mount('datasets', '数据集管理', content);
+  $$('[data-detail]').forEach((b) => (b.onclick = (e) => { e.stopPropagation(); datasetDetail(Number(b.dataset.detail)); }));
+  $$('tr[data-ds]').forEach((tr) => (tr.onclick = () => datasetDetail(Number(tr.dataset.ds))));
+  $$('[data-export]').forEach((a) => (a.onclick = (e) => e.stopPropagation()));
+  const nb = $('#ds-new');
+  if (nb) nb.onclick = newDatasetModal;
+}
+
+function newDatasetModal() {
+  openModal(`
+    <div class="modal-head"><h3>新建数据集</h3><button class="x" data-close>×</button></div>
+    <div class="modal-body"><div class="form-grid">
+      <div class="field"><label>数据集名称</label><input class="input" id="nd-name" placeholder="例如 客服通话 11 月批次" /></div>
+      <div class="field"><label>绑定项目</label><select class="select" id="nd-proj"><option value="0">不绑定项目</option>
+        ${state.projects.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></div>
+      <div class="field full"><label>描述</label><textarea class="input textarea" id="nd-desc" placeholder="数据来源、采集口径与使用范围"></textarea></div>
+    </div></div>
+    <div class="modal-foot"><button class="btn ghost" data-close>取消</button><button class="btn primary" id="nd-ok">创建数据集</button></div>`);
+  $('#nd-ok').onclick = async () => {
+    try {
+      await api('/api/datasets', { method: 'POST', body: {
+        name: $('#nd-name').value.trim(), project_id: Number($('#nd-proj').value), description: $('#nd-desc').value.trim(),
+      } });
+      closeModal(); toast('数据集已创建', 'ok'); pageDatasets();
+    } catch (err) { toast(err.message, 'err'); }
+  };
+}
+
+async function datasetDetail(id) {
+  let d;
+  try { d = await api(`/api/datasets/${id}`); } catch (err) { return toast(err.message, 'err'); }
+  const items = d.items || [];
+  openModal(`
+    <div class="modal-head"><h3>${esc(d.name)} <span class="tag mono">${esc(d.code)}</span></h3><button class="x" data-close>×</button></div>
+    <div class="modal-body">
+      <div class="chip-row" style="margin-bottom:12px">
+        <span class="chip info">${esc(d.modality_label)}</span>
+        <span class="chip plain">${esc(d.project_name || '未绑定项目')}</span>
+        <span class="chip purple">${d.item_count} 条目</span>
+        <span class="chip plain">v${d.latest_version} · ${d.version_count} 个版本</span>
+        <span class="chip plain">${fmtBytes(d.size)}</span>
+      </div>
+      <div class="toolbar" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+        ${d.project_id ? '<button class="btn sm" id="dd-import">导入项目任务</button>' : ''}
+        <button class="btn sm" id="dd-upload">${icon('upload')} 上传数据</button>
+        <button class="btn sm" id="dd-version">新建版本快照</button>
+        <a class="btn sm" href="/api/datasets/${d.id}/export">${icon('download')} 导出 CSV</a>
+        <input type="file" id="dd-file" style="display:none" />
+      </div>
+      <div class="divider"></div>
+      <div class="section-label" style="font-size:12px;color:var(--muted);margin-bottom:8px">版本历史</div>
+      <div class="chip-row" style="margin-bottom:14px">
+        ${(d.versions || []).map((v) => `<span class="chip plain" title="${esc(v.note)}">v${v.version} · ${v.item_count} 条 · ${esc(v.creator_name || '系统')}</span>`).join('') || '<span class="hint">暂无版本</span>'}
+      </div>
+      <div class="table-wrap" style="max-height:320px"><table class="table"><thead><tr><th>条目</th><th>类型</th><th>大小</th><th>任务状态</th><th class="right">预览</th></tr></thead><tbody>
+        ${items.map((it) => `<tr><td><div class="name">${esc(it.name)}</div><div class="sub mono">${esc(it.media_name || '')}</div></td>
+          <td><span class="chip plain">${esc(it.media_type_label)}</span></td><td>${fmtBytes(it.size)}</td>
+          <td>${it.task_id ? `<span class="chip ${it.task_status || 'plain'}">${esc(it.task_status || '已关联')}</span>` : '<span class="hint">未建任务</span>'}</td>
+          <td class="right">${['image', 'audio', 'video'].includes(it.media_type) ? `<button class="btn sm" data-preview="${it.id}">预览</button>` : '<span class="hint">3D 文件</span>'}</td></tr>`).join('') || '<tr><td colspan="5"><div class="empty">暂无数据条目</div></td></tr>'}
+      </tbody></table></div>
+    </div>
+    <div class="modal-foot"><button class="btn ghost" data-close>关闭</button></div>`, 'wide');
+  $$('[data-preview]').forEach((b) => (b.onclick = () => {
+    const it = items.find((x) => String(x.id) === b.dataset.preview);
+    if (it) previewDatasetItem(it);
+  }));
+  const imp = $('#dd-import');
+  if (imp) imp.onclick = async () => {
+    try {
+      const r = await api(`/api/datasets/${id}/import`, { method: 'POST', body: {} });
+      toast(`导入完成，新增 ${r.added} 条，共 ${r.total} 条`, 'ok');
+      datasetDetail(id);
+    } catch (err) { toast(err.message, 'err'); }
+  };
+  $('#dd-upload').onclick = () => $('#dd-file').click();
+  $('#dd-file').onchange = async (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    const fd = new FormData();
+    fd.append('file', f); fd.append('create_task', '1');
+    try {
+      await api(`/api/datasets/${id}/upload`, { method: 'POST', body: fd });
+      toast('数据已上传并创建任务', 'ok');
+      datasetDetail(id);
+    } catch (err) { toast(err.message, 'err'); }
+  };
+  $('#dd-version').onclick = async () => {
+    if (!(await confirmModal('新建版本快照', '将基于当前全部条目生成新版本，历史版本保持不变。', '创建版本'))) return;
+    try {
+      const r = await api(`/api/datasets/${id}/versions`, { method: 'POST', body: { note: `手动快照 ${new Date().toLocaleString()}` } });
+      toast(`已创建 v${r.version}，共 ${r.item_count} 条`, 'ok');
+      datasetDetail(id);
+    } catch (err) { toast(err.message, 'err'); }
+  };
+}
+
+function previewDatasetItem(it) {
+  const src = mediaUrl(it.media_name);
+  const media = it.media_type === 'image' ? `<img src="${src}" style="max-width:100%;max-height:62vh;border-radius:10px" />`
+    : it.media_type === 'video' ? `<video src="${src}" controls style="max-width:100%;max-height:62vh;border-radius:10px"></video>`
+      : `<audio src="${src}" controls style="width:100%"></audio>`;
+  openModal(`<div class="modal-head"><h3>${esc(it.name)}</h3><button class="x" data-close>×</button></div>
+    <div class="modal-body" style="text-align:center">${media}<div class="hint" style="margin-top:10px">${esc(it.media_name)} · ${fmtBytes(it.size)}</div></div>
+    <div class="modal-foot"><button class="btn ghost" data-close>关闭</button></div>`, 'wide');
+}
+
+/* ---------------- 模板中心 ---------------- */
+async function pageTemplates() {
+  const [t, p] = await Promise.all([api('/api/templates'), api('/api/projects')]);
+  state.templates = t.templates || [];
+  state.projects = p.projects;
+  const content = `
+    <div class="page-head"><div><h1 class="page-title">模板中心</h1><p class="page-sub">标签体系与质检策略模板化，一键应用到项目与工作流</p></div>
+      <div class="page-actions">${can('template.write') ? `<button class="btn primary" id="tpl-new">${icon('plus')} 新建模板</button>` : ''}</div></div>
+    <div class="grid tpl-grid">
+      ${state.templates.map((x) => {
+        const labelGroups = Object.keys(x.labels || {});
+        const qc = x.qc || {};
+        return `<div class="tpl-card">
+          <div class="tpl-top"><div class="proj-icon">${icon(MODALITY_ICON[x.modality] || 'layers')}</div>
+            <div style="min-width:0"><h3>${esc(x.name)}</h3><p>${esc(x.description || '暂无描述')}</p></div>
+            <span class="chip info" style="margin-left:auto">${esc(x.modality_label)}</span></div>
+          <div class="chip-row">${labelGroups.map((g) => `<span class="chip plain">${esc(g)} · ${((x.labels[g] || []).length)}</span>`).join('')}
+            ${x.builtin ? '<span class="chip purple">内置</span>' : ''}</div>
+          <div class="tpl-qc"><span>抽审 <b>${qc.sample_rate ?? 100}%</b></span><span>及格 <b>${qc.min_score ?? 0}</b></span><span>返修上限 <b>${qc.max_rework ?? '-'}</b></span></div>
+          <div class="tpl-foot"><span class="hint">${x.usage} 个项目在用</span>
+            <button class="btn sm" data-tpl-view="${x.id}">配置</button>
+            ${can('project.write') ? `<button class="btn sm primary" data-tpl-apply="${x.id}">应用到项目</button>` : ''}</div>
+        </div>`;
+      }).join('') || '<div class="empty">暂无模板</div>'}
+    </div>`;
+  mount('templates', '模板中心', content);
+  $$('[data-tpl-view]').forEach((b) => (b.onclick = () => templateDetail(Number(b.dataset.tplView))));
+  $$('[data-tpl-apply]').forEach((b) => (b.onclick = () => applyTemplateModal(Number(b.dataset.tplApply))));
+  const nb = $('#tpl-new');
+  if (nb) nb.onclick = newTemplateModal;
+}
+
+function templateDetail(id) {
+  const t = (state.templates || []).find((x) => x.id === id);
+  if (!t) return;
+  openModal(`
+    <div class="modal-head"><h3>${esc(t.name)}</h3><button class="x" data-close>×</button></div>
+    <div class="modal-body">
+      <div class="chip-row"><span class="chip info">${esc(t.modality_label)}</span><span class="chip plain mono">${esc(t.code)}</span>${t.builtin ? '<span class="chip purple">内置模板</span>' : ''}</div>
+      <div class="divider"></div>
+      <div class="field"><label>标注说明</label><div class="hint" style="line-height:1.8">${esc(t.instruction || '未填写')}</div></div>
+      ${Object.entries(t.labels || {}).map(([g, vals]) => `<div class="field"><label>${esc(g)}</label><div class="chip-row">${vals.map((v) => `<span class="chip plain">${esc(v)}</span>`).join('')}</div></div>`).join('')}
+      <div class="divider"></div>
+      <div class="form-grid">
+        <div class="kv"><span>抽审比例</span><b>${t.qc.sample_rate ?? 100}%</b></div>
+        <div class="kv"><span>及格分</span><b>${t.qc.min_score ?? 0}</b></div>
+        <div class="kv"><span>返修上限</span><b>${t.qc.max_rework ?? '-'}</b></div>
+        <div class="kv"><span>返修必填意见</span><b>${t.qc.require_comment ? '是' : '否'}</b></div>
+      </div>
+    </div>
+    <div class="modal-foot"><button class="btn ghost" data-close>关闭</button>${can('template.write') ? '<button class="btn primary" id="tpl-edit">编辑模板</button>' : ''}</div>`);
+  const ed = $('#tpl-edit');
+  if (ed) ed.onclick = () => editTemplateModal(t);
+}
+
+function newTemplateModal() {
+  openModal(`
+    <div class="modal-head"><h3>新建标注模板</h3><button class="x" data-close>×</button></div>
+    <div class="modal-body"><div class="form-grid">
+      <div class="field"><label>模板名称</label><input class="input" id="nt-name" placeholder="例如 保险回访语音质检" /></div>
+      <div class="field"><label>数据类型</label><select class="select" id="nt-modality"><option value="audio">语音</option><option value="image">图片</option><option value="video">视频</option><option value="pointcloud">点云</option></select></div>
+      <div class="field full"><label>描述</label><input class="input" id="nt-desc" placeholder="模板适用场景" /></div>
+      <div class="field full"><label>标签配置（JSON，分组 → 标签数组）</label><textarea class="input textarea mono" id="nt-labels" style="min-height:110px">{"业务分类":["咨询","投诉"],"情绪":["中性","不满"]}</textarea></div>
+      <div class="field full"><label>标注说明</label><textarea class="input textarea" id="nt-instruction" placeholder="标注规范与注意事项"></textarea></div>
+      <div class="field"><label>抽审比例 %</label><input class="input" id="nt-sample" type="number" value="30" /></div>
+      <div class="field"><label>及格分</label><input class="input" id="nt-score" type="number" value="80" /></div>
+      <div class="field"><label>返修上限</label><input class="input" id="nt-rework" type="number" value="2" /></div>
+      <div class="field"><label>返修必填意见</label><select class="select" id="nt-comment"><option value="1">是</option><option value="0">否</option></select></div>
+    </div></div>
+    <div class="modal-foot"><button class="btn ghost" data-close>取消</button><button class="btn primary" id="nt-ok">创建模板</button></div>`);
+  $('#nt-ok').onclick = async () => {
+    let labels;
+    try { labels = JSON.parse($('#nt-labels').value); } catch (e) { return toast('标签配置不是合法 JSON', 'err'); }
+    try {
+      await api('/api/templates', { method: 'POST', body: {
+        name: $('#nt-name').value.trim(), modality: $('#nt-modality').value, description: $('#nt-desc').value.trim(),
+        labels, instruction: $('#nt-instruction').value.trim(),
+        qc: { sample_rate: Number($('#nt-sample').value), min_score: Number($('#nt-score').value), max_rework: Number($('#nt-rework').value), require_comment: $('#nt-comment').value === '1' },
+      } });
+      closeModal(); toast('模板已创建', 'ok'); pageTemplates();
+    } catch (err) { toast(err.message, 'err'); }
+  };
+}
+
+function editTemplateModal(t) {
+  openModal(`
+    <div class="modal-head"><h3>编辑模板 · ${esc(t.name)}</h3><button class="x" data-close>×</button></div>
+    <div class="modal-body"><div class="form-grid">
+      <div class="field"><label>模板名称</label><input class="input" id="et-name" value="${esc(t.name)}" /></div>
+      <div class="field"><label>描述</label><input class="input" id="et-desc" value="${esc(t.description || '')}" /></div>
+      <div class="field full"><label>标签配置（JSON）</label><textarea class="input textarea mono" id="et-labels" style="min-height:110px">${esc(JSON.stringify(t.labels || {}, null, 2))}</textarea></div>
+      <div class="field full"><label>标注说明</label><textarea class="input textarea" id="et-instruction">${esc(t.instruction || '')}</textarea></div>
+      <div class="field"><label>抽审比例 %</label><input class="input" id="et-sample" type="number" value="${t.qc.sample_rate ?? 100}" /></div>
+      <div class="field"><label>及格分</label><input class="input" id="et-score" type="number" value="${t.qc.min_score ?? 80}" /></div>
+      <div class="field"><label>返修上限</label><input class="input" id="et-rework" type="number" value="${t.qc.max_rework ?? 2}" /></div>
+      <div class="field"><label>返修必填意见</label><select class="select" id="et-comment"><option value="1" ${t.qc.require_comment ? 'selected' : ''}>是</option><option value="0" ${!t.qc.require_comment ? 'selected' : ''}>否</option></select></div>
+    </div></div>
+    <div class="modal-foot"><button class="btn ghost" data-close>取消</button><button class="btn primary" id="et-ok">保存模板</button></div>`);
+  $('#et-ok').onclick = async () => {
+    let labels;
+    try { labels = JSON.parse($('#et-labels').value); } catch (e) { return toast('标签配置不是合法 JSON', 'err'); }
+    try {
+      await api(`/api/templates/${t.id}`, { method: 'PATCH', body: {
+        name: $('#et-name').value.trim(), description: $('#et-desc').value.trim(), instruction: $('#et-instruction').value.trim(),
+        labels, qc: { sample_rate: Number($('#et-sample').value), min_score: Number($('#et-score').value), max_rework: Number($('#et-rework').value), require_comment: $('#et-comment').value === '1' },
+      } });
+      closeModal(); toast('模板已更新', 'ok'); pageTemplates();
+    } catch (err) { toast(err.message, 'err'); }
+  };
+}
+
+function applyTemplateModal(id) {
+  const t = (state.templates || []).find((x) => x.id === id);
+  openModal(`
+    <div class="modal-head"><h3>应用模板 · ${esc(t ? t.name : '')}</h3><button class="x" data-close>×</button></div>
+    <div class="modal-body">
+      <p class="hint" style="line-height:1.8">应用后将覆盖目标项目的标签配置，并同步该项目的质检策略。请确认数据类型一致。</p>
+      <div class="field"><label>目标项目</label><select class="select" id="at-proj">
+        ${state.projects.map((p) => `<option value="${p.id}">${esc(p.name)} · ${esc(p.modality_label)}</option>`).join('')}</select></div>
+    </div>
+    <div class="modal-foot"><button class="btn ghost" data-close>取消</button><button class="btn primary" id="at-ok">确认应用</button></div>`);
+  $('#at-ok').onclick = async () => {
+    try {
+      await api(`/api/projects/${$('#at-proj').value}/apply-template`, { method: 'POST', body: { template_id: id } });
+      closeModal(); toast('模板已应用到项目', 'ok'); pageTemplates();
+    } catch (err) { toast(err.message, 'err'); }
+  };
+}
+
+/* ---------------- 工作流 ---------------- */
+async function pageWorkflows() {
+  const [w, p, t, tasks] = await Promise.all([api('/api/workflows'), api('/api/projects'), api('/api/templates'), api('/api/tasks')]);
+  state.workflows = w.workflows || [];
+  state.projects = p.projects;
+  state.templates = t.templates || [];
+  state.tasks = tasks.tasks || [];
+  const totalTask = state.workflows.reduce((s, x) => s + (x.task_count || 0), 0);
+  const totalDone = state.workflows.reduce((s, x) => s + (x.done_count || 0), 0);
+  const content = `
+    <div class="page-head"><div><h1 class="page-title">任务工作流与质检策略</h1><p class="page-sub">流程绑定任务，按抽审比例、及格分与返修上限自动流转</p></div>
+      <div class="page-actions">
+        ${can('task.review') ? '<button class="btn" id="wf-sample">抽审任务</button>' : ''}
+        ${can('workflow.write') ? `<button class="btn primary" id="wf-new">${icon('plus')} 新建流程</button>` : ''}</div></div>
+    <div class="grid kpi-grid" style="margin-bottom:14px">
+      <div class="kpi"><div class="kpi-label">${icon('spark')} 工作流</div><div class="kpi-value">${state.workflows.length}</div><div class="kpi-delta">可绑定到任务</div></div>
+      <div class="kpi"><div class="kpi-label">${icon('tasks')} 覆盖任务</div><div class="kpi-value">${totalTask}</div><div class="kpi-delta">项目内任务</div></div>
+      <div class="kpi"><div class="kpi-label">${icon('check')} 已完成</div><div class="kpi-value">${totalDone}</div><div class="kpi-delta">质检通过或自动通过</div></div>
+      <div class="kpi"><div class="kpi-label">${icon('shield')} 待复核</div><div class="kpi-value">${totalTask - totalDone}</div><div class="kpi-delta">含抽审与返修</div></div>
+    </div>
+    <div class="card"><div class="card-head"><h3 class="card-title">流程清单</h3><span class="card-sub">${state.workflows.length} 条</span></div>
+      <div class="table-wrap"><table class="table"><thead><tr><th>流程</th><th>项目 / 模板</th><th>步骤</th><th>质检策略</th><th>进度</th><th class="right">操作</th></tr></thead><tbody>
+      ${state.workflows.map((x) => {
+        const q = x.qc_policy || {};
+        const pct = x.task_count ? Math.round((x.done_count || 0) / x.task_count * 100) : 0;
+        return `<tr><td><div class="name">${esc(x.name)}</div><div class="sub">${esc(x.description || '')}</div></td>
+          <td><div>${esc(x.project_name || '全局')}</div><div class="sub">${esc(x.template_name || '默认模板')}</div></td>
+          <td><div class="flow-steps">${(x.steps || []).map((s, i) => `${i ? '<i>→</i>' : ''}<span>${esc(s)}</span>`).join('')}</div></td>
+          <td><div class="chip-row"><span class="chip info">抽审 ${q.sample_rate ?? 100}%</span><span class="chip plain">及格 ${q.min_score ?? 0}</span><span class="chip plain">返修 ≤${q.max_rework ?? '-'}</span></div></td>
+          <td style="min-width:110px"><div class="progress"><i style="width:${pct}%"></i></div><div class="sub">${x.done_count || 0}/${x.task_count || 0}</div></td>
+          <td class="right"><button class="btn sm" data-wf-edit="${x.id}">编辑</button>
+            ${can('workflow.write') ? `<button class="btn sm" data-wf-bind="${x.id}">绑定任务</button>` : ''}</td></tr>`;
+      }).join('') || '<tr><td colspan="6"><div class="empty">暂无工作流</div></td></tr>'}
+      </tbody></table></div></div>`;
+  mount('workflows', '工作流', content);
+  $$('[data-wf-edit]').forEach((b) => (b.onclick = () => workflowModal(Number(b.dataset.wfEdit))));
+  $$('[data-wf-bind]').forEach((b) => (b.onclick = () => bindWorkflowModal(Number(b.dataset.wfBind))));
+  const nb = $('#wf-new');
+  if (nb) nb.onclick = () => workflowModal(0);
+  const sb = $('#wf-sample');
+  if (sb) sb.onclick = sampleModal;
+}
+
+function workflowModal(id) {
+  const w = id ? (state.workflows || []).find((x) => x.id === id) : null;
+  const q = (w && w.qc_policy) || { sample_rate: 30, min_score: 80, max_rework: 2, require_comment: true };
+  openModal(`
+    <div class="modal-head"><h3>${w ? '编辑工作流' : '新建工作流'}</h3><button class="x" data-close>×</button></div>
+    <div class="modal-body"><div class="form-grid">
+      <div class="field"><label>流程名称</label><input class="input" id="wf-name" value="${esc(w ? w.name : '')}" placeholder="例如 语音质检双人复核" /></div>
+      <div class="field"><label>绑定项目</label><select class="select" id="wf-proj"><option value="0">全局流程</option>
+        ${state.projects.map((p) => `<option value="${p.id}" ${w && w.project_id === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></div>
+      <div class="field"><label>关联模板</label><select class="select" id="wf-tpl"><option value="0">默认标签配置</option>
+        ${state.templates.map((t) => `<option value="${t.id}" ${w && w.template_id === t.id ? 'selected' : ''}>${esc(t.name)}（${esc(t.modality_label)}）</option>`).join('')}</select></div>
+      <div class="field"><label>步骤（逗号分隔）</label><input class="input" id="wf-steps" value="${esc(w ? (w.steps || []).join('，') : '标注，自检，抽审，返修，交付')}" /></div>
+      <div class="field"><label>抽审比例 %</label><input class="input" id="wf-sample" type="number" value="${q.sample_rate ?? 30}" /></div>
+      <div class="field"><label>及格分</label><input class="input" id="wf-score" type="number" value="${q.min_score ?? 80}" /></div>
+      <div class="field"><label>返修上限</label><input class="input" id="wf-rework" type="number" value="${q.max_rework ?? 2}" /></div>
+      <div class="field"><label>返修必填意见</label><select class="select" id="wf-comment"><option value="1" ${q.require_comment ? 'selected' : ''}>是</option><option value="0" ${!q.require_comment ? 'selected' : ''}>否</option></select></div>
+      <div class="field full"><label>流程说明</label><textarea class="input textarea" id="wf-desc">${esc(w ? w.description || '' : '')}</textarea></div>
+    </div></div>
+    <div class="modal-foot"><button class="btn ghost" data-close>取消</button><button class="btn primary" id="wf-ok">${w ? '保存修改' : '创建流程'}</button></div>`);
+  $('#wf-ok').onclick = async () => {
+    const body = {
+      name: $('#wf-name').value.trim(), project_id: Number($('#wf-proj').value),
+      template_id: Number($('#wf-tpl').value) || 0,
+      description: $('#wf-desc').value.trim(),
+      steps: $('#wf-steps').value.split(/[,，]/).map((s) => s.trim()).filter(Boolean),
+      qc_policy: { sample_rate: Number($('#wf-sample').value), min_score: Number($('#wf-score').value), max_rework: Number($('#wf-rework').value), require_comment: $('#wf-comment').value === '1' },
+    };
+    try {
+      if (w) await api(`/api/workflows/${w.id}`, { method: 'PATCH', body });
+      else await api('/api/workflows', { method: 'POST', body });
+      closeModal(); toast(w ? '流程已更新' : '流程已创建', 'ok'); pageWorkflows();
+    } catch (err) { toast(err.message, 'err'); }
+  };
+}
+
+function bindWorkflowModal(wid) {
+  const w = (state.workflows || []).find((x) => x.id === wid);
+  const tasks = (state.tasks || []).filter((t) => !w.project_id || t.project_id === w.project_id);
+  openModal(`
+    <div class="modal-head"><h3>绑定任务 · ${esc(w.name)}</h3><button class="x" data-close>×</button></div>
+    <div class="modal-body"><div class="field"><label>选择任务</label><select class="select" id="bw-task">
+      ${tasks.map((t) => `<option value="${t.id}">${esc(t.project_name || '')} · ${esc(t.name)} · ${esc(t.status_label || t.status)}</option>`).join('')}</select></div>
+      <div class="hint">绑定后该任务提交时将按此流程的抽审策略决定是否需要质检。</div></div>
+    <div class="modal-foot"><button class="btn ghost" data-close>取消</button><button class="btn primary" id="bw-ok">绑定</button></div>`);
+  $('#bw-ok').onclick = async () => {
+    try {
+      await api(`/api/tasks/${$('#bw-task').value}/workflow`, { method: 'POST', body: { workflow_id: wid } });
+      closeModal(); toast('任务已绑定流程', 'ok'); pageWorkflows();
+    } catch (err) { toast(err.message, 'err'); }
+  };
+}
+
+function sampleModal() {
+  openModal(`
+    <div class="modal-head"><h3>执行抽审</h3><button class="x" data-close>×</button></div>
+    <div class="modal-body">
+      <p class="hint" style="line-height:1.8">对待质检任务按比例标记抽审，未命中的任务可由策略自动通过。实际提交时也会按流程策略自动判定。</p>
+      <div class="form-grid">
+        <div class="field"><label>项目范围</label><select class="select" id="qs-proj"><option value="0">全部可见项目</option>
+          ${state.projects.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></div>
+        <div class="field"><label>抽审比例 %</label><input class="input" id="qs-percent" type="number" value="30" /></div>
+      </div>
+    </div>
+    <div class="modal-foot"><button class="btn ghost" data-close>取消</button><button class="btn primary" id="qs-ok">执行抽审</button></div>`);
+  $('#qs-ok').onclick = async () => {
+    try {
+      const r = await api('/api/qc/sample', { method: 'POST', body: { project_id: Number($('#qs-proj').value), percent: Number($('#qs-percent').value) } });
+      closeModal(); toast(`已抽审 ${r.sampled}/${r.total} 个任务`, 'ok'); pageWorkflows();
+    } catch (err) { toast(err.message, 'err'); }
+  };
+}
+
+/* ---------------- 组织架构 / RBAC ---------------- */
+async function pageOrg() {
+  const [tree, mx] = await Promise.all([api('/api/org/tree'), api('/api/rbac/matrix')]);
+  state.orgTree = tree; state.matrix = mx;
+  const isAdmin = can('org.write');
+  const orgs = (tree.tenants || []).flatMap((t) => t.orgs || []);
+  const teams = orgs.flatMap((o) => o.teams || []);
+  const content = `
+    <div class="page-head"><div><h1 class="page-title">组织架构与权限</h1><p class="page-sub">多租户隔离，组织 → 团队 → 成员三层结构，RBAC 权限矩阵可按角色配置</p></div>
+      <div class="page-actions">
+        ${isAdmin ? `<button class="btn" id="org-add-tenant">新增租户</button>
+        <button class="btn" id="org-add-org">新增组织</button>
+        <button class="btn primary" id="org-add-team">${icon('plus')} 新增团队</button>` : ''}</div></div>
+    <div class="grid kpi-grid" style="margin-bottom:14px">
+      <div class="kpi"><div class="kpi-label">租户</div><div class="kpi-value">${(tree.tenants || []).length}</div><div class="kpi-delta">逻辑隔离</div></div>
+      <div class="kpi"><div class="kpi-label">组织</div><div class="kpi-value">${orgs.length}</div><div class="kpi-delta">含上下级</div></div>
+      <div class="kpi"><div class="kpi-label">团队</div><div class="kpi-value">${teams.length}</div><div class="kpi-delta">标注 / 质检小组</div></div>
+      <div class="kpi"><div class="kpi-label">成员</div><div class="kpi-value">${(tree.members || []).length}</div><div class="kpi-delta">平台账号</div></div>
+    </div>
+    <div class="grid two-col">
+      <div class="col" style="display:flex;flex-direction:column;gap:14px">
+        ${(tree.tenants || []).map((t) => `<div class="card"><div class="card-head"><h3 class="card-title">${esc(t.name)} <span class="tag mono">${esc(t.code)}</span></h3><span class="card-sub">${t.member_count} 人</span></div>
+          <div class="card-body"><div class="org-list">
+            ${(t.orgs || []).map((o) => `<div class="org-node">
+              <div class="org-head"><b>${esc(o.name)}</b><span class="tag">${esc(o.code)}</span><span class="hint">负责人 ${esc(o.manager_name || '未设置')} · ${o.member_count} 人</span></div>
+              <div class="team-list">${(o.teams || []).map((tm) => `<div class="team-node"><b>${esc(tm.name)}</b><span class="hint">${esc(tm.description || '')}</span>
+                <div class="chip-row">${(tm.members || []).map((m) => `<span class="chip plain">${esc(m.name)}${m.team_role === 'leader' ? ' · 组长' : ''}</span>`).join('') || '<span class="hint">暂无成员</span>'}</div></div>`).join('') || '<span class="hint">暂无团队</span>'}</div>
+            </div>`).join('')}
+          </div></div></div>`).join('')}
+        <div class="card"><div class="card-head"><h3 class="card-title">成员归属</h3><span class="card-sub">${(tree.members || []).length} 人</span></div>
+          <div class="table-wrap"><table class="table"><thead><tr><th>成员</th><th>平台角色</th><th>所属团队</th><th class="right">操作</th></tr></thead><tbody>
+          ${(tree.members || []).map((m) => `<tr><td><div class="name">${esc(m.name)}</div><div class="sub mono">${esc(m.username)}</div></td>
+            <td><span class="chip info">${esc(m.role_label)}</span></td><td>${esc(m.team_name || '未分配')}</td>
+            <td class="right">${isAdmin ? `<button class="btn sm" data-scope="${m.id}">调整归属</button>` : ''}</td></tr>`).join('')}
+          </tbody></table></div></div>
+      </div>
+      <div class="card"><div class="card-head"><h3 class="card-title">RBAC 权限矩阵</h3><span class="card-sub">${isAdmin ? '点击勾选即时保存' : '只读'}</span></div>
+        <div class="table-wrap" style="max-height:640px"><table class="table matrix"><thead><tr><th>权限点</th>
+          ${mx.roles.map((r) => `<th class="center">${esc(r.label)}</th>`).join('')}</tr></thead><tbody>
+          ${mx.permissions.map((p) => `<tr><td><div>${esc(p.label)}</div><div class="sub mono">${esc(p.key)}</div></td>
+            ${mx.roles.map((r) => `<td class="center"><input type="checkbox" data-role="${r.key}" data-perm="${p.key}" ${(mx.matrix[r.key] || {})[p.key] ? 'checked' : ''} ${isAdmin && r.key !== 'platform_admin' ? '' : 'disabled'} /></td>`).join('')}
+          </tr>`).join('')}
+        </tbody></table></div></div>
+    </div>`;
+  mount('org', '组织架构', content);
+  $$('[data-scope]').forEach((b) => (b.onclick = () => userScopeModal((tree.members || []).find((m) => m.id === Number(b.dataset.scope)))));
+  $$('input[data-role]').forEach((cb) => {
+    cb.onchange = async () => {
+      try {
+        await api('/api/rbac/matrix', { method: 'POST', body: { role: cb.dataset.role, permission: cb.dataset.perm, allowed: cb.checked } });
+        toast('权限已更新', 'ok');
+      } catch (err) { cb.checked = !cb.checked; toast(err.message, 'err'); }
+    };
+  });
+  const at = $('#org-add-tenant'); if (at) at.onclick = tenantModal;
+  const ao = $('#org-add-org'); if (ao) ao.onclick = orgModal;
+  const atm = $('#org-add-team'); if (atm) atm.onclick = teamModal;
+}
+
+function tenantModal() {
+  openModal(`<div class="modal-head"><h3>新增租户</h3><button class="x" data-close>×</button></div>
+    <div class="modal-body"><div class="form-grid">
+      <div class="field"><label>租户名称</label><input class="input" id="tn-name" /></div>
+      <div class="field"><label>租户编码</label><input class="input" id="tn-code" placeholder="tenant-a" /></div>
+    </div></div><div class="modal-foot"><button class="btn ghost" data-close>取消</button><button class="btn primary" id="tn-ok">创建</button></div>`);
+  $('#tn-ok').onclick = async () => {
+    try {
+      await api('/api/tenants', { method: 'POST', body: { name: $('#tn-name').value.trim(), code: $('#tn-code').value.trim() } });
+      closeModal(); toast('租户已创建', 'ok'); pageOrg();
+    } catch (err) { toast(err.message, 'err'); }
+  };
+}
+
+function orgModal() {
+  const t = state.orgTree.tenants[0];
+  openModal(`<div class="modal-head"><h3>新增组织</h3><button class="x" data-close>×</button></div>
+    <div class="modal-body"><div class="form-grid">
+      <div class="field"><label>所属租户</label><select class="select" id="og-tenant">${state.orgTree.tenants.map((x) => `<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select></div>
+      <div class="field"><label>组织名称</label><input class="input" id="og-name" /></div>
+      <div class="field"><label>组织编码</label><input class="input" id="og-code" placeholder="north" /></div>
+      <div class="field"><label>负责人</label><select class="select" id="og-manager"><option value="0">暂不设置</option>${state.orgTree.members.map((m) => `<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select></div>
+    </div></div><div class="modal-foot"><button class="btn ghost" data-close>取消</button><button class="btn primary" id="og-ok">创建</button></div>`);
+  $('#og-ok').onclick = async () => {
+    try {
+      await api('/api/orgs', { method: 'POST', body: { tenant_id: Number($('#og-tenant').value), name: $('#og-name').value.trim(), code: $('#og-code').value.trim(), manager_id: Number($('#og-manager').value) } });
+      closeModal(); toast('组织已创建', 'ok'); pageOrg();
+    } catch (err) { toast(err.message, 'err'); }
+  };
+}
+
+function teamModal() {
+  const orgs = (state.orgTree.tenants || []).flatMap((t) => t.orgs || []);
+  openModal(`<div class="modal-head"><h3>新增团队</h3><button class="x" data-close>×</button></div>
+    <div class="modal-body"><div class="form-grid">
+      <div class="field"><label>所属组织</label><select class="select" id="tm-org">${orgs.map((o) => `<option value="${o.id}">${esc(o.name)}</option>`).join('')}</select></div>
+      <div class="field"><label>团队名称</label><input class="input" id="tm-name" /></div>
+      <div class="field"><label>团队编码</label><input class="input" id="tm-code" placeholder="voice-team-2" /></div>
+      <div class="field"><label>组长</label><select class="select" id="tm-leader"><option value="0">暂不设置</option>${state.orgTree.members.map((m) => `<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select></div>
+      <div class="field full"><label>团队说明</label><input class="input" id="tm-desc" /></div>
+    </div></div><div class="modal-foot"><button class="btn ghost" data-close>取消</button><button class="btn primary" id="tm-ok">创建</button></div>`);
+  $('#tm-ok').onclick = async () => {
+    try {
+      await api('/api/teams', { method: 'POST', body: { org_id: Number($('#tm-org').value), name: $('#tm-name').value.trim(), code: $('#tm-code').value.trim(), leader_id: Number($('#tm-leader').value), description: $('#tm-desc').value.trim() } });
+      closeModal(); toast('团队已创建', 'ok'); pageOrg();
+    } catch (err) { toast(err.message, 'err'); }
+  };
+}
+
+function userScopeModal(m) {
+  const orgs = (state.orgTree.tenants || []).flatMap((t) => t.orgs || []);
+  const teams = orgs.flatMap((o) => o.teams || []);
+  openModal(`<div class="modal-head"><h3>调整归属 · ${esc(m.name)}</h3><button class="x" data-close>×</button></div>
+    <div class="modal-body"><div class="form-grid">
+      <div class="field"><label>租户</label><select class="select" id="us-tenant">${state.orgTree.tenants.map((t) => `<option value="${t.id}" ${m.tenant_id === t.id ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select></div>
+      <div class="field"><label>组织</label><select class="select" id="us-org"><option value="0">无</option>${orgs.map((o) => `<option value="${o.id}" ${m.org_id === o.id ? 'selected' : ''}>${esc(o.name)}</option>`).join('')}</select></div>
+      <div class="field full"><label>团队</label><select class="select" id="us-team"><option value="0">无</option>${teams.map((t) => `<option value="${t.id}" ${m.team_id === t.id ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select></div>
+    </div></div><div class="modal-foot"><button class="btn ghost" data-close>取消</button><button class="btn primary" id="us-ok">保存</button></div>`);
+  $('#us-ok').onclick = async () => {
+    try {
+      await api(`/api/org/users/${m.id}`, { method: 'PATCH', body: { tenant_id: Number($('#us-tenant').value), org_id: Number($('#us-org').value), team_id: Number($('#us-team').value) } });
+      closeModal(); toast('归属已更新', 'ok'); pageOrg();
+    } catch (err) { toast(err.message, 'err'); }
+  };
+}
+
+/* ---------------- 开放平台 ---------------- */
+async function pageOpenapi() {
+  const [k, sec, spec, audit] = await Promise.all([api('/api/api-keys'), api('/api/security/overview'), api('/api/openapi/spec'), api('/api/audit')]);
+  state.apiKeys = k.keys || [];
+  const s = sec.summary || {};
+  const content = `
+    <div class="page-head"><div><h1 class="page-title">开放平台</h1><p class="page-sub">OpenAPI v1 · API Key 鉴权 · 调用审计与安全监控</p></div>
+      <div class="page-actions">${can('api.write') ? `<button class="btn primary" id="key-new">${icon('plus')} 创建 API Key</button>` : ''}</div></div>
+    <div class="grid kpi-grid" style="margin-bottom:14px">
+      <div class="kpi"><div class="kpi-label">${icon('key')} 活跃密钥</div><div class="kpi-value">${s.keys_active || 0}</div><div class="kpi-delta">共 ${s.keys_total || 0} 个</div></div>
+      <div class="kpi"><div class="kpi-label">${icon('arrow')} 累计调用</div><div class="kpi-value">${s.requests || 0}</div><div class="kpi-delta">最近 7 天趋势</div></div>
+      <div class="kpi"><div class="kpi-label">${icon('shield')} 错误率</div><div class="kpi-value">${s.error_rate || 0}%</div><div class="kpi-delta warn">${s.errors || 0} 次异常</div></div>
+      <div class="kpi"><div class="kpi-label">${icon('bell')} 安全事件</div><div class="kpi-value">${s.blocked || 0}</div><div class="kpi-delta warn">失败登录 / 无效密钥</div></div>
+    </div>
+    <div class="grid two-col">
+      <div class="col" style="display:flex;flex-direction:column;gap:14px">
+        <div class="card"><div class="card-head"><h3 class="card-title">API 密钥</h3><span class="card-sub">密钥仅创建时显示一次</span></div>
+          <div class="table-wrap"><table class="table"><thead><tr><th>名称</th><th>前缀</th><th>范围</th><th>调用</th><th>状态</th><th class="right">操作</th></tr></thead><tbody>
+          ${state.apiKeys.map((x) => `<tr><td><div class="name">${esc(x.name)}</div><div class="sub">${esc(x.last_used_at || '未使用')}</div></td>
+            <td class="mono">${esc(x.key_prefix)}…</td><td>${x.scopes.map((sc) => `<span class="chip plain">${esc(sc)}</span>`).join(' ')}</td>
+            <td>${x.request_count}</td>
+            <td><span class="chip ${x.status === 'active' ? 'done' : 'danger'}">${x.status === 'active' ? '启用' : '已吊销'}</span></td>
+            <td class="right">${x.status === 'active' && can('api.write') ? `<button class="btn sm danger" data-revoke="${x.id}">吊销</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="6"><div class="empty">暂无密钥，点击右上角创建</div></td></tr>'}
+          </tbody></table></div></div>
+        <div class="card"><div class="card-head"><h3 class="card-title">接口文档</h3><span class="card-sub">OpenAPI ${esc(spec.info.version)}</span></div>
+          <div class="card-body">
+            <div class="hint" style="line-height:1.8;margin-bottom:10px">${esc(spec.info.description)}</div>
+            <div class="endpoint-list">${Object.entries(spec.paths).map(([path, ops]) => Object.keys(ops).map((m) => `<div class="endpoint"><span class="method ${m}">${m.toUpperCase()}</span><code>${esc(path)}</code><span class="hint">${esc(ops[m].summary || '')}</span></div>`).join('')).join('')}</div>
+            <div class="divider"></div>
+            <div class="section-label" style="font-size:12px;color:var(--muted);margin-bottom:6px">调用示例</div>
+            <pre class="code-block">curl -H "X-API-Key: ck_live_xxx" \\\n  ${location.origin}/api/v1/tasks?limit=10</pre>
+          </div></div>
+      </div>
+      <div class="col" style="display:flex;flex-direction:column;gap:14px">
+        <div class="card"><div class="card-head"><h3 class="card-title">调用趋势</h3><span class="card-sub">近 7 天</span></div>
+          <div class="card-body"><div class="spark-bars">
+            ${(sec.trend || []).map((d) => `<div class="spark-col"><span>${d.total}</span><i style="height:${Math.max(4, Math.min(100, d.total * 12 + d.errors * 6))}%"></i><em>${esc(d.day)}</em></div>`).join('')}
+          </div>
+          <div class="chip-row">${(sec.top_keys || []).map((x) => `<span class="chip plain">${esc(x.key_name || '匿名')} · ${x.c}</span>`).join('') || '<span class="hint">暂无调用</span>'}</div></div></div>
+        <div class="card"><div class="card-head"><h3 class="card-title">安全事件</h3><span class="card-sub">最近 40 条</span></div>
+          <div class="audit" style="max-height:240px;overflow:auto">
+            ${(sec.events || []).map((e) => `<div class="row"><span class="time">${esc((e.created_at || '').slice(5, 16))}</span><span><b>${esc(e.kind)}</b> <span class="sev ${esc(e.severity)}">${esc(e.severity)}</span> ${esc(e.actor)} <span style="color:#64748B">${esc(e.ip)}</span> ${esc(e.detail)}</span></div>`).join('') || '<div class="hint">暂无安全事件</div>'}
+          </div></div>
+        <div class="card"><div class="card-head"><h3 class="card-title">最近调用</h3><span class="card-sub">30 条</span></div>
+          <div class="audit" style="max-height:240px;overflow:auto">
+            ${(sec.requests || []).map((r) => `<div class="row"><span class="time">${esc((r.created_at || '').slice(5, 16))}</span><span><b>${esc(r.method)}</b> ${esc(r.path)} <span class="chip ${r.status_code >= 400 ? 'danger' : 'done'}">${r.status_code}</span> ${r.latency_ms}ms · ${esc(r.key_name || '匿名')}</span></div>`).join('') || '<div class="hint">暂无调用记录</div>'}
+          </div></div>
+        <div class="card"><div class="card-head"><h3 class="card-title">操作审计</h3><span class="card-sub">最近 60 条</span></div>
+          <div class="audit" style="max-height:240px;overflow:auto">
+            ${audit.logs.map((l) => `<div class="row"><span class="time">${esc((l.created_at || '').slice(5, 16))}</span><span><b>${esc(l.actor_name || '系统')}</b> ${esc(l.action)} <span style="color:#64748B">${esc(l.target)}</span> ${esc(l.detail)}</span></div>`).join('') || '<div class="hint">暂无记录</div>'}
+          </div></div>
+      </div>
+    </div>`;
+  mount('openapi', '开放平台', content);
+  const nb = $('#key-new'); if (nb) nb.onclick = newKeyModal;
+  $$('[data-revoke]').forEach((b) => (b.onclick = async () => {
+    if (!(await confirmModal('吊销密钥', '吊销后使用该密钥的集成将立即失效，且不可恢复。', '确认吊销', true))) return;
+    try { await api(`/api/api-keys/${b.dataset.revoke}/revoke`, { method: 'POST' }); toast('密钥已吊销', 'ok'); pageOpenapi(); }
+    catch (err) { toast(err.message, 'err'); }
+  }));
+}
+
+function newKeyModal() {
+  openModal(`<div class="modal-head"><h3>创建 API Key</h3><button class="x" data-close>×</button></div>
+    <div class="modal-body">
+      <div class="field"><label>密钥名称</label><input class="input" id="ak-name" placeholder="例如 训练平台同步" /></div>
+      <div class="field"><label>权限范围</label><div class="chip-row">
+        <label class="chip info"><input type="checkbox" id="ak-read" checked /> read 读取</label>
+        <label class="chip purple"><input type="checkbox" id="ak-write" checked /> write 写入</label>
+        <label class="chip danger"><input type="checkbox" id="ak-admin" /> admin 管理</label>
+      </div></div>
+      <div class="hint">密钥用于服务端调用 /api/v1/*，请存放在环境变量中，不要写入前端代码。</div>
+    </div><div class="modal-foot"><button class="btn ghost" data-close>取消</button><button class="btn primary" id="ak-ok">创建密钥</button></div>`);
+  $('#ak-ok').onclick = async () => {
+    const scopes = [];
+    if ($('#ak-read').checked) scopes.push('read');
+    if ($('#ak-write').checked) scopes.push('write');
+    if ($('#ak-admin').checked) scopes.push('admin');
+    try {
+      const r = await api('/api/api-keys', { method: 'POST', body: { name: $('#ak-name').value.trim(), scopes } });
+      showKeyModal(r.key);
+    } catch (err) { toast(err.message, 'err'); }
+  };
+}
+
+function showKeyModal(key) {
+  openModal(`<div class="modal-head"><h3>API Key 已创建</h3><button class="x" data-close>×</button></div>
+    <div class="modal-body">
+      <p class="hint" style="line-height:1.8">请立即复制并妥善保存，关闭后将无法再次查看完整密钥。</p>
+      <div class="key-box"><code id="ak-key">${esc(key)}</code><button class="btn sm" id="ak-copy">复制</button></div>
+      <pre class="code-block">curl -H "X-API-Key: ${esc(key)}" \\\n  ${location.origin}/api/v1/projects</pre>
+    </div><div class="modal-foot"><button class="btn primary" data-close>我已保存</button></div>`);
+  $('#ak-copy').onclick = async () => {
+    try { await navigator.clipboard.writeText(key); toast('已复制到剪贴板', 'ok'); }
+    catch (e) { toast('复制失败，请手动选择', 'err'); }
+  };
+}
+
 /* ---------------- 启动 ---------------- */
 async function boot() {
   try {
     const b = await api('/api/bootstrap');
     state.user = b.user;
+    state.permissions = b.permissions || [];
     state.projects = b.projects;
     state.engines = b.engines;
     state.settings = b.settings;
     state.counts = b.counts;
+    state.preferences = b.preferences || {};
+    state.notifications = b.notifications || {};
+    window.CK_STATE = state;
+    applyBrand(b.brand, b.notifications);
+    document.documentElement.dataset.lang = state.preferences.language || 'zh';
     if (!location.hash || location.hash === '#') location.hash = '#/dashboard';
     await route();
   } catch (err) {
@@ -2165,6 +2820,31 @@ async function boot() {
     else {
       $('#app').innerHTML = `<div class="boot-screen"><div style="text-align:center"><b>加载失败</b><div class="hint" style="margin-top:6px">${esc(err.message)}</div></div></div>`;
     }
+  }
+}
+
+function applyBrand(brand, notifications) {
+  if (brand) {
+    if (brand.color) document.documentElement.style.setProperty('--primary', brand.color);
+    if (brand.name) document.title = brand.name;
+    const short = $('.brand-text b');
+    if (short && brand.short) short.textContent = brand.short;
+    const loginTitle = $('#login-org');
+    if (loginTitle && brand.name) loginTitle.textContent = brand.name;
+  }
+  document.querySelectorAll('.ck-watermark').forEach((el) => el.remove());
+  if (brand && brand.watermark && state.user) {
+    const wm = document.createElement('div');
+    wm.className = 'ck-watermark';
+    const who = `${state.user.name} · ${state.user.username}`;
+    const ts = new Date().toLocaleString('zh-CN', { hour12: false });
+    wm.innerHTML = Array.from({ length: 12 }, () => `<span>${esc(who)} · ${esc(ts)}</span>`).join('');
+    document.body.appendChild(wm);
+  }
+  const dot = $('#notif-dot');
+  if (dot && notifications) {
+    dot.style.display = notifications.unread ? '' : 'none';
+    dot.textContent = notifications.unread > 99 ? '99+' : String(notifications.unread || 0);
   }
 }
 

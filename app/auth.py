@@ -1,6 +1,7 @@
 """登录态与权限判定。"""
 from __future__ import annotations
 
+import json
 import os
 import secrets
 
@@ -38,7 +39,10 @@ def user_by_token(token: str | None) -> dict | None:
     uid = SESSIONS.get(token)
     if not uid:
         return None
-    return db.row("SELECT id,username,name,platform_role,status FROM users WHERE id=?", (uid,))
+    return db.row(
+        "SELECT id,username,name,platform_role,status,tenant_id,org_id,team_id FROM users WHERE id=?",
+        (uid,),
+    )
 
 
 def current_user(request: Request) -> dict:
@@ -51,6 +55,40 @@ def current_user(request: Request) -> dict:
 def require(user: dict, *roles: str) -> None:
     if user["platform_role"] not in roles:
         raise HTTPException(status_code=403, detail="当前角色无权执行该操作")
+
+
+def has_perm(user: dict, permission: str) -> bool:
+    """RBAC 权限判定：平台管理员直通，其它角色查 role_permissions 矩阵。"""
+    if user["platform_role"] == "platform_admin":
+        return True
+    custom = db.row(
+        "SELECT r.permissions p FROM custom_roles r JOIN users u ON u.custom_role_id=r.id WHERE u.id=?",
+        (user["id"],),
+    )
+    if custom:
+        try:
+            if permission in (json.loads(custom["p"] or "[]") or []):
+                return True
+        except (TypeError, ValueError):
+            pass
+    hit = db.row(
+        "SELECT 1 ok FROM role_permissions WHERE role=? AND permission=?",
+        (user["platform_role"], permission),
+    )
+    if hit:
+        return True
+    # 矩阵未初始化时回退到内置默认值
+    return permission in db.ROLE_PERMISSIONS.get(user["platform_role"], [])
+
+
+def require_perm(user: dict, permission: str) -> None:
+    if not has_perm(user, permission):
+        raise HTTPException(status_code=403, detail=f"缺少权限：{db.PERMISSIONS.get(permission, permission)}")
+
+
+def client_ip(request: Request) -> str:
+    fwd = request.headers.get("x-forwarded-for") or ""
+    return (fwd.split(",")[0].strip() or (request.client.host if request.client else ""))[:64]
 
 
 def is_admin(user: dict) -> bool:
@@ -68,11 +106,19 @@ def project_role(user: dict, project_id: int) -> str:
 
 
 def visible_project_ids(user: dict) -> list[int]:
+    tenant = user.get("tenant_id")
     if is_admin(user):
         return [r["id"] for r in db.rows("SELECT id FROM projects")]
-    return [
+    mine = {
         r["project_id"]
         for r in db.rows("SELECT project_id FROM project_members WHERE user_id=?", (user["id"],))
+    }
+    if not tenant:
+        return sorted(mine)
+    return [
+        r["id"] for r in db.rows(
+            "SELECT id FROM projects WHERE tenant_id=? OR tenant_id IS NULL", (tenant,))
+        if r["id"] in mine
     ]
 
 
