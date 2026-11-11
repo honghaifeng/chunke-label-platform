@@ -300,11 +300,95 @@ def assign_task(tid: int, body: dict, user: dict = Depends(me)):
     return {"ok": True}
 
 
+@app.post("/api/tasks")
+def create_task(body: dict, user: dict = Depends(me)):
+    pid = int(body.get("project_id") or 0)
+    project = db.row("SELECT * FROM projects WHERE id=?", (pid,))
+    if not project:
+        raise HTTPException(400, "请选择有效的项目")
+    if not auth.is_admin(user) and (
+        pid not in auth.visible_project_ids(user) or auth.project_role(user, pid) != "manager"
+    ):
+        raise HTTPException(403, "仅平台管理员 / 项目管理者可创建任务")
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "任务名称不能为空")
+    media_type = body.get("media_type") or project["modality"]
+    if media_type not in ("audio", "image", "video", "pointcloud"):
+        media_type = project["modality"]
+    priority = body.get("priority") or "normal"
+    if priority not in ("low", "normal", "high"):
+        priority = "normal"
+    assignee = int(body.get("assignee_id") or 0) or None
+    reviewer = int(body.get("reviewer_id") or 0) or None
+    tid = db.execute(
+        "INSERT INTO tasks(project_id,name,media_path,media_type,duration,status,assignee_id,reviewer_id,"
+        "priority,batch,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            pid,
+            name,
+            "",
+            media_type,
+            0,
+            "pending",
+            assignee,
+            reviewer,
+            priority,
+            (body.get("batch") or "").strip(),
+            db.now(),
+            db.now(),
+        ),
+    )
+    db.log(user["id"], "create_task", f"task:{tid}", f"{project['name']} · {name}")
+    return {"ok": True, "id": tid}
+
+
+IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
+VIDEO_EXT = {".mp4", ".mov", ".webm", ".mkv", ".avi"}
+POINTCLOUD_EXT = {".pcd", ".ply", ".bin", ".las", ".laz"}
+
+
+def _media_kind(ext: str) -> str:
+    if ext in IMAGE_EXT:
+        return "image"
+    if ext in VIDEO_EXT:
+        return "video"
+    if ext in POINTCLOUD_EXT:
+        return "pointcloud"
+    return "audio"
+
+
 @app.post("/api/tasks/{tid}/media")
 async def upload_media(tid: int, file: UploadFile = File(...), user: dict = Depends(me)):
     task = _get_task(tid, user)
-    ext = os.path.splitext(file.filename or "")[1].lower() or ".wav"
-    raw_path = os.path.join(db.TMP_DIR, f"upload-{uuid.uuid4().hex}{ext}")
+    if not (
+        user["platform_role"] in ("platform_admin", "project_manager")
+        or task["assignee_id"] == user["id"]
+        or auth.project_role(user, task["project_id"]) == "manager"
+    ):
+        raise HTTPException(403, "仅任务标注员可上传媒体")
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    kind = _media_kind(ext)
+
+    # 图片 / 视频 / 点云：原样落盘，不走音频转码
+    if kind != "audio":
+        name = f"{task['project_code']}-{tid}-{uuid.uuid4().hex[:6]}{ext or '.bin'}"
+        out_path = os.path.join(db.MEDIA_DIR, name)
+        with open(out_path, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+        db.execute(
+            "UPDATE tasks SET media_path=?, media_type=?, duration=0, updated_at=? WHERE id=?",
+            (out_path, kind, db.now(), tid),
+        )
+        db.log(user["id"], "upload_media", f"task:{tid}", f"{kind} · {name}")
+        return {
+            "ok": True,
+            "media": f"/media/{name}",
+            "media_type": kind,
+            "size": os.path.getsize(out_path),
+        }
+
+    raw_path = os.path.join(db.TMP_DIR, f"upload-{uuid.uuid4().hex}{ext or '.wav'}")
     with open(raw_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
@@ -317,6 +401,8 @@ async def upload_media(tid: int, file: UploadFile = File(...), user: dict = Depe
             text=True,
             timeout=300,
         )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise HTTPException(400, f"音频转码失败：{str(exc)[:200]}")
     finally:
         try:
             os.remove(raw_path)
@@ -422,14 +508,45 @@ def save_annotation(tid: int, body: dict, user: dict = Depends(me)):
     ):
         raise HTTPException(403, "仅任务标注员可保存标注")
     payload = body.get("payload") or {}
-    segments = payload.get("segments") or []
-    for seg in segments:
-        try:
-            seg["start"] = max(0.0, round(float(seg.get("start", 0)), 2))
-            seg["end"] = max(seg["start"], round(float(seg.get("end", 0)), 2))
-        except (TypeError, ValueError):
-            raise HTTPException(400, "时间轴数据格式错误")
-    payload["segments"] = segments
+    if (task.get("media_type") or "audio") == "image":
+        # 图片标注：归一化坐标并丢弃无效框
+        boxes = []
+        for b in payload.get("boxes") or []:
+            try:
+                x = min(1.0, max(0.0, float(b.get("x", 0))))
+                y = min(1.0, max(0.0, float(b.get("y", 0))))
+                w = min(1.0, max(0.0, float(b.get("w", 0))))
+                h = min(1.0, max(0.0, float(b.get("h", 0))))
+            except (TypeError, ValueError):
+                raise HTTPException(400, "目标框坐标格式错误")
+            if w <= 0 or h <= 0:
+                continue
+            item = {
+                "cls": str(b.get("cls") or "").strip() or "未分类",
+                "name": str(b.get("name") or ""),
+                "source": b.get("source") or "manual",
+                "auto_cls": b.get("auto_cls") or "",
+                "x": round(x, 6),
+                "y": round(y, 6),
+                "w": round(w, 6),
+                "h": round(h, 6),
+            }
+            if b.get("conf") is not None:
+                try:
+                    item["conf"] = round(float(b.get("conf")), 4)
+                except (TypeError, ValueError):
+                    pass
+            boxes.append(item)
+        payload["boxes"] = boxes
+    else:
+        segments = payload.get("segments") or []
+        for seg in segments:
+            try:
+                seg["start"] = max(0.0, round(float(seg.get("start", 0)), 2))
+                seg["end"] = max(seg["start"], round(float(seg.get("end", 0)), 2))
+            except (TypeError, ValueError):
+                raise HTTPException(400, "时间轴数据格式错误")
+        payload["segments"] = segments
 
     ann = db.row(
         "SELECT * FROM annotations WHERE task_id=? AND status='draft' ORDER BY id DESC LIMIT 1", (tid,)
@@ -454,8 +571,17 @@ def save_annotation(tid: int, body: dict, user: dict = Depends(me)):
 @app.post("/api/tasks/{tid}/submit")
 def submit_annotation(tid: int, body: dict, user: dict = Depends(me)):
     task = _get_task(tid, user)
+    if not (
+        user["platform_role"] in ("platform_admin", "project_manager")
+        or task["assignee_id"] == user["id"]
+        or auth.project_role(user, task["project_id"]) == "manager"
+    ):
+        raise HTTPException(403, "仅任务标注员可提交质检")
     payload = body.get("payload") or {}
-    if not (payload.get("segments") or []):
+    if (task.get("media_type") or "audio") == "image":
+        if not (payload.get("boxes") or []):
+            raise HTTPException(400, "至少需要一个标注目标才能提交")
+    elif not (payload.get("segments") or []):
         raise HTTPException(400, "至少需要一段标注结果才能提交")
     ann = db.row("SELECT * FROM annotations WHERE task_id=? ORDER BY id DESC LIMIT 1", (tid,))
     if not ann:

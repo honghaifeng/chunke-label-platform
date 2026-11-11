@@ -318,6 +318,7 @@ async function pageDashboard() {
   state.projects = b.projects; state.engines = b.engines; state.counts = b.counts;
   const s = stats.summary || {};
   const recent = b.tasks.slice(0, 7);
+  const nextTask = b.tasks.find((t) => t.status === 'pending' || t.status === 'annotating') || b.tasks[0];
   const maxTrend = Math.max(1, ...stats.trend.map((d) => Math.max(d.created, d.done)));
   const trendSvg = stats.trend.map((d, i) => {
     const x = 18 + i * 52;
@@ -333,7 +334,7 @@ async function pageDashboard() {
       <div><h1 class="page-title">工作台</h1><p class="page-sub">${esc(state.user.name)}，今天有 ${s.pending || 0} 个待标注任务、${(s.submitted || 0) + (s.reviewing || 0)} 个待质检任务</p></div>
       <div class="page-actions">
         <a class="btn" href="#/tasks">${icon('tasks')} 查看任务</a>
-        <a class="btn primary" href="#/annotate/1">${icon('spark')} 进入标注</a>
+        <a class="btn primary" href="${nextTask ? `#/annotate/${nextTask.id}` : '#/tasks'}">${icon('spark')} 进入标注</a>
       </div>
     </div>
     <div class="grid kpi-grid" style="margin-bottom:14px">
@@ -404,14 +405,16 @@ async function pageTasks(query) {
   const data = await api('/api/tasks?' + params.toString());
   state.tasks = data.tasks;
   const tasks = data.tasks;
+  const canManage = ['platform_admin', 'project_manager'].includes(state.user.platform_role);
   const projOptions = state.projects.map((p) => `<option value="${p.id}" ${String(p.id) === pid ? 'selected' : ''}>${esc(p.name)}</option>`).join('');
   const content = `
     <div class="page-head"><div><h1 class="page-title">任务中心</h1><p class="page-sub">按项目、状态筛选任务，点击行进入标注或质检</p></div>
-      <div class="page-actions"><button class="btn" id="btn-export">${icon('download')} 导出清单</button><a class="btn primary" href="#/projects">${icon('plus')} 新建项目</a></div></div>
+      <div class="page-actions"><button class="btn" id="btn-export">${icon('download')} 导出清单</button>
+      ${canManage ? `<button class="btn primary" id="btn-new-task">${icon('plus')} 新建任务</button>` : ''}</div></div>
     <div class="filters">
       <div class="seg-tabs" id="task-tabs">
         <button class="active" data-st="">全部</button><button data-st="pending">待标注</button>
-        <button data-st="annotating">标注中</button><button data-st="submitted">待质检</button><button data-st="done">已完成</button>
+        <button data-st="annotating">标注中</button><button data-st="submitted,review">待质检</button><button data-st="done">已完成</button>
       </div>
       <select class="select" id="filter-project" style="width:190px"><option value="">全部项目</option>${projOptions}</select>
       <span class="spacer"></span>
@@ -419,21 +422,29 @@ async function pageTasks(query) {
     </div>
     <div class="card"><div class="table-wrap">
       <table class="table"><thead><tr><th style="width:30px"></th><th>任务名称</th><th>项目</th><th>模态</th><th>批次</th><th>标注员</th><th>质检员</th><th>状态</th><th>优先级</th><th class="right">操作</th></tr></thead>
-      <tbody id="task-body">${taskRows(tasks)}</tbody></table>
+      <tbody id="task-body">${taskRows(tasks, canManage)}</tbody></table>
     </div></div>`;
   mount('tasks', '任务中心', content);
 
   $$('#task-tabs button').forEach((b) => (b.onclick = () => {
     $$('#task-tabs button').forEach((x) => x.classList.remove('active'));
     b.classList.add('active');
-    const st = b.dataset.st;
-    $$('#task-body tr').forEach((tr) => { tr.style.display = !st || tr.dataset.status === st ? '' : 'none'; });
+    const set = b.dataset.st.split(',').filter(Boolean);
+    $$('#task-body tr').forEach((tr) => {
+      tr.style.display = !set.length || set.includes(tr.dataset.status) ? '' : 'none';
+    });
   }));
   $('#filter-project').onchange = (e) => { location.hash = `#/tasks?project=${e.target.value}`; };
   $('#btn-export').onclick = () => exportTasks(tasks);
+  const nt = $('#btn-new-task');
+  if (nt) nt.onclick = newTaskModal;
+  $$('[data-assign]').forEach((b) => (b.onclick = (e) => {
+    e.stopPropagation();
+    assignTaskModal(Number(b.dataset.assign), Number(b.dataset.pid));
+  }));
 }
 
-function taskRows(tasks) {
+function taskRows(tasks, canAssign = false) {
   return tasks.map((t) => `<tr data-status="${t.status}" onclick="location.hash='#/annotate/${t.id}'">
     <td>${icon(MODALITY_ICON[t.modality] || 'tasks')}</td>
     <td><div class="name">${esc(t.name)}</div><div class="sub">#${t.id} · ${fmtShort(t.duration)}</div></td>
@@ -441,8 +452,104 @@ function taskRows(tasks) {
     <td class="mono">${esc(t.batch || '—')}</td><td>${esc(t.assignee_name || '未分配')}</td><td>${esc(t.reviewer_name || '—')}</td>
     <td>${statusChip(t.status)}</td>
     <td>${t.priority === 'high' ? '<span class="chip danger">高</span>' : t.priority === 'low' ? '<span class="chip plain">低</span>' : '<span class="chip plain">普通</span>'}</td>
-    <td class="right"><a class="btn sm" href="#/annotate/${t.id}" onclick="event.stopPropagation()">${t.status === 'submitted' ? '质检' : '标注'}</a></td></tr>`).join('')
+    <td class="right"><div style="display:flex;gap:4px;justify-content:flex-end">
+      ${canAssign ? `<button class="btn sm ghost" data-assign="${t.id}" data-pid="${t.project_id}">分配</button>` : ''}
+      <a class="btn sm" href="#/annotate/${t.id}" onclick="event.stopPropagation()">${t.status === 'submitted' ? '质检' : '标注'}</a></div></td></tr>`).join('')
     || '<tr><td colspan="10" class="empty"><b>没有符合条件的任务</b>调整筛选条件或新建任务</td></tr>';
+}
+
+function newTaskModal() {
+  const projects = state.projects.filter(
+    (p) => state.user.platform_role === 'platform_admin' || p.my_role === 'manager'
+  );
+  if (!projects.length) return toast('当前没有可创建任务的项目', 'warn');
+  const modalityLabel = { audio: '语音', image: '图片', video: '视频', pointcloud: '点云' };
+  openModal(`
+    <div class="modal-head"><h3>新建任务</h3><button class="x" data-close>×</button></div>
+    <div class="modal-body"><div class="form-grid">
+      <div class="field"><label>所属项目</label><select class="select" id="nt-project">
+        ${projects.map((p) => `<option value="${p.id}" data-modality="${p.modality}">${esc(p.name)}（${esc(p.modality_label)}）</option>`).join('')}
+      </select></div>
+      <div class="field"><label>任务名称</label><input class="input" id="nt-name" placeholder="例如 货架巡检-门店-026" /></div>
+      <div class="field"><label>数据类型</label><select class="select" id="nt-media">
+        ${Object.entries(modalityLabel).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}
+      </select></div>
+      <div class="field"><label>批次</label><input class="input" id="nt-batch" placeholder="例如 巡检 11 月" /></div>
+      <div class="field"><label>优先级</label><select class="select" id="nt-priority">
+        <option value="normal">普通</option><option value="high">高</option><option value="low">低</option>
+      </select></div>
+      <div class="field"><label>标注员</label><select class="select" id="nt-assignee"><option value="0">暂不分配</option></select></div>
+      <div class="field"><label>质检员</label><select class="select" id="nt-reviewer"><option value="0">暂不指定</option></select></div>
+    </div></div>
+    <div class="modal-foot"><button class="btn ghost" data-close>取消</button><button class="btn primary" id="nt-ok">创建任务</button></div>`);
+  const mediaSel = $('#nt-media');
+  const projSel = $('#nt-project');
+  const syncMedia = () => {
+    const m = projSel.selectedOptions[0]?.dataset.modality;
+    if (m) mediaSel.value = m;
+  };
+  const fillMembers = async () => {
+    const pid = projSel.value;
+    if (!pid) return;
+    try {
+      const d = await api(`/api/projects/${pid}/members`);
+      const opts = (roles) => d.members
+        .filter((m) => roles.includes(m.project_role))
+        .map((m) => `<option value="${m.id}">${esc(m.name)}（${esc(m.project_role_label)}）</option>`).join('');
+      $('#nt-assignee').innerHTML = `<option value="0">暂不分配</option>${opts(['annotator', 'manager'])}`;
+      $('#nt-reviewer').innerHTML = `<option value="0">暂不指定</option>${opts(['reviewer', 'manager'])}`;
+    } catch (err) { /* 忽略成员加载失败，仍可创建任务 */ }
+  };
+  syncMedia();
+  fillMembers();
+  projSel.onchange = () => { syncMedia(); fillMembers(); };
+  $('#nt-ok').onclick = async () => {
+    try {
+      const r = await api('/api/tasks', {
+        method: 'POST',
+        body: {
+          project_id: Number(projSel.value),
+          name: $('#nt-name').value.trim(),
+          media_type: mediaSel.value,
+          batch: $('#nt-batch').value.trim(),
+          priority: $('#nt-priority').value,
+          assignee_id: Number($('#nt-assignee').value) || 0,
+          reviewer_id: Number($('#nt-reviewer').value) || 0,
+        },
+      });
+      closeModal();
+      toast('任务已创建，可在标注页上传媒体文件', 'ok');
+      await pageTasks(new URLSearchParams());
+      if (r.id) location.hash = `#/annotate/${r.id}`;
+    } catch (err) { toast(err.message, 'err'); }
+  };
+}
+
+async function assignTaskModal(tid, pid) {
+  const [d, t] = await Promise.all([
+    api(`/api/projects/${pid}/members`),
+    Promise.resolve((state.tasks || []).find((x) => x.id === tid)),
+  ]);
+  const opts = (roles, current) => `<option value="0">${current ? '保持不变' : '未分配'}</option>` + d.members
+    .filter((m) => roles.includes(m.project_role))
+    .map((m) => `<option value="${m.id}">${esc(m.name)}（${esc(m.project_role_label)}）</option>`).join('');
+  openModal(`
+    <div class="modal-head"><h3>分配任务 · ${esc(t ? t.name : '')}</h3><button class="x" data-close>×</button></div>
+    <div class="modal-body"><div class="form-grid">
+      <div class="field"><label>标注员</label><select class="select" id="as-assignee">${opts(['annotator', 'manager'], t && t.assignee_id)}</select></div>
+      <div class="field"><label>质检员</label><select class="select" id="as-reviewer">${opts(['reviewer', 'manager'], t && t.reviewer_id)}</select></div>
+    </div><div class="hint" style="margin-top:8px">选择「保持不变 / 未分配」时不会清空原有的质检员。</div></div>
+    <div class="modal-foot"><button class="btn ghost" data-close>取消</button><button class="btn primary" id="as-ok">保存</button></div>`, 'sm');
+  $('#as-ok').onclick = async () => {
+    try {
+      await api(`/api/tasks/${tid}/assign`, {
+        method: 'POST',
+        body: { assignee_id: Number($('#as-assignee').value) || 0, reviewer_id: Number($('#as-reviewer').value) || 0 },
+      });
+      closeModal(); toast('任务已分配', 'ok');
+      await pageTasks(parseHash().query);
+    } catch (err) { toast(err.message, 'err'); }
+  };
 }
 
 function exportTasks(tasks) {
@@ -520,6 +627,9 @@ function renderOtherWorkbench(wb) {
   const { task, project, mediaType, mediaName } = wb;
   const typeLabel = { pointcloud: '点云', video: '视频' }[mediaType] || mediaType;
   const engineUrl = project && project.engine_url;
+  const preview = mediaType === 'video' && mediaName
+    ? `<video controls src="/media/${encodeURIComponent(mediaName)}" style="width:100%;border-radius:8px;margin-bottom:16px"></video>`
+    : '';
   const content = `
   <div class="wb" id="wb">
     <div class="wb-head">
@@ -528,12 +638,17 @@ function renderOtherWorkbench(wb) {
         <div class="wb-meta">${esc(project ? project.name : '')} · <span class="tag">${typeLabel}</span> ${statusChip(task.status)}</div></div>
     </div>
     <div class="card" style="padding:28px;max-width:720px;margin:24px auto">
+      ${preview}
       <div class="empty" style="text-align:center">
         <b>暂不支持在线标注（${typeLabel}）</b>
         <p class="hint" style="margin-top:10px;line-height:1.8">
           ${mediaName ? `已挂载媒体：${esc(mediaName)}<br/>` : '该任务还没有上传媒体文件。<br/>'}
           本平台内置工作台目前支持 语音 / 图片 两类标注，${typeLabel}标注请在对应引擎中完成。
         </p>
+        <div style="margin-top:16px">
+          <button class="btn sm" id="btn-other-upload" ${wb.canEdit ? '' : 'disabled'}>${icon('upload')} ${mediaName ? '更换文件' : `上传${typeLabel}文件`}</button>
+          <input type="file" id="other-file-input" hidden accept="${mediaType === 'pointcloud' ? '.pcd,.ply,.bin,.las,.laz' : 'video/*'}" />
+        </div>
         ${engineUrl
           ? `<a class="btn primary" href="${esc(engineUrl)}" target="_blank" rel="noopener" style="margin-top:16px">打开 ${esc(project.engine || '标注引擎')} →</a>`
           : '<div class="hint" style="margin-top:12px">该项目未配置外部标注引擎地址。</div>'}
@@ -547,6 +662,21 @@ function renderOtherWorkbench(wb) {
     </div>
   </div>`;
   mount('tasks', '标注工作台', content);
+  const btn = $('#btn-other-upload');
+  if (btn) {
+    const input = $('#other-file-input');
+    btn.onclick = () => input.click();
+    input.onchange = async () => {
+      const f = input.files[0]; if (!f) return;
+      const fd = new FormData(); fd.append('file', f);
+      toast('正在上传…');
+      try {
+        await api(`/api/tasks/${wb.task.id}/media`, { method: 'POST', body: fd });
+        toast('文件已上传', 'ok');
+        setTimeout(() => pageAnnotate(wb.task.id), 400);
+      } catch (err) { toast(err.message, 'err'); }
+    };
+  }
 }
 
 function renderAudioWorkbench(wb, labels, qc, mediaName) {
@@ -602,7 +732,9 @@ function renderAudioWorkbench(wb, labels, qc, mediaName) {
                 <button class="btn sm" id="btn-prelabel-emo" ${canEdit ? '' : 'disabled'}>含情绪</button>
               </div>
             </div>
-            ${mediaName ? '' : `<div class="hint" style="margin-top:10px">该任务暂无音频，请先上传。</div><button class="btn sm" id="btn-upload" style="margin-top:8px">${icon('upload')} 上传音频</button><input type="file" id="file-input" accept="audio/*" hidden />`}
+            <button class="btn sm" id="btn-upload" style="margin-top:10px" ${canEdit ? '' : 'disabled'}>${icon('upload')} ${mediaName ? '更换音频' : '上传音频'}</button>
+            <input type="file" id="file-input" accept="audio/*" hidden />
+            ${mediaName ? '' : '<div class="hint" style="margin-top:6px">该任务暂无音频，请先上传。</div>'}
             <div class="panel-section" style="margin-top:16px">
               <div class="panel-label">说话人管理</div>
               <div class="spk-editor" id="spk-editor">${spkEditor(wb)}</div>
@@ -655,6 +787,8 @@ function renderImageWorkbench(wb, classes, qc) {
           <div class="image-toolbar">
             <span class="hint">${boxes.length} 个框</span>
             <span class="spacer"></span>
+            <button class="btn sm ghost" id="btn-img-upload" ${canEdit ? '' : 'disabled'}>${icon('upload')} ${mediaName ? '更换图片' : '上传图片'}</button>
+            <input type="file" id="img-file-input" accept="image/*" hidden />
             <label class="toggle-wrap"><input type="checkbox" id="toggle-box" checked /><span>显示框</span></label>
             <button class="btn sm ghost" id="btn-reset">重置视图</button>
           </div>
@@ -1271,12 +1405,37 @@ function bindImageWorkbench(wb, classes) {
   $('#btn-save').onclick = () => save(wb);
   $('#btn-export-boxes').onclick = () => exportBoxes(wb);
   $('#btn-submit').onclick = async () => {
+    if (!wb.boxes.length) return toast('至少需要一个标注目标才能提交', 'warn');
+    const ai = wb.boxes.filter((b) => b.source === 'ai').length;
+    const ok = await confirmModal(
+      '提交质检？',
+      `共 ${wb.boxes.length} 个目标（AI ${ai} 个 / 人工 ${wb.boxes.length - ai} 个），提交后将进入质检队列。`,
+      '提交质检'
+    );
+    if (!ok) return;
     try {
       await api(`/api/tasks/${wb.task.id}/submit`, { method: 'POST', body: { payload: payloadOf(wb) } });
       toast('已提交质检', 'ok');
       setTimeout(() => (location.hash = '#/tasks'), 500);
     } catch (err) { toast(err.message, 'err'); }
   };
+
+  // 上传 / 更换图片
+  const imgUpBtn = $('#btn-img-upload');
+  if (imgUpBtn) {
+    const input = $('#img-file-input');
+    imgUpBtn.onclick = () => input.click();
+    input.onchange = async () => {
+      const f = input.files[0]; if (!f) return;
+      const fd = new FormData(); fd.append('file', f);
+      toast('正在上传图片…');
+      try {
+        await api(`/api/tasks/${wb.task.id}/media`, { method: 'POST', body: fd });
+        toast('图片已上传', 'ok');
+        setTimeout(() => pageAnnotate(wb.task.id), 400);
+      } catch (err) { toast(err.message, 'err'); }
+    };
+  }
 
   // AI 预识别
   $('#btn-img-prelabel').onclick = async (e) => {
@@ -1676,17 +1835,32 @@ async function openReview(tid) {
   // 目前标注表未区分预识别/人工，这里把 prelabel 与最终结果并排展示
   const payload = (ann && ann.payload) || {};
   const pre = (ann && ann.prelabel) || {};
+  const mediaType = d.task.media_type || payload.media_type || 'audio';
+  const isImage = mediaType === 'image';
   const segs = payload.segments || [];
   const preSegs = pre.segments || [];
+  const boxes = payload.boxes || [];
+  const preBoxes = pre.boxes || [];
+  const mediaName = d.task.media_path ? d.task.media_path.split('/').pop() : '';
   const pane = (arr, title) => `<div class="review-pane"><h4>${title} · ${arr.length} 段</h4>
     ${arr.map((s) => `<div class="review-line"><span class="t">${Number(s.start).toFixed(2)}</span><span class="s">${esc(s.spk || '—')}</span><span>${esc(s.text)}</span></div>`).join('') || '<div class="hint">无内容</div>'}</div>`;
+  const boxPane = (arr, title) => `<div class="review-pane"><h4>${title} · ${arr.length} 个目标</h4>
+    ${arr.map((b, i) => `<div class="review-line"><span class="t">#${i + 1}</span><span class="s">${esc(b.cls || '—')}</span><span>${esc(b.name || '未命名')}${typeof b.conf === 'number' ? ` · ${Math.round(b.conf * 100)}%` : ''} · 位置 ${(Number(b.x) * 100).toFixed(1)},${(Number(b.y) * 100).toFixed(1)} · 尺寸 ${(Number(b.w) * 100).toFixed(1)}×${(Number(b.h) * 100).toFixed(1)}%</span></div>`).join('') || '<div class="hint">无内容</div>'}</div>`;
+  const panes = isImage
+    ? `${boxPane(boxes, '人工标注目标')}${boxPane(preBoxes, 'AI 预识别目标')}`
+    : `${pane(segs, '人工标注结果')}${pane(preSegs, 'AI 预识别结果')}`;
+  const preview = isImage && mediaName
+    ? `<div style="margin-bottom:12px"><img src="/media/${encodeURIComponent(mediaName)}" alt="待质检图片" style="max-height:220px;max-width:100%;border-radius:8px;border:1px solid var(--border)" /></div>`
+    : '';
+  const resultCount = isImage ? boxes.length : segs.length;
   openModal(`
     <div class="modal-head"><h3>质检 · ${esc(d.task.name)}</h3><span class="chip submitted" style="margin-left:auto">待质检</span><button class="x" data-close>×</button></div>
     <div class="modal-body">
-      <div class="review-grid">${pane(segs, '人工标注结果')}${pane(preSegs, 'AI 预识别结果')}</div>
+      ${preview}
+      <div class="review-grid">${panes}</div>
       <div class="divider"></div>
       <div class="form-grid">
-        <div class="field"><label>质检评分（0-100）</label><input class="input" type="number" id="qc-score" min="0" max="100" value="${segs.length ? 85 : 60}" /></div>
+        <div class="field"><label>质检评分（0-100）</label><input class="input" type="number" id="qc-score" min="0" max="100" value="${resultCount ? 85 : 60}" /></div>
         <div class="field"><label>业务分类</label><input class="input" value="${esc(payload.business || '未分类')}" disabled /></div>
         <div class="field full"><label>质检意见</label><textarea class="input textarea" id="qc-comment" placeholder="填写返修点或通过说明"></textarea></div>
       </div>

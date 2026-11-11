@@ -172,6 +172,15 @@ def init_db() -> None:
     os.makedirs(TMP_DIR, exist_ok=True)
     with connect() as conn:
         conn.executescript(SCHEMA)
+        # 兼容历史数据：早期版本曾把中文状态写入 tasks.status
+        for old, new in {
+            "待标注": "pending",
+            "标注中": "annotating",
+            "待质检": "submitted",
+            "质检中": "review",
+            "已完成": "done",
+        }.items():
+            conn.execute("UPDATE tasks SET status=? WHERE status=?", (new, old))
         conn.commit()
 
     if rows("SELECT id FROM users LIMIT 1"):
