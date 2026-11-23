@@ -1312,7 +1312,9 @@
     const media = wb.mediaName ? `/media/${encodeURIComponent(wb.mediaName)}` : '';
     mount('tasks', '标注工作台', `<div class="wb" id="wb">
       <div class="wb-head"><a class="btn ghost sm" href="#/tasks">← 返回</a>
-        <div><h1>${e(wb.task.name)}</h1><div class="wb-meta">${e(wb.project ? wb.project.name : '')} · <span class="tag">PDF 文档</span></div></div></div>
+        <div><h1>${e(wb.task.name)}</h1><div class="wb-meta">${e(wb.project ? wb.project.name : '')} · <span class="tag">PDF 文档</span></div></div>
+        <div class="wb-actions"><span id="save-ind" class="hint"></span>
+          <button class="btn" id="pd-save">保存草稿</button><button class="btn primary" id="pd-submit">提交质检</button></div></div>
       <div class="grid" style="grid-template-columns:1.4fr 1fr;gap:14px;margin-top:14px">
         <div class="card"><div class="card-head"><h3 class="card-title">文档预览</h3><span class="card-sub">区域框选后录入结构化字段</span></div>
           <div class="card-body" style="padding:0">${media ? `<iframe src="${media}#toolbar=0&navpanes=0" style="width:100%;height:640px;border:0;background:#fff"></iframe>` : '<div class="empty" style="padding:40px">请先上传 PDF</div>'}</div></div>
@@ -1405,6 +1407,34 @@
         + (r.issues.map((i) => `<div class="sub">[${i.level}] ${e(i.message)}${i.suggestion ? ` → ${e(i.suggestion)}` : ''}</div>`).join('') || '<div class="hint">未发现问题</div>');
     };
     $('#pd-compare').onclick = () => $('#pd-q-run').click();
+    const pdfPayload = async () => {
+      const ex = await readExtras(wb.task.id);
+      return {
+        media_type: 'pdf',
+        doc_regions: ex.doc_regions || [],
+        ocr_regions: ex.ocr_regions || [],
+        ocr_fields: ex.ocr_fields || {},
+        qa: ex.qa || [],
+        text: $('#pd-text').value || '',
+      };
+    };
+    $('#pd-save').onclick = async () => {
+      try {
+        const r = await api(`/api/tasks/${wb.task.id}/annotation`, { method: 'POST', body: { payload: await pdfPayload() } });
+        $('#save-ind').textContent = '已保存 ' + String(r.saved_at || '').slice(11, 16);
+        toast('草稿已保存', 'ok');
+      } catch (err) { toast(err.message, 'err'); }
+    };
+    $('#pd-submit').onclick = async () => {
+      if (!confirm('确认提交质检？提交后将进入质检流程。')) return;
+      try {
+        const payload = await pdfPayload();
+        await api(`/api/tasks/${wb.task.id}/annotation`, { method: 'POST', body: { payload } });
+        await api(`/api/tasks/${wb.task.id}/submit`, { method: 'POST', body: { payload } });
+        toast('已提交质检', 'ok');
+        location.hash = '#/tasks';
+      } catch (err) { toast(err.message, 'err'); }
+    };
     draw();
   }
 

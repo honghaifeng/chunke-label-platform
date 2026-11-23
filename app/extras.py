@@ -95,6 +95,26 @@ def init_schema() -> None:
             "created_at TEXT NOT NULL,PRIMARY KEY(task_id,user_id,role))"
         )
         conn.execute(
+            "CREATE TABLE IF NOT EXISTS tenant_members("
+            "tenant_id INTEGER NOT NULL,user_id INTEGER NOT NULL,"
+            "member_role TEXT NOT NULL DEFAULT 'member',status TEXT NOT NULL DEFAULT 'active',"
+            "org_id INTEGER,team_id INTEGER,created_at TEXT NOT NULL,"
+            "PRIMARY KEY(tenant_id,user_id))"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS acceptance_records("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,task_id INTEGER NOT NULL,acceptor_id INTEGER NOT NULL,"
+            "result TEXT NOT NULL,score REAL NOT NULL DEFAULT 0,comment TEXT NOT NULL DEFAULT '',"
+            "created_at TEXT NOT NULL)"
+        )
+        # 历史数据回填：users.tenant_id 是单租户归属，迁移为多对多成员关系
+        conn.execute(
+            "INSERT OR IGNORE INTO tenant_members(tenant_id,user_id,member_role,status,org_id,team_id,created_at)"
+            " SELECT tenant_id,id,CASE WHEN platform_role='tenant_admin' THEN 'admin' ELSE 'member' END,"
+            "'active',org_id,team_id,? FROM users WHERE tenant_id IS NOT NULL",
+            (ts,),
+        )
+        conn.execute(
             "CREATE TABLE IF NOT EXISTS evidence_packages("
             "id INTEGER PRIMARY KEY AUTOINCREMENT,task_id INTEGER,project_id INTEGER,"
             "actor_id INTEGER,path TEXT NOT NULL,created_at TEXT NOT NULL)"
@@ -116,6 +136,8 @@ def init_schema() -> None:
         for table, col, ddl in cols:
             db._ensure_column(conn, table, col, ddl)
         conn.execute("CREATE INDEX IF NOT EXISTS ix_taskroles_user ON task_roles(user_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS ix_tenant_members_user ON tenant_members(user_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS ix_acceptance_task ON acceptance_records(task_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS ix_project_plan ON projects(start_at,end_at)")
         conn.commit()
     if not db.row("SELECT id FROM custom_roles LIMIT 1"):
@@ -151,6 +173,8 @@ def sampling_decision(task: dict, policy: dict) -> tuple[bool, int, str]:
         rate = max(0, min(100, int(cfg.get("sample_rate", rate))))
         reason = f"策略抽审 {rate}%"
         for layer in cfg.get("layers") or []:
+            if not isinstance(layer, dict):
+                continue
             field = layer.get("field")
             value = str(layer.get("value") or "")
             actual = str(task.get(field) or "")
@@ -574,7 +598,8 @@ def _fetch_s3(uri: str, workdir: str) -> list[str]:
 def _job_import_source(j: dict, report) -> dict:
     payload = _json(j["payload"], {})
     kind = payload.get("type") or "http"
-    actor = db.row("SELECT * FROM users WHERE id=?", (j["user_id"],)) or {"id": j["user_id"]}
+    actor_id = j.get("created_by") or 0
+    actor = db.row("SELECT * FROM users WHERE id=?", (actor_id,)) or {"id": actor_id}
     project = workbench._project(int(payload.get("project_id") or 0))
     batch = payload.get("batch") or f"{kind} 导入"
     ds_id = int(payload.get("dataset_id") or 0)
@@ -625,7 +650,7 @@ def import_source(body: dict, user: dict = Depends(me)):
     kind = (body.get("type") or "http").lower()
     if kind not in ("http", "ftp", "hdfs", "s3"):
         raise HTTPException(400, "导入类型仅支持 http/ftp/hdfs/s3")
-    ref = body.get("path") or body.get("url")
+    ref = body.get("path") or body.get("url") or (body.get("urls") or [""])[0]
     if not ref and not body.get("urls"):
         raise HTTPException(400, "请填写导入地址")
     payload = {
@@ -786,6 +811,12 @@ def save_sampling_policy(body: dict, user: dict = Depends(me)):
     cfg = body.get("config") or {}
     if not isinstance(cfg, dict):
         raise HTTPException(400, "config 必须是对象")
+    layers = cfg.get("layers")
+    if layers is not None and not isinstance(layers, list):
+        raise HTTPException(400, "layers 必须是数组")
+    for layer in layers or []:
+        if not isinstance(layer, dict) or not layer.get("field"):
+            raise HTTPException(400, "分层格式错误：需包含 field/value/rate")
     db.execute(
         "INSERT INTO sampling_policies(project_id,mode,config,updated_at) VALUES(?,?,?,?)"
         " ON CONFLICT(project_id) DO UPDATE SET mode=excluded.mode,config=excluded.config,updated_at=excluded.updated_at",
@@ -807,6 +838,8 @@ def sampling_preview(project_id: int, user: dict = Depends(me)):
         rate = int(cfg.get("sample_rate", 100))
         layer_hit = ""
         for layer in cfg.get("layers") or []:
+            if not isinstance(layer, dict):
+                continue
             if str(t.get(layer.get("field")) or "") == str(layer.get("value") or ""):
                 rate = max(rate, int(layer.get("rate", rate)))
                 layer_hit = f"{layer.get('field')}={layer.get('value')}"
@@ -887,21 +920,97 @@ def project_evidence(pid: int, user: dict = Depends(me)):
 
 
 # ---------------------------------------------------------------------------
-# 租户切换
+# 入口上下文 / 租户切换
 # ---------------------------------------------------------------------------
+
+def _space_of(user: dict) -> str:
+    role = user["platform_role"]
+    if role == "platform_admin":
+        return "admin"
+    if role == "tenant_admin":
+        return "tenant"
+    return "project"
+
 
 @router.get("/api/tenants/switchable")
 def switchable_tenants(user: dict = Depends(me)):
-    rows = db.rows("SELECT * FROM tenants WHERE status='active' ORDER BY id")
+    if auth.is_admin(user):
+        rows = db.rows(
+            "SELECT t.id,t.code,t.name,t.status,'platform_admin' role FROM tenants t ORDER BY t.id"
+        )
+    else:
+        rows = db.rows(
+            "SELECT t.id,t.code,t.name,t.status,m.member_role role FROM tenant_members m"
+            " JOIN tenants t ON t.id=m.tenant_id"
+            " WHERE m.user_id=? AND m.status='active' AND t.status='active' ORDER BY t.id",
+            (user["id"],),
+        )
     return {"tenants": rows, "current": user.get("tenant_id") or 0}
 
 
 @router.post("/api/tenant/switch")
-def switch_tenant(body: dict, user: dict = Depends(me)):
+def switch_tenant(body: dict, request: Request, user: dict = Depends(me)):
     tid = int(body.get("tenant_id") or 0)
-    tenant = db.row("SELECT * FROM tenants WHERE id=? AND status='active'", (tid,))
+    tenant = db.row("SELECT * FROM tenants WHERE id=? AND status='active'", (tid,)) if tid else None
     if tid and not tenant:
         raise HTTPException(404, "租户不存在或已停用")
-    db.execute("UPDATE users SET tenant_id=? WHERE id=?", (tid or None, user["id"]))
-    db.log(user["id"], "switch_tenant", f"tenant:{tid}", "切换租户")
-    return {"ok": True, "tenant_id": tid}
+    if tid and not auth.is_admin(user):
+        member = db.row(
+            "SELECT org_id,team_id FROM tenant_members WHERE tenant_id=? AND user_id=? AND status='active'",
+            (tid, user["id"]),
+        )
+        if not member:
+            raise HTTPException(403, "你不是该租户成员，无法切换")
+        db.execute(
+            "UPDATE users SET tenant_id=?,org_id=?,team_id=? WHERE id=?",
+            (tid, member["org_id"], member["team_id"], user["id"]),
+        )
+    auth.set_active_tenant(request.cookies.get(auth.COOKIE), tid or None)
+    db.log(user["id"], "switch_tenant", f"tenant:{tid}", "切换租户上下文")
+    return {"ok": True, "tenant_id": tid, "space": _space_of(user)}
+
+
+@router.get("/api/context")
+def entry_context(user: dict = Depends(me)):
+    """三套入口共用的上下文：空间、租户、组织团队、可访问项目与待办计数。"""
+    space = _space_of(user)
+    tenant = None
+    if user.get("tenant_id"):
+        tenant = db.row(
+            "SELECT id,code,name,status FROM tenants WHERE id=?", (user["tenant_id"],)
+        )
+    ids = auth.visible_project_ids(user)
+    projects = []
+    if ids:
+        marks = ",".join("?" * len(ids))
+        projects = [
+            {**p, "role": auth.project_role(user, p["id"])}
+            for p in db.rows(
+                f"SELECT id,code,name,modality,tenant_id FROM projects WHERE id IN ({marks}) ORDER BY id",
+                tuple(ids),
+            )
+        ]
+    org = db.row("SELECT id,code,name FROM orgs WHERE id=?", (user["org_id"],)) if user.get("org_id") else None
+    team = db.row("SELECT id,code,name FROM teams WHERE id=?", (user["team_id"],)) if user.get("team_id") else None
+    where, args = auth.task_scope_sql(user)
+    counts = db.row(
+        "SELECT COUNT(*) total,"
+        " SUM(CASE WHEN t.status IN ('pending','annotating') THEN 1 ELSE 0 END) active,"
+        " SUM(CASE WHEN t.status IN ('submitted','review') THEN 1 ELSE 0 END) review,"
+        " SUM(CASE WHEN t.status='review_done' THEN 1 ELSE 0 END) accept,"
+        " SUM(CASE WHEN t.status='done' THEN 1 ELSE 0 END) done"
+        f" FROM tasks t WHERE {where} AND t.deleted=0",
+        tuple(args),
+    ) or {}
+    return {
+        "space": space,
+        "space_label": {"admin": "管理平台", "tenant": "租户平台", "project": "项目平台"}[space],
+        "tenant": tenant,
+        "tenants": switchable_tenants(user)["tenants"],
+        "org": org,
+        "team": team,
+        "projects": projects,
+        "role_label": auth.PLATFORM_ROLES.get(user["platform_role"], ""),
+        "permissions": [p for p in db.PERMISSIONS if auth.has_perm(user, p)],
+        "counts": {k: counts.get(k) or 0 for k in ("total", "active", "review", "accept", "done")},
+    }

@@ -9,20 +9,32 @@
 - 指标端点：`GET /metrics`（Prometheus 文本格式）
 - 缺口分析与演示清单：[docs/bid-gap-analysis/bid-gap-analysis.html](docs/bid-gap-analysis/bid-gap-analysis.html)
 
+### 三级平台入口
+
+登录后按角色自动进入对应工作台，三套入口共享同一账号体系与数据隔离规则：
+
+| 入口 | 路由前缀 | 面向角色 | 主要功能 |
+|---|---|---|---|
+| 管理平台 | `#/admin/*` | 平台管理员 | 租户、组织、用户、RBAC、安全合规、平台监控 |
+| 租户平台 | `#/tenant/*` | 租户管理员 | 本租户项目/团队/成员、租户内统计、验收中心 |
+| 项目平台 | `#/project/:pid/*` | 项目经理、标注员、质检员、验收员 | 我的任务、标注工作台、质检、验收、数据集 |
+
+旧链接（如 `#/tasks`、`#/qc`）会自动重定向到当前入口对应的三段式路由，不影响已有书签。
+
 ---
 
 ## 1. 核心能力
 
 | 能力域 | 主要内容 |
 |---|---|
-| 多租户与平台控制台 | 平台 → 租户 → 项目三级隔离；用户/项目/存储配额；用量计量与计费策略；租户切换 |
-| 组织与权限 | 平台角色 + 项目角色 + 自定义角色；任务级角色授权；RBAC 权限矩阵 |
+| 多租户与平台控制台 | 管理平台 / 租户平台 / 项目平台三套入口；平台 → 租户 → 项目三级隔离；`tenant_members` 多对多成员关系；用户/项目/存储配额；用量计量与计费策略；会话级租户切换 |
+| 组织与权限 | 平台角色 + 项目角色 + 自定义角色；超级管理员、租户管理员、项目经理、标注员、质检员、验收员；任务级角色授权；RBAC 权限矩阵 |
 | 数据集与作业 | ZIP/URL/FTP/HDFS/S3-兼容导入、分片续传、版本快照/diff/回滚、生命周期与回收站 |
-| 任务治理 | 任务大厅、任务包、领取锁、条件工作流、暂停/恢复/终止、包级退回与返工历史 |
+| 任务治理 | 任务大厅、任务包、领取锁、条件工作流、暂停/恢复/终止、包级退回与返工历史；质检通过后进入待验收，验收通过才完成 |
 | 模板编排 | 组件库、嵌套容器、属性与校验、版本升版与灰度投放、模板驱动表单 |
-| 多模态标注 | 图片/音频/视频/文本/点云/LLM/多模态/PDF 八类工作台 |
+| 多模态标注 | 图片/音频/视频/文本/点云/LLM/多模态/PDF 八类工作台；文本嵌套实体与语义匹配、语音语种/强度/发音校对、视频行为区间/逐帧、点云关键点/车道线/4D 帧序列 |
 | 交互式算子 | SAM 分割、OCR、视频跟踪、文档问答、ASR、开放词检测、文本润色（内置降级 + 外部服务） |
-| 智能质检 | 规则引擎 + 质检算子库 + 阈值/权重/组合规则 + 字符级定位高亮 |
+| 智能质检 | 规则引擎 + 质检算子库 + 阈值/权重/组合规则 + 字符级定位高亮；驳回错误类型（漏标/错标/框选偏差等）与分布统计 |
 | 集成与运维 | 双向集成端点、Prometheus/Loki/数据湖、备份恢复、升级回滚、TLS 反向代理 |
 | 安全合规 | PBKDF2 口令、Cookie 会话、IP 白名单、TOTP MFA、OIDC SSO、SCIM 2.0、API Key、媒体短时 Token、水印、审计导出 |
 
@@ -47,6 +59,8 @@
 │  ops.py         品牌、存储、MFA/SSO、审计、监控、备份升级          │
 │  extras.py      扩展标注、作业队列、通知、抽审、模型仓库           │
 │  advanced.py    平台控制台、模板编排、交互算子、质检算子、集成      │
+│  editing.py     图像编辑指令标注与规范校验                         │
+│  serviceops.py  运营月报、工单 SLA、保密协议、培训考核              │
 └───────────────┬───────────────────────────────┬──────────────────┘
                 │                               │
         ┌───────▼────────┐              ┌───────▼──────────────┐
@@ -85,6 +99,8 @@ chunke-label-platform/
 │   ├── advanced.py        # 平台控制台/模板编排/交互算子/质检算子/集成
 │   ├── prelabel.py        # 预标注调度与 ASR worker 包装
 │   ├── overlap.py         # 重叠发言检测（ONNX）
+│   ├── editing.py         # 图像编辑指令标注、规范校验、体检与 JSONL 导出
+│   ├── serviceops.py      # 运营月报、工单 SLA、保密协议、培训考核
 │   └── static/
 │       ├── index.html
 │       ├── styles.css
@@ -159,14 +175,17 @@ Nginx 暴露 `8080`（HTTP 跳转）与 `8443`（HTTPS），反向代理到应�
 
 密码均为 `chunke123`（生产环境请立即修改）：
 
-| 账号 | 平台角色 | 说明 |
-|---|---|---|
-| `admin` | platform_admin | 平台管理员，可进入平台控制台 |
-| `honghaifeng` | platform_admin | 平台管理员 |
-| `liuxiao` | project_manager | 项目经理，管理所辖项目 |
-| `wangmin` / `liqiang` | annotator | 标注员，仅见分派任务 |
-| `zhoulan` | reviewer | 质检员，仅见待质检任务 |
-| `client` | client | 客户只读 |
+| 账号 | 平台角色 | 登录入口 | 说明 |
+|---|---|---|---|
+| `admin` | platform_admin | `#/admin/dashboard` | 平台管理员，可进入管理平台 |
+| `honghaifeng` | platform_admin | `#/admin/dashboard` | 平台管理员 |
+| `tb_admin` | tenant_admin | `#/tenant/dashboard` | 租户管理员（T20261111-01），仅管理本租户 |
+| `liuxiao` | project_manager | 项目平台 | 项目经理，管理所辖项目 |
+| `wangmin` / `liqiang` | annotator | 项目平台 | 标注员，仅见分派任务 |
+| `zhoulan` | reviewer | 项目平台 | 质检员，仅见待质检任务 |
+| `client` | client | 项目平台 | 客户只读 |
+
+> 验收员使用平台/项目角色 `acceptor`，可由租户管理员在成员管理中创建，或通过 `POST /api/tasks/{tid}/roles` 给具体任务授权。没有预置验收员账号，避免演示数据被误改。
 
 ### 4.5 重置本地数据
 
@@ -194,13 +213,16 @@ rm -f data/chunke.db data/chunke.db-* data/tmp/*
 
 ### 5.2 组织、角色与任务级权限
 
-- 平台角色：`platform_admin` / `project_manager` / `annotator` / `reviewer` / `client`
-- 项目角色：`manager` / `annotator` / `reviewer` / `viewer`
-- 自定义角色与权限点：`GET/PATCH /api/roles`、`GET /api/rbac/matrix`
-- 任务级授权：`GET/POST/DELETE /api/tasks/{tid}/roles`
-- 数据范围在 SQL 层过滤：标注员仅本人任务、质检员仅待质检任务、项目经理仅本项目。
+- 平台角色：`platform_admin` / `tenant_admin` / `project_manager` / `annotator` / `reviewer` / `acceptor` / `client`
+- 项目角色：`manager` / `annotator` / `reviewer` / `acceptor` / `viewer`
+- 自定义角色与权限点：`GET/PATCH /api/roles`、`GET /api/rbac/matrix`；仅平台管理员可修改全局矩阵
+- 任务级授权：`GET/POST/DELETE /api/tasks/{tid}/roles`，同一用户可在不同任务中担任标注员、质检员或验收员
+- 租户成员：`tenant_members` 维护用户与租户的多对多关系，租户切换只允许已加入的租户
+- 数据范围在 SQL 层过滤：标注员仅本人任务、质检员仅待质检任务、验收员仅待验收任务、项目经理仅本项目；租户管理员自动拥有本租户全部项目视角
 
-组织与用户：`GET /api/org/tree`、`PATCH /api/org/users/{uid}`、`POST /api/members/import`、`POST /api/members/bulk`。
+组织与用户：`GET /api/org/tree`、`PATCH /api/org/users/{uid}`、`POST /api/members`、`PATCH /api/members/{uid}`、`POST /api/members/import`（CSV 上传）、`POST /api/members/import-batch`（JSON 批量）。
+
+上下文与租户：`GET /api/context` 返回当前入口空间、租户、组织/团队、项目与待办计数；`GET /api/tenants/switchable`、`POST /api/tenant/switch` 用于切换已加入租户。
 
 ### 5.3 数据集与作业中心
 
@@ -245,10 +267,10 @@ POST /api/tasks/{tid}/form                  保存表单值
 | 模态 | 能力 |
 |---|---|
 | 图片 | 矩形框、多边形/孔洞、掩码、关键点、SAM 交互分割、OCR 区域、开放词检测 |
-| 音频 | 波形 + 分段轨道、说话人/情绪/事件、ASR 转写、音频预处理 |
-| 视频 | 逐帧框、关键帧插值、事件区间时间轴、跟踪方向/断轨/合并、抽帧 |
-| 文本 | 字符级 span、分类/实体/关系、文本质检 |
-| 点云 | 3D 投影框、语义分割、多传感器融合 |
+| 音频 | 波形 + 分段轨道、说话人/情绪/事件、语种、情绪强度 1–5、发音校对（错读/漏读/多读/声调）、ASR 转写、音频预处理 |
+| 视频 | 逐帧框、关键帧插值、复制上一帧、0.5–2 倍速、逐帧/10 帧跳转、行为区间（主体+起止帧）、视频分类与属性 |
+| 文本 | 字符级 span、嵌套实体（父子层级）、词性、层级分类、情感极性与强度、A/B 语义匹配、文本质检 |
+| 点云 | 3D 投影框、关键点、车道线（类型/实虚线）、按深度/高度/距离着色、距离过滤、场景分类、4D 帧快照复制/载入 |
 | LLM | 问答对生成/采纳、多轮对话、偏好排序、评分、润色、视觉语言 |
 | 多模态 | 图/音/视频与文本配对、A/B 时间区间与区域、同步定位/播放、偏差提示 |
 | PDF | 文档区域、OCR 字段映射、问答生成、多算子对比与来源标注 |
@@ -316,6 +338,30 @@ GET  /api/qc/operators             算子目录
 - **认证**：PBKDF2 口令、HttpOnly Cookie 会话、TOTP MFA、OIDC SSO、SCIM 2.0、API Key。
 - **数据保护**：IP 白名单、媒体短时 Token、下载策略、全屏水印、审计 CSV 导出、TC609 证据包。
 
+### 5.10 质检与验收闭环
+
+任务状态机：
+
+```text
+待标注 pending → 标注中 annotating → 待质检 submitted → 质检中 review
+      → 待验收 review_done → 已完成 done
+                ↑ 驳回                    ↑ 验收驳回
+                └──────── 标注/质检 ───────┘
+```
+
+- 质检通过（含免检自动通过）不再直接完成，而是进入 `review_done`，由验收员确认交付质量。
+- 验收通过进入 `done`；验收驳回回到 `annotating`（需重标）或 `review`（仅需复检）。
+- 每次验收写入 `acceptance_records`；每次驳回可勾选错误类型，写入 `qc_records.error_types`。
+- 验收员只能看到 `review_done` 任务；普通标注员/质检员无法调用验收接口。
+
+接口：
+
+```text
+GET  /api/acceptance                 待验收队列
+POST /api/tasks/{tid}/accept         验收：{ "result": "approved|rejected", "comment": "", "target": "annotating|review" }
+GET  /api/quality/error-types        驳回错误类型分布
+```
+
 ---
 
 ## 6. 演示路径
@@ -329,18 +375,22 @@ GET  /api/qc/operators             算子目录
 | 18 | LLM | 问答对、多轮对话、评分、润色采纳、模板表单 |
 | 19 | 多模态 | A/B 时间区间与区域配对、双色时间条、同步定位、偏差提示 |
 
-推荐的 10 分钟演示顺序：
+推荐演示顺序（约 15 分钟）：
 
-1. 登录 `admin` → 工作台查看项目与统计。
-2. 平台控制台 → 租户配额、计量计费、安全合规基线。
-3. 模板中心 → 打开任一模板编排器，展示组件库、嵌套、灰度与版本。
-4. 任务中心 → 打开任务 16，演示时间轴、SAM 与跟踪参数。
-5. 打开任务 17，演示 PDF 区域、OCR 字段映射、问答对比。
-6. 打开任务 18，演示问答对、多轮对话、润色采纳。
-7. 打开任务 19，演示跨模态配对与同步定位。
-8. 平台控制台 → 文本质检算子，输入 `这个帐号登陆失败,,请检查.` 运行，展示得分、位置与高亮。
-9. 导出/集成：任务提交质检 → 质检通过 → 数据集导出。
-10. 运维：监控摘要、备份、审计导出。
+1. 登录 `admin` → 自动进入管理平台 `#/admin/dashboard`，查看平台总览、租户与 RBAC 矩阵。
+2. 切换到 `tb_admin` 登录 → 租户平台 `#/tenant/dashboard`，展示本租户项目/团队/成员与租户切换器。
+3. 切换到 `wangmin` 登录 → 项目平台 `#/project/1/dashboard`，展示“我的任务/验收中心/质检中心”。
+4. 平台控制台 → 租户配额、计量计费、安全合规基线。
+5. 模板中心 → 打开任一模板编排器，展示组件库、嵌套、灰度与版本。
+6. 任务中心 → 打开任务 16，演示时间轴、SAM 与跟踪参数。
+7. 打开任务 17，演示 PDF 区域、OCR 字段映射、问答对比。
+8. 打开任务 18，演示问答对、多轮对话、润色采纳。
+9. 打开任务 19，演示跨模态配对与同步定位。
+10. 平台控制台 → 文本质检算子，输入 `这个帐号登陆失败,,请检查.` 运行，展示得分、位置与高亮。
+11. 质检驳回：勾选“漏标/框选偏差”等错误类型，展示质检页错误类型分布。
+12. 验收闭环：质检通过 → 待验收 → 验收通过进入已完成；验收驳回退回标注/质检。
+13. 成员管理 → 批量导入，粘贴 `zhangsan,张三,标注员,chunke123` 演示逐行校验。
+14. 运维：监控摘要、备份、审计导出。
 
 ---
 
@@ -350,12 +400,13 @@ GET  /api/qc/operators             算子目录
 
 | 分组 | 代表接口 |
 |---|---|
-| 认证 | `POST /api/login`、`GET /api/me`、`GET /api/auth/mfa/*`、`GET /api/auth/sso/start` |
-| 任务 | `GET /api/tasks`、`GET /api/tasks/{tid}`、`POST /api/tasks/{tid}/annotation`、`/submit`、`/review` |
+| 认证与上下文 | `POST /api/login`、`GET /api/me`、`GET /api/context`、`GET /api/tenants/switchable`、`POST /api/tenant/switch`、`GET /api/auth/mfa/*`、`GET /api/auth/sso/start` |
+| 任务 | `GET /api/tasks`、`GET /api/tasks/{tid}`、`POST /api/tasks/{tid}/annotation`、`/submit`、`/review`、`/accept`、`GET /api/acceptance` |
+| 组织与成员 | `GET /api/org/tree`、`POST /api/members`、`PATCH /api/members/{uid}`、`POST /api/members/import`、`POST /api/members/import-batch` |
 | 模板 | `GET/PUT /api/templates/{tid}/layout`、`GET/POST /api/tasks/{tid}/form` |
 | 扩展标注 | `GET/POST /api/tasks/{tid}/annotation/extras` |
 | 算子 | `POST /api/operators/run`、`POST /api/qa/compare`、`GET /api/operators/catalog` |
-| 质检 | `GET/PUT /api/qc/rules`、`POST /api/qc/operators/run` |
+| 质检 | `GET/PUT /api/qc/rules`、`POST /api/qc/operators/run`、`GET /api/quality/error-types` |
 | 数据集 | `GET/POST /api/datasets`、`/versions`、`/export`、`/import` |
 | 任务治理 | `/api/task-hall`、`/api/task-packages`、`/api/workflows` |
 | 平台 | `/api/platform/overview`、`/api/usage`、`/api/billing/policy`、`/api/integrations` |
@@ -442,7 +493,7 @@ curl -s -b /tmp/ck.jar -H 'Content-Type: application/json' \
 - 媒体目录：`data/media/`，任务媒体经 `task_media` 关联；支持本地与 S3 兼容存储。
 - 备份目录：`data/backups/`（已被 `.gitignore` 忽略）。
 - 凭据加密密钥：`data/secret.key` 或 `CK_SECRET_KEY`（不入库）。
-- 主要数据表：`tenants`、`users`、`projects`、`tasks`、`annotations`、`annotation_versions`、`templates`、`template_layouts`、`template_versions`、`datasets`、`dataset_versions`、`dataset_items`、`workflows`、`task_packages`、`rework_events`、`qc_records`、`quality_rules`、`operators`、`operator_runs`、`integration_endpoints`、`sync_logs`、`secret_vault`、`api_keys`、`security_events`、`capacity_snapshots`。
+- 主要数据表：`tenants`、`tenant_members`、`users`、`orgs`、`teams`、`projects`、`project_members`、`task_roles`、`tasks`、`annotations`、`annotation_versions`、`acceptance_records`、`templates`、`template_layouts`、`template_versions`、`datasets`、`dataset_versions`、`dataset_items`、`workflows`、`task_packages`、`rework_events`、`qc_records`、`quality_rules`、`operators`、`operator_runs`、`integration_endpoints`、`sync_logs`、`secret_vault`、`api_keys`、`security_events`、`capacity_snapshots`。
 
 ---
 
@@ -460,9 +511,14 @@ curl -s -b /tmp/ck.jar -H 'Content-Type: application/json' \
 - 单机 SQLite 架构，超大规模并发建议迁移 PostgreSQL 并增加对象存储。
 - 视频抽帧与转码依赖本机 ffmpeg。
 - 内置算法为规则/几何降级实现，精度不等同于生产模型。
+- 点云工作台提供 3D 框、关键点、车道线、距离过滤与 4D 帧快照；**点级语义分割**与真实连续点云序列（流式 PCD 帧）尚未实现。
+- 视频跟踪为手动关键帧 + 线性插值，未内置模型自动跟踪；可接 `operator.track.url`。
+- 多语言目前提供语言偏好字段与数据集 `lang` 标记，**全站中英文词条翻译**尚未完成。
+- 页面水印已实现；导出 CSV/JSON 文件内嵌水印未实现，避免破坏训练数据格式。
+- 批量导入支持 CSV 上传与 JSON 批量；百万级性能、平板适配与私有化安装包需在交付环境专项验证。
 
 ---
 
 ## 12. License
 
-Proprietary © 春科科技。未经授权不得复制、分发或用于商业用途。
+Proprietary © 杭州春科数据科技有限公司。未经授权不得复制、分发或用于商业用途。

@@ -145,6 +145,124 @@ def init_schema() -> None:
         }, ensure_ascii=False))
 
 
+DEMO_VIDEO_LAYOUT = [
+    {"id": "c-info", "type": "columns", "label": "视频信息", "children": [
+        {"id": "f-code", "type": "text", "label": "视频编号", "required": True, "placeholder": "如 V-001"},
+        {"id": "f-scene", "type": "textarea", "label": "场景说明", "placeholder": "描述场景与拍摄条件"},
+        {"id": "f-tags", "type": "tags", "label": "行为标签", "options": ["行走", "搬运", "交互", "跌倒"]},
+        {"id": "f-start", "type": "timestamp", "label": "事件开始时间"},
+    ]},
+    {"id": "f-events", "type": "table", "label": "事件区间表", "columns": ["开始(s)", "结束(s)", "行为", "置信度"],
+     "props": {"rows": 3}},
+    {"id": "f-dir", "type": "select", "label": "跟踪方向", "options": ["forward", "backward", "both"], "default": "both"},
+    {"id": "f-occlude", "type": "radio", "label": "是否存在遮挡", "options": ["是", "否"]},
+    {"id": "f-checks", "type": "checkbox", "label": "质量检查项", "options": ["框贴合", "无漏标", "时间准确"]},
+]
+DEMO_PDF_LAYOUT = [
+    {"id": "f-pdf", "type": "pdf", "label": "原始文档", "required": True, "props": {"accept": "pdf", "multiple": False}},
+    {"id": "c-doc", "type": "container", "label": "文档信息", "children": [
+        {"id": "f-title", "type": "text", "label": "文档标题", "required": True},
+        {"id": "f-summary", "type": "textarea", "label": "文档摘要", "placeholder": "用于问答生成的核心段落"},
+    ]},
+    {"id": "f-map", "type": "table", "label": "字段映射", "columns": ["字段", "识别值", "置信度"], "props": {"rows": 4}},
+    {"id": "f-llm", "type": "llm", "label": "生成问答", "props": {"mode": "generate", "model": ""}},
+    {"id": "f-timeline", "type": "timeline", "label": "多时序对齐", "fields": ["开始", "结束"]},
+    {"id": "f-quality", "type": "select", "label": "问答质量", "options": ["优", "良", "待修订"]},
+]
+DEMO_LLM_LAYOUT = [
+    {"id": "f-question", "type": "textarea", "label": "用户问题", "required": True, "placeholder": "输入问题"},
+    {"id": "f-answer", "type": "textarea", "label": "参考答案", "required": True},
+    {"id": "f-pref", "type": "radio", "label": "偏好选择", "options": ["回答 A", "回答 B", "平局"]},
+    {"id": "f-dims", "type": "tags", "label": "评分维度", "options": ["准确性", "完整性", "流畅性", "安全性"]},
+    {"id": "f-dialog", "type": "table", "label": "多轮对话", "columns": ["轮次", "角色", "内容"], "props": {"rows": 4}},
+    {"id": "f-code", "type": "code", "label": "结构化输出", "props": {"language": "json"}},
+    {"id": "f-polish", "type": "llm", "label": "润色与生成", "props": {"mode": "polish", "model": ""}},
+]
+DEMO_MULTI_LAYOUT = [
+    {"id": "c-media", "type": "columns", "label": "跨模态配对", "children": [
+        {"id": "f-image", "type": "image", "label": "图像引用", "props": {"accept": "image", "multiple": True}},
+        {"id": "f-audio", "type": "audio", "label": "音频引用", "props": {"accept": "audio", "multiple": False}},
+        {"id": "f-video", "type": "video", "label": "视频引用", "props": {"accept": "video", "multiple": False}},
+    ]},
+    {"id": "f-align", "type": "timestamp", "label": "对齐时间点"},
+    {"id": "f-verdict", "type": "select", "label": "一致性判断", "options": ["一致", "不一致", "存疑"], "default": "一致"},
+    {"id": "f-note", "type": "textarea", "label": "判断说明", "placeholder": "说明时间/空间对齐依据"},
+    {"id": "f-pairs", "type": "table", "label": "区域配对", "columns": ["A 区域", "B 区域", "偏差"], "props": {"rows": 3}},
+]
+
+
+def seed_demo_v4() -> None:
+    """幂等补齐 v4 演示项目、成员、模板布局与任务，确保任务分配和模板表单开箱可用。"""
+    ts = db.now()
+    users = {u["username"]: u for u in db.rows("SELECT id,username FROM users")}
+    admin = users.get("admin")
+    if not admin:
+        return
+    tenant = db.row("SELECT id FROM tenants ORDER BY id LIMIT 1")
+    tenant_id = tenant["id"] if tenant else 1
+    proj = db.row("SELECT * FROM projects WHERE code='demo-v4-multi'")
+    if proj:
+        pid = proj["id"]
+    else:
+        pid = db.execute(
+            "INSERT INTO projects(code,name,modality,description,owner_id,engine,engine_url,label_config,"
+            "created_at,tenant_id,status) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            ("demo-v4-multi", "演示-视频/文档/大模型/多模态", "multimodal",
+             "v4 能力演示：视频事件、PDF 问答、LLM 对话与跨模态对齐。", users.get("liuxiao", admin)["id"],
+             "内置", "", json.dumps({"行为": ["搬运", "行走", "交互", "跌倒"], "场景": ["客厅", "厨房", "卧室"]},
+                                  ensure_ascii=False), ts, tenant_id, "active"),
+        )
+    for uname, role in (("liuxiao", "manager"), ("wangmin", "annotator"), ("liqiang", "annotator"),
+                        ("zhoulan", "reviewer"), ("admin", "manager")):
+        if uname in users:
+            db.execute("INSERT OR IGNORE INTO project_members(project_id,user_id,project_role) VALUES(?,?,?)",
+                       (pid, users[uname]["id"], role))
+    tpls = [
+        ("tpl-pdf-qa", "PDF 文档问答模板", "pdf", "PDF 文档区域、字段映射与问答生成"),
+        ("tpl-llm-chat", "大模型对话与偏好模板", "llm", "问答、多轮对话、偏好排序与润色"),
+        ("tpl-multimodal", "多模态图文对齐模板", "multimodal", "图/音/视频与文本跨模态对齐判断"),
+    ]
+    tpl_ids = {}
+    for code, name, modality, desc in tpls:
+        t = db.row("SELECT id FROM templates WHERE code=?", (code,))
+        if not t:
+            t = {"id": db.execute(
+                "INSERT INTO templates(code,name,modality,description,label_config,qc_config,instruction,builtin,created_at)"
+                " VALUES(?,?,?,?,?,?,?,?,?)",
+                (code, name, modality, desc, "{}", "{}", desc, 0, ts),
+            )}
+        tpl_ids[modality] = t["id"]
+    video_tpl = db.row("SELECT id FROM templates WHERE code='tpl-video-behavior'")
+    if video_tpl:
+        tpl_ids["video"] = video_tpl["id"]
+    for modality, layout in (("video", DEMO_VIDEO_LAYOUT), ("pdf", DEMO_PDF_LAYOUT),
+                             ("llm", DEMO_LLM_LAYOUT), ("multimodal", DEMO_MULTI_LAYOUT)):
+        tid = tpl_ids.get(modality)
+        if not tid:
+            continue
+        cur = db.row("SELECT layout FROM template_layouts WHERE template_id=?", (tid,))
+        if not cur or _json(cur["layout"], []) == []:
+            db.execute(
+                "INSERT OR REPLACE INTO template_layouts(template_id,layout,gray_percent,locked,version,updated_at)"
+                " VALUES(?,?,?,?,?,?)",
+                (tid, json.dumps(layout, ensure_ascii=False), 100, 0, 1, ts),
+            )
+    if not db.row("SELECT id FROM tasks WHERE project_id=? LIMIT 1", (pid,)):
+        demos = [
+            ("演示-视频行为事件", "video", os.path.join(db.MEDIA_DIR, "demo-video.mp4"), 4.0),
+            ("演示-PDF 文档问答", "pdf", os.path.join(db.MEDIA_DIR, "demo-doc.pdf"), 0),
+            ("演示-大模型对话标注", "llm", "", 0),
+            ("演示-多模态图文对齐", "multimodal", "", 0),
+        ]
+        for name, mt, media, dur in demos:
+            db.execute(
+                "INSERT INTO tasks(project_id,name,media_path,media_type,duration,status,assignee_id,reviewer_id,"
+                "priority,batch,created_at,updated_at,source) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (pid, name, media, mt, dur, "pending", users.get("wangmin", admin)["id"],
+                 users.get("zhoulan", admin)["id"], "normal", "v4 演示", ts, ts, "demo"),
+            )
+
+
 def policy() -> dict:
     base = {"password_min": 8, "complexity": True, "lock_threshold": 5, "lock_minutes": 15,
             "session_hours": 12, "audit_days": 180, "watermark": True,
@@ -1147,18 +1265,22 @@ def _builtin_operator(key: str, task: dict, data: dict) -> dict:
     if key == "asr":
         if task.get("media_type") != "audio":
             raise HTTPException(400, "仅音频任务支持转写")
-        media = task.get("media_path") or ""
+        media = db.media_abspath(task.get("media_path") or "")
         if not media or not os.path.exists(media):
             raise HTTPException(400, "任务音频不存在")
         from . import prelabel
-        segs = prelabel.transcribe(media, engine=ops.get_setting("asr.engine", "auto"))
-        return {"provider": "builtin", "algorithm": "funasr", "segments": segs}
+        res = prelabel.prelabel_audio(media, with_emotion=True)
+        if not res.get("ok"):
+            raise HTTPException(502, res.get("error") or "语音转写失败")
+        return {"provider": "builtin", "algorithm": res.get("engine") or "funasr",
+                "segments": res.get("segments") or [], "duration": res.get("duration"),
+                "elapsed_ms": res.get("elapsed_ms")}
     if key == "open_vocab":
         if task.get("media_type") != "image":
             raise HTTPException(400, "仅图片任务支持开放词检测")
         from . import prelabel
         classes = [c.strip() for c in str(data.get("prompt") or "").split(",") if c.strip()]
-        res = prelabel.prelabel_image(task["media_path"], classes=classes,
+        res = prelabel.prelabel_image(db.media_abspath(task["media_path"] or ""), classes=classes,
                                       engine=ops.get_setting("detect.engine", "auto"),
                                       min_conf=float(data.get("min_conf") or 0.3))
         return {"provider": "builtin", "algorithm": res.get("engine"), "boxes": res.get("boxes", [])}
@@ -1774,7 +1896,7 @@ def _job_metrics_push(j: dict, report) -> dict:
     url = ops.get_setting("monitor.datalake_url")
     if not url:
         raise RuntimeError("未配置数据湖地址 monitor.datalake_url")
-    summary = monitoring_summary({"id": j["user_id"], "platform_role": "platform_admin"})
+    summary = monitoring_summary({"id": j.get("created_by") or 0, "platform_role": "platform_admin"})
     report(50, "推送指标")
     req = urllib.request.Request(url, data=json.dumps(summary, ensure_ascii=False).encode(),
                                 headers={"Content-Type": "application/json"}, method="POST")

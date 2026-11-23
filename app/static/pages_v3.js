@@ -128,6 +128,7 @@
           <div class="field"><label>导入到</label><select class="select" id="imp-target"><option value="tasks">任务中心</option><option value="dataset">数据集</option></select></div>
           <div class="field"><label>批次名称</label><input class="input" id="imp-batch" placeholder="如 11月补采批次"></div>
         </div>
+        <div class="hint" id="imp-edit-notice" style="display:none;margin:0 0 12px"></div>
         <div class="field"><label>选择文件（支持多选、ZIP 压缩包，自动识别音视频/图片/点云/文本）</label><input class="input" type="file" id="imp-files" multiple></div>
         <button class="btn primary" id="imp-submit">开始导入</button>
         <span class="hint" id="imp-status" style="margin-left:10px"></span>
@@ -135,7 +136,31 @@
           <div class="field" style="margin:0"><label>或按 URL 批量导入（每行一个）</label><textarea class="input" id="imp-urls" rows="3" placeholder="https://example.com/a.jpg"></textarea></div>
           <button class="btn" id="imp-url-submit">URL 导入</button>
         </div>
+        <div class="grid" style="grid-template-columns:150px 1fr auto;margin-top:14px;align-items:end">
+          <div class="field" style="margin:0"><label>数据源类型</label><select class="select" id="imp-src-type">
+            <option value="ftp">FTP</option><option value="hdfs">HDFS</option><option value="s3">S3</option><option value="http">HTTP 列表</option>
+          </select></div>
+          <div class="field" style="margin:0"><label>路径 / 地址（HTTP 类型可每行一个）</label><textarea class="input" id="imp-src-path" rows="2" placeholder="ftp://user:pass@host/dir 或 hdfs:///path 或 s3://bucket/prefix"></textarea></div>
+          <button class="btn" id="imp-src-submit">数据源导入</button>
+        </div>
       </div></div>`;
+      /* 图像编辑项目：文件必须原图 + 结果图 + 指令 txt 成组配对，统一走「样本目录导入」 */
+      const editPids = new Set(projects().filter((p) => p.modality === 'editing').map((p) => Number(p.id)));
+      const notice = $v('#imp-edit-notice');
+      const syncEditMode = () => {
+        const pid = Number($v('#imp-proj').value);
+        const isEdit = editPids.has(pid);
+        notice.style.display = isEdit ? '' : 'none';
+        notice.innerHTML = isEdit
+          ? '图像编辑指令项目需按「原图 + 结果图 + 指令 txt」成组导入，系统会自动配对样本并预填指令。<button class="btn" id="imp-editing-entry" style="margin-left:8px">打开样本目录导入</button>'
+          : '';
+        ['#imp-submit', '#imp-url-submit', '#imp-src-submit'].forEach((s) => { $v(s).disabled = isEdit; });
+        const btn = $v('#imp-editing-entry');
+        if (btn) btn.onclick = () => window.editingImportModal && window.editingImportModal(pid);
+      };
+      $v('#imp-proj').onchange = syncEditMode;
+      syncEditMode();
+
       $v('#imp-submit').onclick = async () => {
         const files = $v('#imp-files').files;
         if (!files.length) return toast('请选择文件', 'err');
@@ -157,6 +182,16 @@
         if (!urls.length) return toast('请输入 URL', 'err');
         const r = await api('/api/import/url', { method: 'POST', body: { project_id: Number($v('#imp-proj').value), urls, batch: $v('#imp-batch').value } });
         toast(`已创建导入作业 #${r.job_id}`, 'ok');
+        location.hash = '#/jobs?tab=queue';
+      };
+      $v('#imp-src-submit').onclick = async () => {
+        const lines = $v('#imp-src-path').value.split('\n').map((x) => x.trim()).filter(Boolean);
+        if (!lines.length) return toast('请输入路径或地址', 'err');
+        const type = $v('#imp-src-type').value;
+        const body = { project_id: Number($v('#imp-proj').value), type, batch: $v('#imp-batch').value };
+        if (type === 'http') body.urls = lines; else body.path = lines[0];
+        const r = await api('/api/import/source', { method: 'POST', body });
+        toast(`已创建数据源导入作业 #${r.job_id}`, 'ok');
         location.hash = '#/jobs?tab=queue';
       };
     } else if (tab === 'chunk') {
@@ -352,7 +387,7 @@
 
   /* ------------------------------------------------------------------ 规则质检 */
   async function pageQuality() {
-    const [rules, stats] = await Promise.all([api('/api/quality/rules'), api('/api/prelabel/stats')]);
+    const [rules, stats, errs] = await Promise.all([api('/api/quality/rules'), api('/api/prelabel/stats'), api('/api/quality/error-types')]);
     const s = stats.stats || {};
     mountPage('quality', `
       ${head('规则质检与预标注验收', '可配置质检规则引擎 + 预标注采纳率统计', '<button class="btn primary" id="rule-add">新建规则</button>')}
@@ -370,7 +405,15 @@
         `<button class="btn ghost" data-rule-run="${r.id}">试运行</button> <button class="btn ghost" data-rule-toggle="${r.id}" data-on="${r.enabled}">${r.enabled ? '停用' : '启用'}</button>`,
       ]))}</div>
       <div class="card" style="margin-top:14px"><div class="card-head"><h3 class="card-title">按项目采纳率</h3></div>
-      ${table(['项目', '运行', '候选', '采纳', '采纳率'], (stats.by_project || []).map((p) => [esc(p.project_name), p.runs, p.suggested, p.kept, `${p.acceptance_rate}%`]), '暂无预标注数据')}</div>`, '规则质检');
+      ${table(['项目', '运行', '候选', '采纳', '采纳率'], (stats.by_project || []).map((p) => [esc(p.project_name), p.runs, p.suggested, p.kept, `${p.acceptance_rate}%`]), '暂无预标注数据')}</div>
+      <div class="card" style="margin-top:14px"><div class="card-head"><h3 class="card-title">质检错误类型分布</h3><span class="card-sub">累计 ${errs.rejected || 0} 条驳回</span></div><div class="card-body">
+        ${(errs.items || []).length ? errs.items.map((it) => {
+          const max = Math.max(1, ...errs.items.map((x) => x.count));
+          return `<div style="display:flex;align-items:center;gap:10px;margin-bottom:9px"><span style="width:72px;font-size:12px">${esc(it.type)}</span>
+            <div style="flex:1;height:8px;border-radius:4px;background:var(--bg-soft);overflow:hidden"><div style="width:${Math.round(it.count / max * 100)}%;height:100%;background:#EF4444"></div></div>
+            <b style="width:34px;text-align:right;font-size:12px">${it.count}</b></div>`;
+        }).join('') : '<div class="empty">暂无驳回错误类型数据，质检驳回时勾选错误类型即可统计</div>'}
+      </div></div>`, '规则质检');
     $v('#rule-add').onclick = () => ruleModal();
     $$v('[data-rule-toggle]').forEach((b) => {
       b.onclick = async () => { await api(`/api/quality/rules/${b.dataset.ruleToggle}`, { method: 'PATCH', body: { enabled: b.dataset.on !== '1' } }); toast('已更新', 'ok'); await route(); };
@@ -646,11 +689,18 @@
   WB.video = (wb) => {
     const payload = (state.current.annotation && state.current.annotation.payload) || {};
     const tracks = payload.tracks || [];
+    const segments = payload.segments || [];
+    let category = payload.category || '';
+    let attrs = payload.attrs || '';
     const media = wb.mediaName ? `/media/${wb.mediaName}` : '';
-    wb.customPayload = () => ({ media_type: 'video', tracks, segments: [] });
-    wbShell(wb, wb.task.name, `${chip('视频')}${chip(wb.project ? wb.project.name : '')}${chip(`轨迹 ${tracks.length} 条`)}`, `
+    const behaviorLabels = (wb.labels && wb.labels['行为']) || ['正常', '异常'];
+    wb.customPayload = () => ({ media_type: 'video', tracks, segments, category, attrs });
+    wbShell(wb, wb.task.name, `${chip('视频')}${chip(wb.project ? wb.project.name : '')}${chip(`轨迹 ${tracks.length}`)}${chip(`行为 ${segments.length}`)}`, `
       <div class="image-panel"><div class="image-toolbar"><span>视频轨迹标注（关键帧 + 线性插值）</span><span class="spacer"></span>
         <label class="toggle-wrap">类别 <input class="input" id="v-label" value="目标" style="width:96px;height:26px"></label>
+        <select class="select" id="v-rate" style="width:82px;height:26px"><option value="0.5">0.5x</option><option value="1" selected>1x</option><option value="1.5">1.5x</option><option value="2">2x</option></select>
+        <button class="btn ghost" id="v-prev">← 1帧</button>
+        <button class="btn ghost" id="v-next">1帧 →</button>
         <button class="btn ghost" id="v-add">当前帧添加框</button>
         <button class="btn ghost" id="v-interp">补全关键帧</button></div>
         <div style="position:relative;background:#050912;min-height:420px;display:flex;align-items:center;justify-content:center" id="v-stage">
@@ -658,17 +708,37 @@
           <div id="v-overlay" style="position:absolute;inset:0;pointer-events:none"></div>
         </div>
         <div class="transport"><span class="mono" id="v-time">00:00</span><input type="range" id="v-seek" min="0" max="100" value="0" style="flex:1"><span class="mono" id="v-dur">00:00</span></div>
+        <div class="hint" style="margin-top:6px">Enter 播放/暂停 · ←/→ 上一帧/下一帧 · Ctrl+←/→ 跳 10 帧 · T 新增轨迹 · B 新增行为区间</div>
       </div>`, `
-      <div class="card"><div class="card-head"><h3 class="card-title">轨迹列表</h3></div><div class="card-body" id="v-tracks" style="max-height:520px;overflow:auto"></div></div>`);
+      <div class="card"><div class="card-head"><h3 class="card-title">轨迹列表</h3></div><div class="card-body" id="v-tracks" style="max-height:300px;overflow:auto"></div></div>
+      <div class="card"><div class="card-head"><h3 class="card-title">行为区间</h3></div><div class="card-body">
+        <div class="filters"><select class="select" id="v-b-label" style="width:96px">${behaviorLabels.map((x) => `<option>${esc(x)}</option>`).join('')}</select>
+          <input class="input" id="v-b-subject" placeholder="行为主体" style="width:100px"></div>
+        <div class="filters" style="margin-top:6px"><input class="input" id="v-b-start" type="number" step="0.1" placeholder="开始秒" style="width:88px"><input class="input" id="v-b-end" type="number" step="0.1" placeholder="结束秒" style="width:88px"><button class="btn ghost" id="v-b-add">添加</button></div>
+        <div id="v-segments" style="margin-top:8px"></div>
+      </div></div>
+      <div class="card"><div class="card-head"><h3 class="card-title">视频分类 / 属性</h3></div><div class="card-body">
+        <div class="field"><label>分类（支持层级，如 安防/异常行为）</label><input class="input" id="v-cat" placeholder="内容审核/行为识别"></div>
+        <div class="field"><label>属性（逗号分隔）</label><input class="input" id="v-attrs" placeholder="白天,室内,清晰"></div>
+      </div></div>`);
     const video = $v('#v-video');
     let current = 0;
+    const drawSegs = () => {
+      $v('#v-segments').innerHTML = segments.map((s, i) => `<div style="display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid rgba(30,42,63,.5)">
+        <span class="tag">${esc(s.label || '行为')}</span><span class="sub">${esc(s.subject || '')} ${Number(s.start).toFixed(1)}→${Number(s.end).toFixed(1)}s</span>
+        <button class="btn ghost danger" data-del-seg="${i}" style="margin-left:auto">删除</button></div>`).join('') || '<div class="empty">暂无行为区间</div>';
+      $$v('[data-del-seg]').forEach((b) => { b.onclick = () => { segments.splice(Number(b.dataset.delSeg), 1); drawSegs(); markDirty(wb); }; });
+    };
     const draw = () => {
       $v('#v-tracks').innerHTML = tracks.map((tr, i) => `<div style="display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid rgba(30,42,63,.5)">
         <b style="font-size:12px">${esc(tr.label || '目标')}</b><span class="tag">${(tr.keyframes || []).length} 帧</span>
         <button class="btn ghost" data-kf="${i}" style="margin-left:auto">打关键帧</button>
+        <button class="btn ghost" data-copy="${i}">复制上一帧</button>
         <button class="btn ghost danger" data-del-tr="${i}">删除</button></div>`).join('') || '<div class="empty">暂无轨迹</div>';
-      $$v('[data-del-tr]').forEach((b) => { b.onclick = () => { tracks.splice(Number(b.dataset.delTr), 1); draw(); }; });
+      $$v('[data-del-tr]').forEach((b) => { b.onclick = () => { tracks.splice(Number(b.dataset.delTr), 1); draw(); markDirty(wb); }; });
       $$v('[data-kf]').forEach((b) => { b.onclick = () => addKeyframe(Number(b.dataset.kf)); });
+      $$v('[data-copy]').forEach((b) => { b.onclick = () => copyPrevKeyframe(Number(b.dataset.copy)); });
+      drawSegs();
     };
     const addKeyframe = (i) => {
       const tr = tracks[i];
@@ -677,11 +747,39 @@
       list.push({ t: current, x: last.x, y: last.y, w: last.w, h: last.h });
       list.sort((a, b) => a.t - b.t);
       tr.keyframes = list;
-      draw();
+      draw(); markDirty(wb);
+    };
+    const copyPrevKeyframe = (i) => {
+      const tr = tracks[i];
+      const list = (tr.keyframes || []).filter((k) => k.t < current).sort((a, b) => b.t - a.t);
+      if (!list.length) return toast('当前帧之前没有关键帧', 'warn');
+      const prev = list[0], added = { ...prev, t: current };
+      tr.keyframes = [...(tr.keyframes || []), added].sort((a, b) => a.t - b.t);
+      draw(); markDirty(wb);
+    };
+    const renderOverlay = () => {
+      const overlay = $v('#v-overlay');
+      if (!video || !overlay) return;
+      const rect = video.getBoundingClientRect();
+      const stage = $v('#v-stage').getBoundingClientRect();
+      overlay.innerHTML = tracks.map((tr) => {
+        const kf = (tr.keyframes || []).slice().sort((a, b) => Math.abs(a.t - current) - Math.abs(b.t - current))[0];
+        if (!kf || Math.abs(kf.t - current) > 1) return '';
+        return `<div style="position:absolute;left:${rect.left - stage.left + kf.x * rect.width}px;top:${rect.top - stage.top + kf.y * rect.height}px;width:${kf.w * rect.width}px;height:${kf.h * rect.height}px;border:2px solid #3B82F6;border-radius:2px"><span style="position:absolute;left:-1px;top:-18px;background:#3B82F6;color:#fff;font-size:10px;padding:1px 5px;border-radius:3px">${esc(tr.label || '目标')}</span></div>`;
+      }).join('');
+    };
+    const seekFrame = (delta) => {
+      if (!video) return;
+      video.pause();
+      video.currentTime = Math.max(0, Math.min(video.duration || 0, video.currentTime + delta / 25));
+      current = video.currentTime;
+      $v('#v-time').textContent = fmtShort(current);
+      $v('#v-seek').value = current;
+      renderOverlay();
     };
     $v('#v-add').onclick = () => {
       tracks.push({ uid: Math.random().toString(36).slice(2, 8), label: $v('#v-label').value || '目标', keyframes: [{ t: current, x: 0.2, y: 0.25, w: 0.25, h: 0.25 }] });
-      draw();
+      draw(); markDirty(wb);
     };
     $v('#v-interp').onclick = () => {
       tracks.forEach((tr) => {
@@ -698,55 +796,130 @@
         }
         tr.keyframes = out;
       });
-      draw(); toast('已按关键帧补齐逐帧框', 'ok');
+      draw(); markDirty(wb); toast('已按关键帧补齐逐帧框', 'ok');
     };
+    $v('#v-b-add').onclick = () => {
+      const start = Number($v('#v-b-start').value) || current;
+      const end = Number($v('#v-b-end').value) || Math.min(video ? video.duration : start + 1, start + 1);
+      if (end <= start) return toast('结束时间需大于开始时间', 'err');
+      segments.push({ label: $v('#v-b-label').value, subject: $v('#v-b-subject').value.trim(), start, end });
+      $v('#v-b-start').value = ''; $v('#v-b-end').value = ''; $v('#v-b-subject').value = '';
+      drawSegs(); markDirty(wb);
+    };
+    $v('#v-cat').onchange = (e) => { category = e.target.value.trim(); };
+    $v('#v-attrs').onchange = (e) => { attrs = e.target.value.split(',').map((x) => x.trim()).filter(Boolean).join(','); };
+    $v('#v-rate').onchange = (e) => { if (video) video.playbackRate = Number(e.target.value); };
+    $v('#v-prev').onclick = () => seekFrame(-1);
+    $v('#v-next').onclick = () => seekFrame(1);
     if (video) {
       video.onloadedmetadata = () => { $v('#v-dur').textContent = fmtShort(video.duration); $v('#v-seek').max = video.duration || 0; };
       video.ontimeupdate = () => {
         current = video.currentTime;
         $v('#v-time').textContent = fmtShort(current);
         $v('#v-seek').value = current;
-        const overlay = $v('#v-overlay');
-        const rect = video.getBoundingClientRect();
-        const stage = $v('#v-stage').getBoundingClientRect();
-        overlay.innerHTML = tracks.map((tr) => {
-          const kf = (tr.keyframes || []).find((k) => Math.abs(k.t - current) < 0.6) || (tr.keyframes || [])[0];
-          if (!kf) return '';
-          return `<div style="position:absolute;left:${rect.left - stage.left + kf.x * rect.width}px;top:${rect.top - stage.top + kf.y * rect.height}px;width:${kf.w * rect.width}px;height:${kf.h * rect.height}px;border:2px solid #3B82F6;border-radius:2px"><span style="position:absolute;left:-1px;top:-18px;background:#3B82F6;color:#fff;font-size:10px;padding:1px 5px;border-radius:3px">${esc(tr.label || '目标')}</span></div>`;
-        }).join('');
+        renderOverlay();
       };
       $v('#v-seek').oninput = (e) => { video.currentTime = Number(e.target.value); };
     }
+    document.onkeydown = (e) => {
+      if (!document.getElementById('v-video')) return;
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return;
+      if (e.key === 'Enter') { e.preventDefault(); video && (video.paused ? video.play() : video.pause()); }
+      if (e.key === 'ArrowLeft') { e.preventDefault(); seekFrame((e.ctrlKey || e.metaKey) ? -10 : -1); }
+      if (e.key === 'ArrowRight') { e.preventDefault(); seekFrame((e.ctrlKey || e.metaKey) ? 10 : 1); }
+      if (e.key.toLowerCase() === 't') $v('#v-add').click();
+      if (e.key.toLowerCase() === 'b') $v('#v-b-add').click();
+    };
     draw();
   };
 
   WB.text = (wb) => {
     const payload = (state.current.annotation && state.current.annotation.payload) || {};
     let text = payload.text || state.current.task.name || '';
-    const spans = payload.spans || [];
-    const draw = () => {
-      const parts = [];
-      let pos = 0;
-      spans.slice().sort((a, b) => a.start - b.start).forEach((s, i) => {
-        if (s.start > pos) parts.push(esc(text.slice(pos, s.start)));
-        parts.push(`<mark style="background:rgba(59,130,246,.3);border-bottom:2px solid #3B82F6" title="${esc(s.label)}">${esc(text.slice(s.start, s.end))}</mark>`);
-        pos = s.end;
-      });
-      parts.push(esc(text.slice(pos)));
-      $v('#t-preview').innerHTML = parts.join('') || '<span class="hint">在左侧输入文本</span>';
-      $v('#t-spans').innerHTML = spans.map((s, i) => `<div style="display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid rgba(30,42,63,.5)">
-        <span class="tag">${esc(s.label)}</span><span style="font-size:12px">${esc(text.slice(s.start, s.end))}</span>
-        <button class="btn ghost danger" data-del-span="${i}" style="margin-left:auto">删除</button></div>`).join('') || '<div class="empty">暂无实体</div>';
-      $$v('[data-del-span]').forEach((b) => { b.onclick = () => { spans.splice(Number(b.dataset.delSpan), 1); draw(); }; });
+    const spans = (payload.spans || []).filter((s) => s && s.start < s.end);
+    const posList = payload.pos || [];
+    const matches = payload.matches || [];
+    let sentiment = payload.sentiment || { polarity: '中性', intensity: 3, keywords: [] };
+    let category = payload.category || '';
+    const labels = (wb.labels && (wb.labels['实体'] || wb.labels['实体类型'])) || ['人名', '地名', '机构名', '时间', '数字', '产品', '其他'];
+    const posTags = ['名词', '动词', '形容词', '副词', '代词', '介词', '连词', '数量词', '助词', '其他'];
+    const relations = ['完全匹配', '部分匹配', '不匹配', '同义', '反义'];
+    const spanDepth = (s) => spans.filter((o) => o !== s && o.start <= s.start && o.end >= s.end && (o.end - o.start) > (s.end - s.start)).length;
+    const inRange = (s) => s.start >= 0 && s.end <= text.length && s.start < s.end;
+    const drawText = () => {
+      const valid = spans.filter(inRange);
+      const bounds = Array.from(new Set([0, text.length, ...valid.flatMap((s) => [s.start, s.end])]))
+        .filter((n) => n >= 0 && n <= text.length).sort((a, b) => a - b);
+      let html = '';
+      for (let i = 0; i < bounds.length - 1; i++) {
+        const a = bounds[i], b = bounds[i + 1];
+        if (b <= a) continue;
+        const owners = valid.filter((s) => s.start <= a && s.end >= b).sort((x, y) => (x.end - x.start) - (y.end - y.start));
+        const inner = owners[0];
+        const raw = esc(text.slice(a, b));
+        if (!inner) { html += raw; continue; }
+        const d = spanDepth(inner);
+        html += `<mark data-span="${spans.indexOf(inner)}" title="${esc(inner.label)}${d ? ` · L${d + 1}` : ''}" style="background:rgba(59,130,246,${(0.34 - d * 0.09).toFixed(2)});border-bottom:2px solid ${d ? '#22C55E' : '#3B82F6'}">${raw}</mark>`;
+      }
+      $v('#t-preview').innerHTML = html || '<span class="hint">在左侧输入文本</span>';
     };
-    wb.customPayload = () => ({ media_type: 'text', text, spans });
-    wbShell(wb, wb.task.name, `${chip('文本')}${chip(wb.project ? wb.project.name : '')}${chip(`实体 ${spans.length}`)}`, `
+    const draw = () => {
+      drawText();
+      $v('#t-spans').innerHTML = spans.map((s, i) => `<div style="display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid rgba(30,42,63,.5)">
+        <span class="tag">${esc(s.label)}</span><span class="sub">L${spanDepth(s) + 1}</span>
+        <span style="font-size:12px">${esc(text.slice(s.start, s.end))}</span>
+        <button class="btn ghost danger" data-del-span="${i}" style="margin-left:auto">删除</button></div>`).join('') || '<div class="empty">暂无实体</div>';
+      $v('#t-pos').innerHTML = posList.map((p, i) => `<div style="display:flex;gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid rgba(30,42,63,.5)">
+        <span class="tag">${esc(p.tag)}</span><span style="font-size:12px">${esc(text.slice(p.start, p.end))}</span>
+        <button class="btn ghost danger" data-del-pos="${i}" style="margin-left:auto">删除</button></div>`).join('') || '<div class="empty">暂无词性标注</div>';
+      $v('#t-matches').innerHTML = matches.map((m, i) => `<div style="display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid rgba(30,42,63,.5)">
+        <span class="tag">${esc(m.relation)}</span><span class="sub">${esc(m.a)} ↔ ${esc(m.b)}</span>
+        <button class="btn ghost danger" data-del-match="${i}" style="margin-left:auto">删除</button></div>`).join('') || '<div class="empty">暂无匹配对</div>';
+      $v('#t-keywords').value = (sentiment.keywords || []).join(',');
+      $v('#t-pol').value = sentiment.polarity;
+      $v('#t-int').value = sentiment.intensity;
+      $v('#t-int-val').textContent = sentiment.intensity;
+      $v('#t-cat').value = category;
+      $$v('#t-spans [data-del-span], #t-pos [data-del-pos], #t-matches [data-del-match]').forEach((b) => {
+        b.onclick = () => {
+          if (b.dataset.delSpan !== undefined) spans.splice(Number(b.dataset.delSpan), 1);
+          if (b.dataset.delPos !== undefined) posList.splice(Number(b.dataset.delPos), 1);
+          if (b.dataset.delMatch !== undefined) matches.splice(Number(b.dataset.delMatch), 1);
+          draw();
+        };
+      });
+    };
+    wb.customPayload = () => ({ media_type: 'text', text, spans, pos: posList, matches, sentiment, category });
+    wbShell(wb, wb.task.name, `${chip('文本')}${chip(wb.project ? wb.project.name : '')}${chip(`实体 ${spans.length}`)}${chip(`情感 ${sentiment.polarity}`)}${category ? chip(category) : ''}`, `
       <div class="card"><div class="card-head"><h3 class="card-title">文本内容</h3><button class="btn ghost" id="t-load" style="margin-left:auto">从媒体文件加载</button></div><div class="card-body">
         <textarea class="input" id="t-text" rows="10" placeholder="粘贴或加载待标注文本">${esc(text)}</textarea>
-        <div class="filters" style="margin-top:10px"><input class="input" id="t-label" placeholder="实体类型，如 产品/人名" style="width:160px"><button class="btn primary" id="t-span">标注选中文本</button></div>
+        <div class="filters" style="margin-top:10px">
+          <input class="input" id="t-label" list="t-label-list" placeholder="实体类型，如 产品/人名" style="width:160px">
+          <datalist id="t-label-list">${labels.map((x) => `<option value="${esc(x)}">`).join('')}</datalist>
+          <select class="select" id="t-span-parent" style="width:150px"><option value="">顶层实体</option>${spans.map((s, i) => `<option value="${i}">嵌套于：${esc(text.slice(s.start, s.end).slice(0, 12))}</option>`).join('')}</select>
+          <button class="btn primary" id="t-span">标注选中文本</button>
+        </div>
+        <div class="hint" style="margin-top:6px">数字键 1–9 快速切换实体类型，Ctrl/Cmd+D 复制上一实体类型</div>
         <div class="card" style="margin-top:12px"><div class="card-head"><h3 class="card-title">标注预览</h3></div><div class="card-body" id="t-preview" style="line-height:2;font-size:13.5px"></div></div>
-      </div></div>`, `<div class="card"><div class="card-head"><h3 class="card-title">实体列表</h3></div><div class="card-body" id="t-spans"></div></div>`);
-    $v('#t-text').oninput = (e) => { text = e.target.value; draw(); };
+      </div></div>`, `
+      <div class="card"><div class="card-head"><h3 class="card-title">实体列表</h3></div><div class="card-body" id="t-spans"></div></div>
+      <div class="card"><div class="card-head"><h3 class="card-title">情感与分类</h3></div><div class="card-body">
+        <div class="field"><label>整体情感</label><select class="select" id="t-pol"><option>正面</option><option>负面</option><option>中性</option></select></div>
+        <div class="field"><label>强度 <b id="t-int-val">3</b> / 5</label><input type="range" id="t-int" min="1" max="5" value="3" style="width:100%"></div>
+        <div class="field"><label>情感关键词（逗号分隔）</label><input class="input" id="t-keywords" placeholder="失望,退款"></div>
+        <div class="field"><label>文本分类（支持层级，如 评论/售后）</label><input class="input" id="t-cat" placeholder="新闻/评论/垃圾文本"></div>
+      </div></div>
+      <div class="card"><div class="card-head"><h3 class="card-title">词性标注</h3></div><div class="card-body">
+        <div class="filters"><select class="select" id="t-pos-tag" style="width:110px">${posTags.map((x) => `<option>${x}</option>`).join('')}</select><button class="btn ghost" id="t-pos-add">标注选中文本</button></div>
+        <div id="t-pos" style="margin-top:8px"></div>
+      </div></div>
+      <div class="card"><div class="card-head"><h3 class="card-title">语义匹配</h3></div><div class="card-body">
+        <textarea class="input" id="t-ma" rows="2" placeholder="文本 A"></textarea>
+        <textarea class="input" id="t-mb" rows="2" placeholder="文本 B" style="margin-top:6px"></textarea>
+        <div class="filters" style="margin-top:6px"><select class="select" id="t-rel" style="width:120px">${relations.map((x) => `<option>${x}</option>`).join('')}</select><button class="btn ghost" id="t-match-add">添加匹配对</button></div>
+        <div id="t-matches" style="margin-top:8px"></div>
+      </div></div>`);
+    $v('#t-text').oninput = (e) => { text = e.target.value; drawText(); };
     $v('#t-load').onclick = async () => {
       if (!wb.mediaName) return toast('该任务没有文本文件', 'err');
       const r = await fetch(`/media/${encodeURIComponent(wb.mediaName)}`, { credentials: 'same-origin' });
@@ -758,8 +931,37 @@
       const ta = $v('#t-text');
       const start = ta.selectionStart, end = ta.selectionEnd;
       if (start === end) return toast('请先选中文本', 'err');
-      spans.push({ start, end, label: $v('#t-label').value || '实体' });
+      const parent = $v('#t-span-parent').value;
+      const parentSpan = parent === '' ? null : spans[Number(parent)];
+      spans.push({ start, end, label: $v('#t-label').value.trim() || labels[0], parent: parentSpan ? text.slice(parentSpan.start, parentSpan.end) : null });
       draw();
+    };
+    $v('#t-pos-add').onclick = () => {
+      const ta = $v('#t-text');
+      const start = ta.selectionStart, end = ta.selectionEnd;
+      if (start === end) return toast('请先选中文本', 'err');
+      posList.push({ start, end, tag: $v('#t-pos-tag').value });
+      draw();
+    };
+    $v('#t-match-add').onclick = () => {
+      const a = $v('#t-ma').value.trim(), b = $v('#t-mb').value.trim();
+      if (!a || !b) return toast('请填写两段文本', 'err');
+      matches.push({ a, b, relation: $v('#t-rel').value });
+      $v('#t-ma').value = ''; $v('#t-mb').value = '';
+      draw();
+    };
+    $v('#t-pol').onchange = (e) => { sentiment = { ...sentiment, polarity: e.target.value }; };
+    $v('#t-int').oninput = (e) => { sentiment = { ...sentiment, intensity: Number(e.target.value) }; $v('#t-int-val').textContent = e.target.value; };
+    $v('#t-keywords').onchange = (e) => { sentiment = { ...sentiment, keywords: e.target.value.split(',').map((x) => x.trim()).filter(Boolean) }; };
+    $v('#t-cat').onchange = (e) => { category = e.target.value.trim(); };
+    document.onkeydown = (e) => {
+      if (!document.getElementById('t-text')) return;
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return;
+      if (/^[1-9]$/.test(e.key) && Number(e.key) <= labels.length) { $v('#t-label').value = labels[Number(e.key) - 1]; }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd' && spans.length) {
+        e.preventDefault();
+        $v('#t-label').value = spans[spans.length - 1].label;
+      }
     };
     draw();
   };
@@ -849,7 +1051,12 @@
     const payload = (state.current.annotation && state.current.annotation.payload) || {};
     let points = payload.sample || [];
     const boxes = payload.boxes || [];
-    let yaw = 0.6, scale = 1;
+    const keypoints = payload.keypoints || [];
+    const lanes = payload.lanes || [];
+    const frames = payload.frames || [];
+    let category = payload.category || '';
+    let attrs = payload.attrs || '';
+    let yaw = 0.6, scale = 1, minD = 0, maxD = 80, colorMode = 'depth';
     const draw = () => {
       const cvs = $v('#pc-canvas');
       if (!cvs) return;
@@ -865,11 +1072,33 @@
         return [cx + rx * 18 * scale + ry * 6 * scale, cy - z * 18 * scale + ry * 5 * scale, ry];
       };
       points.forEach((p) => {
+        const dist = Math.hypot(p[0], p[1]);
+        if (dist < minD || dist > maxD) return;
         const [px, py, depth] = proj(p);
         if (px < 0 || px > w || py < 0 || py > h) return;
-        const a = Math.max(0.15, Math.min(1, 1 - (depth + 40) / 80));
-        ctx.fillStyle = `rgba(96,165,250,${a.toFixed(2)})`;
+        if (colorMode === 'height') {
+          const t = Math.max(0, Math.min(1, (p[2] + 2) / 6));
+          ctx.fillStyle = `hsl(${210 - t * 190},90%,${45 + t * 20}%)`;
+        } else if (colorMode === 'distance') {
+          const t = Math.max(0, Math.min(1, dist / Math.max(1, maxD)));
+          ctx.fillStyle = `hsl(${180 + t * 120},85%,60%)`;
+        } else {
+          const a = Math.max(0.15, Math.min(1, 1 - (depth + 40) / 80));
+          ctx.fillStyle = `rgba(96,165,250,${a.toFixed(2)})`;
+        }
         ctx.fillRect(px, py, 1.6 * devicePixelRatio, 1.6 * devicePixelRatio);
+      });
+      lanes.forEach((ln) => {
+        const pts = (ln.points || []).map(proj);
+        if (pts.length < 2) return;
+        ctx.strokeStyle = ln.style === '虚线' ? '#22D3EE' : '#06B6D4';
+        ctx.lineWidth = 2 * devicePixelRatio;
+        ctx.setLineDash(ln.style === '虚线' ? [6 * devicePixelRatio, 4 * devicePixelRatio] : []);
+        ctx.beginPath();
+        pts.forEach((p, i) => { i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]); });
+        ctx.stroke(); ctx.setLineDash([]);
+        ctx.fillStyle = '#67E8F9'; ctx.font = `${10 * devicePixelRatio}px sans-serif`;
+        ctx.fillText(`${ln.type || '车道线'}·${ln.style || '实线'}`, pts[0][0], pts[0][1] - 5);
       });
       boxes.forEach((b) => {
         const corners = [];
@@ -886,10 +1115,41 @@
         ctx.fillStyle = '#FCD34D'; ctx.font = `${11 * devicePixelRatio}px sans-serif`;
         ctx.fillText(b.label || '3D 框', c[0], c[1] - 6);
       });
+      keypoints.forEach((k) => {
+        const [px, py] = proj([k.x, k.y, k.z]);
+        ctx.strokeStyle = '#22C55E'; ctx.lineWidth = 2 * devicePixelRatio;
+        ctx.beginPath(); ctx.moveTo(px - 4 * devicePixelRatio, py); ctx.lineTo(px + 4 * devicePixelRatio, py);
+        ctx.moveTo(px, py - 4 * devicePixelRatio); ctx.lineTo(px, py + 4 * devicePixelRatio); ctx.stroke();
+        ctx.fillStyle = '#86EFAC'; ctx.font = `${10 * devicePixelRatio}px sans-serif`;
+        ctx.fillText(k.label || '关键点', px + 6 * devicePixelRatio, py - 4 * devicePixelRatio);
+      });
     };
-    wb.customPayload = () => ({ media_type: 'pointcloud', boxes, sample: points.slice(0, 4000) });
-    wbShell(wb, wb.task.name, `${chip('3D 点云')}${chip(wb.project ? wb.project.name : '')}${chip(`框 ${boxes.length}`)}`, `
-      <div class="image-panel"><div class="image-toolbar"><span>点云预览（拖拽旋转 / 滚轮缩放）</span><span class="spacer"></span><button class="btn ghost" id="pc-load">加载点云</button></div>
+    const drawLists = () => {
+      $v('#pc-list').innerHTML = boxes.map((b, i) => `<div style="display:flex;gap:8px;padding:5px 0;border-bottom:1px solid rgba(30,42,63,.5)"><span class="tag">${esc(b.label)}</span><span class="sub">(${b.x},${b.y},${b.z}) L${b.l} W${b.w} H${b.h}</span><button class="btn ghost danger" data-del-3d="${i}" style="margin-left:auto">删除</button></div>`).join('') || '<div class="empty">暂无 3D 框</div>';
+      $v('#pc-kps').innerHTML = keypoints.map((k, i) => `<div style="display:flex;gap:8px;padding:5px 0;border-bottom:1px solid rgba(30,42,63,.5)"><span class="tag">${esc(k.label)}</span><span class="sub">(${k.x},${k.y},${k.z})</span><button class="btn ghost danger" data-del-kp="${i}" style="margin-left:auto">删除</button></div>`).join('') || '<div class="empty">暂无关键点</div>';
+      $v('#pc-lanes').innerHTML = lanes.map((ln, i) => `<div style="display:flex;gap:8px;padding:5px 0;border-bottom:1px solid rgba(30,42,63,.5)"><span class="tag">${esc(ln.type)}</span><span class="sub">${esc(ln.style)} · ${(ln.points || []).length} 点</span><button class="btn ghost danger" data-del-lane="${i}" style="margin-left:auto">删除</button></div>`).join('') || '<div class="empty">暂无车道线</div>';
+      $v('#pc-frames').innerHTML = frames.map((f, i) => `<div style="display:flex;gap:8px;padding:5px 0;border-bottom:1px solid rgba(30,42,63,.5)"><span class="tag">帧 ${i + 1}</span><span class="sub">${(f.boxes || []).length} 框 · ${(f.keypoints || []).length} 关键点</span><button class="btn ghost" data-load-f="${i}" style="margin-left:auto">载入</button><button class="btn ghost danger" data-del-f="${i}">删除</button></div>`).join('') || '<div class="empty">暂无帧快照</div>';
+      $$v('[data-del-3d]').forEach((b) => { b.onclick = () => { boxes.splice(Number(b.dataset.del3d), 1); draw(); drawLists(); markDirty(wb); }; });
+      $$v('[data-del-kp]').forEach((b) => { b.onclick = () => { keypoints.splice(Number(b.dataset.delKp), 1); draw(); drawLists(); markDirty(wb); }; });
+      $$v('[data-del-lane]').forEach((b) => { b.onclick = () => { lanes.splice(Number(b.dataset.delLane), 1); draw(); drawLists(); markDirty(wb); }; });
+      $$v('[data-del-f]').forEach((b) => { b.onclick = () => { frames.splice(Number(b.dataset.delF), 1); drawLists(); markDirty(wb); }; });
+      $$v('[data-load-f]').forEach((b) => {
+        b.onclick = () => {
+          const f = frames[Number(b.dataset.loadF)];
+          if (!f) return;
+          boxes.length = 0; boxes.push(...JSON.parse(JSON.stringify(f.boxes || [])));
+          keypoints.length = 0; keypoints.push(...JSON.parse(JSON.stringify(f.keypoints || [])));
+          draw(); drawLists(); markDirty(wb);
+        };
+      });
+    };
+    wb.customPayload = () => ({ media_type: 'pointcloud', boxes, keypoints, lanes, frames, category, attrs, sample: points.slice(0, 4000) });
+    wbShell(wb, wb.task.name, `${chip('3D 点云')}${chip(wb.project ? wb.project.name : '')}${chip(`框 ${boxes.length}`)}${chip(`关键点 ${keypoints.length}`)}`, `
+      <div class="image-panel"><div class="image-toolbar"><span>点云预览（拖拽旋转 / 滚轮缩放）</span><span class="spacer"></span>
+        <select class="select" id="pc-color" style="width:96px;height:26px"><option value="depth">按深度</option><option value="height">按高度</option><option value="distance">按距离</option></select>
+        <input class="input" id="pc-min" type="number" placeholder="最近 m" style="width:74px;height:26px" value="0">
+        <input class="input" id="pc-max" type="number" placeholder="最远 m" style="width:74px;height:26px" value="80">
+        <button class="btn ghost" id="pc-load">加载点云</button></div>
         <div class="image-stage" id="pc-stage" style="min-height:420px;cursor:grab"><canvas id="pc-canvas" style="width:100%;height:420px;display:block"></canvas></div></div>`,
       `<div class="card"><div class="card-head"><h3 class="card-title">3D 检测框</h3></div><div class="card-body">
         <div class="grid" style="grid-template-columns:1fr 1fr">
@@ -899,7 +1159,24 @@
         </div>
         <div class="field"><label>类别</label><input class="input" id="pc-label" value="轿车"></div>
         <button class="btn primary" id="pc-add">添加 3D 框</button>
-        <div style="margin-top:12px">${boxes.map((b, i) => `<div style="display:flex;gap:8px;padding:5px 0;border-bottom:1px solid rgba(30,42,63,.5)"><span class="tag">${esc(b.label)}</span><span class="sub">(${b.x},${b.y},${b.z}) L${b.l} W${b.w} H${b.h}</span><button class="btn ghost danger" data-del-3d="${i}" style="margin-left:auto">删除</button></div>`).join('') || '<div class="empty">暂无 3D 框</div>'}</div>
+        <div id="pc-list" style="margin-top:12px"></div>
+      </div></div>
+      <div class="card"><div class="card-head"><h3 class="card-title">关键点</h3></div><div class="card-body">
+        <div class="filters"><input class="input" id="kp-x" placeholder="X" style="width:56px"><input class="input" id="kp-y" placeholder="Y" style="width:56px"><input class="input" id="kp-z" placeholder="Z" style="width:56px"><input class="input" id="kp-label" placeholder="名称" style="width:88px"></div>
+        <button class="btn ghost" id="kp-add" style="margin-top:6px">添加关键点</button>
+        <div id="pc-kps" style="margin-top:8px"></div>
+      </div></div>
+      <div class="card"><div class="card-head"><h3 class="card-title">车道线</h3></div><div class="card-body">
+        <div class="filters"><select class="select" id="ln-type" style="width:88px">${['直道', '弯道', '匝道', '路口'].map((x) => `<option>${x}</option>`).join('')}</select><select class="select" id="ln-style" style="width:76px"><option>实线</option><option>虚线</option></select></div>
+        <div class="filters" style="margin-top:6px"><input class="input" id="ln-x1" placeholder="起点X" style="width:62px"><input class="input" id="ln-y1" placeholder="起点Y" style="width:62px"><input class="input" id="ln-x2" placeholder="终点X" style="width:62px"><input class="input" id="ln-y2" placeholder="终点Y" style="width:62px"></div>
+        <button class="btn ghost" id="ln-add" style="margin-top:6px">添加车道线</button>
+        <div id="pc-lanes" style="margin-top:8px"></div>
+      </div></div>
+      <div class="card"><div class="card-head"><h3 class="card-title">场景分类 / 4D 帧序列</h3></div><div class="card-body">
+        <div class="field"><label>场景分类</label><input class="input" id="pc-cat" value="${esc(category)}" placeholder="城市道路/高速/停车场"></div>
+        <div class="field"><label>属性（逗号分隔）</label><input class="input" id="pc-attrs" value="${esc(attrs)}" placeholder="白天,雨天"></div>
+        <button class="btn ghost" id="pc-snap">复制当前帧到帧序列</button>
+        <div id="pc-frames" style="margin-top:8px"></div>
       </div></div>`);
     const stage = $v('#pc-stage');
     let dragging = null;
@@ -907,6 +1184,9 @@
     window.addEventListener('mouseup', () => { dragging = null; });
     stage.onmousemove = (e) => { if (dragging !== null) { yaw += (e.clientX - dragging) * 0.01; dragging = e.clientX; draw(); } };
     stage.onwheel = (e) => { e.preventDefault(); scale = Math.max(0.3, Math.min(4, scale * (e.deltaY > 0 ? 0.92 : 1.08))); draw(); };
+    $v('#pc-color').onchange = (e) => { colorMode = e.target.value; draw(); };
+    $v('#pc-min').onchange = (e) => { minD = Number(e.target.value) || 0; draw(); };
+    $v('#pc-max').onchange = (e) => { maxD = Number(e.target.value) || 80; draw(); };
     $v('#pc-load').onclick = async () => {
       if (!wb.mediaName) return toast('该任务没有点云文件', 'err');
       const r = await fetch(`/media/${encodeURIComponent(wb.mediaName)}`, { credentials: 'same-origin' });
@@ -921,25 +1201,87 @@
     };
     $v('#pc-add').onclick = () => {
       boxes.push({ x: Number($v('#pc-x').value) || 0, y: Number($v('#pc-y').value) || 0, z: Number($v('#pc-z').value) || 0, l: Number($v('#pc-l').value) || 1, w: Number($v('#pc-w').value) || 1, h: Number($v('#pc-h').value) || 1, yaw: 0, label: $v('#pc-label').value || '目标' });
-      draw();
+      draw(); drawLists(); markDirty(wb);
     };
-    $$v('[data-del-3d]').forEach((b) => { b.onclick = () => { boxes.splice(Number(b.dataset.del3d), 1); draw(); }; });
+    $v('#kp-add').onclick = () => {
+      const x = Number($v('#kp-x').value), y = Number($v('#kp-y').value), z = Number($v('#kp-z').value) || 0;
+      if (!isFinite(x) || !isFinite(y)) return toast('请填写关键点坐标', 'err');
+      keypoints.push({ x, y, z, label: $v('#kp-label').value.trim() || '关键点' });
+      draw(); drawLists(); markDirty(wb);
+    };
+    $v('#ln-add').onclick = () => {
+      const p1 = [Number($v('#ln-x1').value), Number($v('#ln-y1').value), 0];
+      const p2 = [Number($v('#ln-x2').value), Number($v('#ln-y2').value), 0];
+      if (!p1.every(isFinite) || !p2.every(isFinite)) return toast('请填写车道线起终点', 'err');
+      lanes.push({ type: $v('#ln-type').value, style: $v('#ln-style').value, points: [p1, p2] });
+      draw(); drawLists(); markDirty(wb);
+    };
+    $v('#pc-cat').onchange = (e) => { category = e.target.value.trim(); };
+    $v('#pc-attrs').onchange = (e) => { attrs = e.target.value.split(',').map((x) => x.trim()).filter(Boolean).join(','); };
+    $v('#pc-snap').onclick = () => {
+      frames.push({ boxes: JSON.parse(JSON.stringify(boxes)), keypoints: JSON.parse(JSON.stringify(keypoints)) });
+      drawLists(); markDirty(wb); toast(`已保存第 ${frames.length} 帧`, 'ok');
+    };
+    drawLists();
     draw();
   };
 
   WB.multimodal = (wb) => {
     const payload = (state.current.annotation && state.current.annotation.payload) || {};
     const items = payload.items || [];
-    const media = (state.current.media || []);
-    const all = [{ name: wb.mediaName, kind: wb.mediaType, path: wb.mediaName ? `/media/${wb.mediaName}` : '' }, ...media.map((m) => ({ name: m.name, kind: m.kind, path: m.url }))];
+    const media = (state.current.media || []).slice();
+    const gallery = () => [
+      { name: wb.mediaName, kind: wb.mediaType, path: wb.mediaName ? `/media/${wb.mediaName}` : '', main: true },
+      ...media.map((m) => ({ name: m.name, kind: m.kind, path: m.url, id: m.id })),
+    ];
     wb.customPayload = () => ({ media_type: 'multimodal', items });
-    wbShell(wb, wb.task.name, `${chip('多模态')}${chip(wb.project ? wb.project.name : '')}${chip(`${all.length} 个媒体`)}`, `
-      <div class="card"><div class="card-head"><h3 class="card-title">媒体画廊</h3><span class="card-sub">主媒体 + 抽帧/附件</span></div><div class="card-body">
-        <div class="grid three-col">${all.map((m, i) => `<div class="card" style="cursor:pointer" data-mm="${i}"><div class="card-body" style="padding:8px">
-          ${m.kind === 'image' ? `<img src="${m.path}" style="width:100%;height:120px;object-fit:cover;border-radius:6px">` : m.kind === 'video' ? `<video src="${m.path}" style="width:100%;height:120px;object-fit:cover;border-radius:6px" muted></video>` : `<div class="empty" style="height:120px">${esc(m.kind)} 文件</div>`}
-          <div class="sub" style="margin-top:6px">${esc(m.name || '主媒体')}</div></div></div>`).join('') || '<div class="empty">暂无媒体</div>'}</div>
-      </div></div>`,
+    wbShell(wb, wb.task.name, `${chip('多模态')}${chip(wb.project ? wb.project.name : '')}${chip(`${gallery().length} 个媒体`)}`, `
+      <div class="card"><div class="card-head"><h3 class="card-title">媒体画廊</h3><span class="card-sub">主媒体 + 挂载附件（双图对照）</span>
+        ${wb.canEdit ? '<button class="btn ghost sm" id="mm-attach" style="margin-left:auto">挂载附件</button><input type="file" id="mm-attach-file" hidden multiple />' : ''}</div>
+        <div class="card-body"><div class="grid three-col" id="mm-gallery"></div></div></div>`,
       `<div class="card"><div class="card-head"><h3 class="card-title">标注条目</h3><button class="btn ghost" id="mm-add" style="margin-left:auto">新增</button></div><div class="card-body" id="mm-items"></div></div>`);
+    const drawGallery = () => {
+      $v('#mm-gallery').innerHTML = gallery().map((m, i) => `<div class="card" style="cursor:pointer" data-mm="${i}"><div class="card-body" style="padding:8px">
+          ${m.kind === 'image' ? `<img src="${m.path}" style="width:100%;height:120px;object-fit:cover;border-radius:6px">` : m.kind === 'video' ? `<video src="${m.path}" style="width:100%;height:120px;object-fit:cover;border-radius:6px" muted></video>` : `<div class="empty" style="height:120px">${esc(m.kind)} 文件</div>`}
+          <div class="sub" style="margin-top:6px;display:flex;align-items:center;gap:6px">
+            <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(m.main ? (m.name || '主媒体') : (m.name || '附件'))}</span>
+            ${m.id && wb.canEdit ? `<button class="btn ghost sm danger" data-mm-del="${m.id}" title="删除附件">删除</button>` : ''}
+          </div></div></div>`).join('') || '<div class="empty">暂无媒体</div>';
+      $$v('[data-mm-del]').forEach((b) => {
+        b.onclick = async (e) => {
+          e.stopPropagation();
+          await api(`/api/tasks/${wb.task.id}/attachments/${b.dataset.mmDel}`, { method: 'DELETE' });
+          const idx = media.findIndex((m) => String(m.id) === String(b.dataset.mmDel));
+          if (idx >= 0) media.splice(idx, 1);
+          state.current.media = media;
+          drawGallery();
+          toast('附件已删除', 'ok');
+        };
+      });
+      $$v('[data-mm]').forEach((el) => {
+        el.onclick = () => {
+          const m = gallery()[+el.dataset.mm];
+          if (m && m.path) window.open(m.path, '_blank');
+        };
+      });
+    };
+    if (wb.canEdit) {
+      const input = $v('#mm-attach-file');
+      $v('#mm-attach').onclick = () => input.click();
+      input.onchange = async () => {
+        for (const file of Array.from(input.files || [])) {
+          const fd = new FormData();
+          fd.append('file', file);
+          const r = await api(`/api/tasks/${wb.task.id}/attachments`, { method: 'POST', body: fd });
+          media.push({ id: r.id, name: r.name, kind: r.kind, url: r.url });
+        }
+        state.current.media = media;
+        input.value = '';
+        drawGallery();
+        toast(`已挂载 ${media.length} 个附件`, 'ok');
+      };
+    }
+    drawGallery();
     const draw = () => {
       $v('#mm-items').innerHTML = items.map((it, i) => `<div style="padding:7px 0;border-bottom:1px solid rgba(30,42,63,.5)">
         <div style="display:flex;gap:8px"><span class="tag">${esc(it.media || '主媒体')}</span><b style="font-size:12px">${esc(it.label || '')}</b><button class="btn ghost danger" data-del-mm="${i}" style="margin-left:auto">删除</button></div>
@@ -955,6 +1297,363 @@
       draw();
     };
     draw();
+  };
+
+  /* ------------------------------------------------------------------ 图像编辑指令工作台 */
+  WB.editing = (wb) => {
+    const e0 = wb.edit || {};
+    const edit = {
+      edit_type: e0.edit_type || '',
+      attribute_dim: Array.isArray(e0.attribute_dim) ? e0.attribute_dim.slice() : [],
+      attribute_value: e0.attribute_value || '',
+      same_target_count: wb.boxes.length,
+      target_locator: e0.target_locator || '',
+      target_name: e0.target_name || '',
+      target_category: e0.target_category || '',
+      shadow_adjusted: !!e0.shadow_adjusted,
+      instruction: e0.instruction || '',
+      result_note: e0.result_note || '',
+    };
+    wb.edit = edit;
+    const dims = [['color', '颜色'], ['texture', '纹理'], ['size', '尺寸'], ['material', '材质']];
+    const cats = ['人物', '动物', '物品', '食物'];
+    const field = (label, inner, hint = '') => `<div class="field"><label>${label}</label>${inner}${hint ? `<div class="hint" style="margin-top:4px">${hint}</div>` : ''}</div>`;
+
+    wb.customPayload = () => ({
+      media_type: 'editing',
+      img_size: { w: wb.imgW || 0, h: wb.imgH || 0 },
+      edit,
+      boxes: wb.boxes.map((b) => ({
+        cls: '同类目标', name: b.name || '', target: !!b.target,
+        x: Number(b.x) || 0, y: Number(b.y) || 0, w: Number(b.w) || 0, h: Number(b.h) || 0,
+      })),
+    });
+
+    wbShell(wb, wb.task.name, `${chip('图像编辑')}${chip(wb.project ? wb.project.name : '')}${chip(`${wb.boxes.length} 个同类目标`)}`, `
+      <div class="image-panel">
+        <div class="image-toolbar"><span class="hint">拖拽画框标记同类目标，选中「目标」单选框指向本次编辑对象</span><span class="spacer"></span>
+          <button class="btn sm ghost" id="ed-clear" ${wb.canEdit ? '' : 'disabled'}>清空框</button></div>
+        <div class="image-stage" id="ed-stage">
+          ${wb.mediaName ? `<img id="work-img" src="/media/${encodeURIComponent(wb.mediaName)}" crossorigin="anonymous" />` : '<div class="empty"><b>暂无原图</b>请在任务中心上传原图</div>'}
+          <canvas id="box-canvas"></canvas>
+        </div>
+        <div class="image-status" id="ed-status">加载中…</div>
+      </div>
+      <div class="card" style="flex:1;min-height:0;display:flex;flex-direction:column">
+        <div class="card-head"><h3 class="card-title">同类目标标注</h3><span class="card-sub" id="ed-box-sub">${wb.boxes.length} 个</span></div>
+        <div class="box-list" id="ed-box-list" style="max-height:240px;overflow:auto"></div>
+      </div>`, `
+      <div class="card">
+        <div class="card-head"><h3 class="card-title">编辑结果图</h3><span class="card-sub">原图 / 结果图对照</span>
+          ${wb.canEdit ? '<button class="btn ghost sm" id="ed-res-up" style="margin-left:auto">上传结果图</button><input type="file" id="ed-res-file" accept="image/*" hidden />' : ''}</div>
+        <div class="card-body" id="ed-result"></div>
+      </div>
+      <div class="side-panel" style="flex:1;min-height:0">
+        <div class="panel-head">编辑指令（结构化）</div>
+        <div class="panel-body" style="overflow:auto">
+          ${field('编辑类型', `<select class="select" id="ed-edit-type"><option value="">请选择</option><option value="delete" ${edit.edit_type === 'delete' ? 'selected' : ''}>删除目标</option><option value="attribute" ${edit.edit_type === 'attribute' ? 'selected' : ''}>修改属性</option></select>`)}
+          <div id="ed-attr-wrap" style="display:${edit.edit_type === 'attribute' ? '' : 'none'}">
+            ${field('属性维度（可多选）', `<div class="cls-picker" id="ed-dims">${dims.map(([k, v]) => `<label class="fchip ${edit.attribute_dim.includes(k) ? 'on' : ''}" style="cursor:pointer"><input type="checkbox" data-ed-dim="${k}" ${edit.attribute_dim.includes(k) ? 'checked' : ''} style="display:none">${v}</label>`).join('')}</div>`)}
+            ${field('属性值', `<input class="input" id="ed-attr-value" value="${esc(edit.attribute_value)}" placeholder="例如：改为深棕色 / 放大 1.5 倍" />`)}
+          </div>
+          ${field('目标描述', `<input class="input" id="ed-target-name" value="${esc(edit.target_name)}" placeholder="例如：棕色圆凳" />`, '指令中必须能唯一指向该目标')}
+          ${field('目标类别', `<select class="select" id="ed-target-cat"><option value="">请选择</option>${cats.map((c) => `<option ${edit.target_category === c ? 'selected' : ''}>${c}</option>`).join('')}</select>`)}
+          ${field('定位信息', `<input class="input" id="ed-locator" value="${esc(edit.target_locator)}" placeholder="例如：画面中央、餐台前方" />`, '用于唯一确定目标，支持位置 / 颜色 / 序数')}
+          ${field('同类目标数', `<input class="input mono" id="ed-count" value="${wb.boxes.length}" readonly />`, '由标注框数量自动统计，至少 3 个')}
+          <div class="panel-section">
+            <label class="toggle-wrap" style="display:flex;gap:8px;align-items:flex-start;padding:10px;border:1px solid var(--border);border-radius:8px">
+              <input type="checkbox" id="ed-shadow" ${edit.shadow_adjusted ? 'checked' : ''} style="margin-top:2px" />
+              <span>已按实际情况调整编辑后目标的影子<br/><span class="hint">未确认影子调整将无法提交</span></span>
+            </label>
+          </div>
+          ${field('编辑指令', `<textarea class="input" id="ed-instruction" rows="4" placeholder="例如：将图中餐台前方，位于画面中央的棕色圆凳删除。">${esc(edit.instruction)}</textarea>`, `<span id="ed-ins-count">${edit.instruction.length}</span> / 120 字符`)}
+          ${field('返修 / 结果说明（可选）', `<input class="input" id="ed-note" value="${esc(edit.result_note)}" placeholder="记录编辑细节或异常" />`)}
+          <div class="filters" style="margin-top:6px"><button class="btn sm" id="ed-check">校验规范</button><span class="hint" style="margin-left:8px">提交前将强制校验</span></div>
+          <div id="ed-issues" style="margin-top:10px"></div>
+        </div>
+      </div>`);
+
+    const resultOf = () => (wb.media || []).find((m) => m.meta && (m.meta.role === 'result' || m.meta.source === 'result'));
+    const renderResult = () => {
+      const box = $v('#ed-result'); if (!box) return;
+      const m = resultOf();
+      if (m) {
+        box.innerHTML = `<img src="${m.url}" style="width:100%;border-radius:8px;border:1px solid var(--border);display:block" />
+          <div style="display:flex;gap:8px;margin-top:8px;align-items:center"><span class="sub" style="flex:1;overflow:hidden;text-overflow:ellipsis">${esc(m.name || '结果图')}</span>
+          ${wb.canEdit ? '<button class="btn ghost sm danger" id="ed-res-del">删除</button>' : ''}</div>`;
+        const del = $v('#ed-res-del');
+        if (del) del.onclick = async () => {
+          await api(`/api/tasks/${wb.task.id}/attachments/${m.id}`, { method: 'DELETE' });
+          wb.media = (wb.media || []).filter((x) => x.id !== m.id);
+          renderResult();
+          toast('结果图已删除', 'ok');
+        };
+      } else {
+        box.innerHTML = `<div class="empty" style="padding:20px 0"><b>尚未挂载结果图</b>
+          <div class="hint" style="margin-top:6px;line-height:1.7">提交前必须上传编辑后的结果图，用于双图对照质检。</div>
+          ${wb.canEdit ? '<button class="btn sm" id="ed-res-empty" style="margin-top:10px">上传结果图</button>' : ''}</div>`;
+        const empty = $v('#ed-res-empty');
+        if (empty) empty.onclick = () => $v('#ed-res-file').click();
+      }
+    };
+    if (wb.canEdit) {
+      const input = $v('#ed-res-file');
+      $v('#ed-res-up').onclick = () => input.click();
+      input.onchange = async () => {
+        const f = input.files[0]; if (!f) return;
+        const fd = new FormData();
+        fd.append('file', f);
+        fd.append('role', 'result');
+        try {
+          const r = await api(`/api/tasks/${wb.task.id}/attachments`, { method: 'POST', body: fd });
+          (wb.media || (wb.media = [])).push({ id: r.id, name: r.name, kind: r.kind, url: r.url, meta: { role: 'result' } });
+          input.value = '';
+          renderResult();
+          toast('结果图已挂载', 'ok');
+        } catch (err) { toast(err.message, 'err'); }
+      };
+    }
+    renderResult();
+
+    if (!wb.canEdit) {
+      $$v('.side-panel input, .side-panel select, .side-panel textarea').forEach((x) => { x.disabled = true; });
+      ['#wb-save', '#wb-submit', '#ed-clear'].forEach((s) => { const b = $v(s); if (b) b.disabled = true; });
+      const ind = $v('#save-ind');
+      if (ind) ind.textContent = '只读查看（当前用户无标注权限）';
+    }
+
+    const layout = () => {
+      const img = $v('#work-img');
+      const stage = $v('#ed-stage');
+      const cv = $v('#box-canvas');
+      if (!img || !stage || !cv || !img.naturalWidth) return;
+      const rect = stage.getBoundingClientRect();
+      const pad = 14;
+      const bw = Math.max(40, rect.width - pad * 2);
+      const bh = Math.max(40, rect.height - pad * 2);
+      const nw = img.naturalWidth, nh = img.naturalHeight;
+      let w = bw, h = w * nh / nw;
+      if (h > bh) { h = bh; w = h * nw / nh; }
+      const left = (rect.width - w) / 2;
+      const top = (rect.height - h) / 2;
+      Object.assign(img.style, { width: `${w}px`, height: `${h}px`, left: `${left}px`, top: `${top}px` });
+      const dpr = window.devicePixelRatio || 1;
+      cv.width = Math.round(w * dpr);
+      cv.height = Math.round(h * dpr);
+      Object.assign(cv.style, { width: `${w}px`, height: `${h}px`, left: `${left}px`, top: `${top}px` });
+      wb.stageW = w; wb.stageH = h; wb.imgW = nw; wb.imgH = nh;
+      redraw();
+      const st = $v('#ed-status');
+      if (st) st.textContent = `${nw}×${nh} · 缩放 ${(w / nw * 100).toFixed(0)}% · ${wb.boxes.length} 个同类目标`;
+    };
+
+    const redraw = () => {
+      const cv = $v('#box-canvas');
+      if (!cv || !wb.stageW) return;
+      const ctx = cv.getContext('2d');
+      const dpr = window.devicePixelRatio || 1;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, wb.stageW, wb.stageH);
+      const paint = (b, color, fill, label, dashed) => {
+        const x = b.x * wb.stageW, y = b.y * wb.stageH, w = b.w * wb.stageW, h = b.h * wb.stageH;
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        if (dashed) ctx.setLineDash([6, 4]);
+        ctx.strokeRect(x, y, w, h);
+        ctx.fillStyle = fill;
+        ctx.fillRect(x, y, w, h);
+        if (label) {
+          ctx.font = '11px ui-monospace, Menlo, monospace';
+          const tw = ctx.measureText(label).width + 10;
+          const ly = y > 16 ? y - 16 : y + 2;
+          ctx.fillStyle = color;
+          ctx.fillRect(x, ly, tw, 14);
+          ctx.fillStyle = '#fff';
+          ctx.fillText(label, x + 5, ly + 10.5);
+        }
+        ctx.restore();
+      };
+      wb.boxes.forEach((b, i) => {
+        paint(b, b.target ? '#EF4444' : '#3B82F6', b.target ? 'rgba(239,68,68,.12)' : 'rgba(59,130,246,.08)',
+          b.target ? `目标${b.name ? ' · ' + b.name : ''}` : `同类目标 ${i + 1}`, false);
+      });
+      if (wb.edDrag && wb.edDrag.w > 0.002 && wb.edDrag.h > 0.002) {
+        paint(wb.edDrag, '#22D3EE', 'rgba(34,211,238,.08)', '', true);
+      }
+    };
+
+    const syncCount = () => {
+      edit.same_target_count = wb.boxes.length;
+      const c = $v('#ed-count');
+      if (c) c.value = wb.boxes.length;
+      const sub = $v('#ed-box-sub');
+      if (sub) sub.textContent = `${wb.boxes.length} 个`;
+    };
+
+    const renderBoxes = () => {
+      const list = $v('#ed-box-list');
+      if (!list) return;
+      list.innerHTML = wb.boxes.length ? wb.boxes.map((b, i) => `
+        <div style="display:flex;align-items:center;gap:8px;padding:6px 12px;border-bottom:1px solid rgba(30,42,63,.45);font-size:11.5px">
+          <span class="box-idx"><i class="bdot" style="background:${b.target ? '#EF4444' : '#3B82F6'}"></i>#${String(i + 1).padStart(2, '0')}</span>
+          <input class="input" data-ed-name="${i}" value="${esc(b.name || '')}" placeholder="目标名称（可选）" style="flex:1;height:26px;font-size:11px" />
+          <span class="box-pos">${(b.x * 100).toFixed(1)}, ${(b.y * 100).toFixed(1)}</span>
+          <span class="box-size">${(b.w * 100).toFixed(1)}×${(b.h * 100).toFixed(1)}</span>
+          <label class="toggle-wrap"><input type="radio" name="ed-target" data-ed-target="${i}" ${b.target ? 'checked' : ''} /><span>目标</span></label>
+          <button class="box-del" data-ed-del="${i}" title="删除">×</button>
+        </div>`).join('') : '<div class="empty"><b>还没有框选同类目标</b>在左侧原图拖拽画框，至少 3 个同类目标。</div>';
+      $$v('[data-ed-target]').forEach((r) => {
+        r.onchange = () => {
+          wb.boxes.forEach((b, i) => { b.target = String(i) === String(r.dataset.edTarget); });
+          renderBoxes(); redraw(); markDirty(wb);
+        };
+      });
+      $$v('[data-ed-del]').forEach((b) => {
+        b.onclick = () => {
+          const i = Number(b.dataset.edDel);
+          const wasTarget = wb.boxes[i].target;
+          wb.boxes.splice(i, 1);
+          if (wasTarget && wb.boxes.length) wb.boxes[0].target = true;
+          renderBoxes(); redraw(); markDirty(wb);
+        };
+      });
+      $$v('[data-ed-name]').forEach((inp) => {
+        inp.oninput = () => { wb.boxes[Number(inp.dataset.edName)].name = inp.value; markDirty(wb); redraw(); };
+      });
+      syncCount();
+    };
+
+    const cv = $v('#box-canvas');
+    const pointOf = (ev) => {
+      const r = cv.getBoundingClientRect();
+      return { x: Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width)), y: Math.min(1, Math.max(0, (ev.clientY - r.top) / r.height)) };
+    };
+    if (cv) {
+      cv.onmousedown = (ev) => {
+        if (!wb.canEdit) return;
+        const p = pointOf(ev);
+        wb.edDrag = { x: p.x, y: p.y, w: 0, h: 0, sx: p.x, sy: p.y };
+      };
+      cv.onmousemove = (ev) => {
+        if (!wb.edDrag) return;
+        const p = pointOf(ev);
+        const s = wb.edDrag;
+        wb.edDrag = { x: Math.min(s.sx, p.x), y: Math.min(s.sy, p.y), w: Math.abs(p.x - s.sx), h: Math.abs(p.y - s.sy), sx: s.sx, sy: s.sy };
+        redraw();
+      };
+      cv.onmouseup = () => {
+        const d = wb.edDrag;
+        wb.edDrag = null;
+        if (!d || d.w < 0.005 || d.h < 0.005) { redraw(); return; }
+        wb.boxes.push({ cls: '同类目标', name: '', source: 'manual', target: wb.boxes.length === 0,
+          x: +d.x.toFixed(6), y: +d.y.toFixed(6), w: +d.w.toFixed(6), h: +d.h.toFixed(6) });
+        renderBoxes(); redraw(); markDirty(wb);
+      };
+      cv.onmouseleave = () => { if (wb.edDrag) { wb.edDrag = null; redraw(); } };
+    }
+    const clear = $v('#ed-clear');
+    if (clear) clear.onclick = () => {
+      if (!wb.boxes.length) return;
+      if (!confirm('确认清空全部标注框？')) return;
+      wb.boxes = [];
+      renderBoxes(); redraw(); markDirty(wb);
+    };
+
+    const img = $v('#work-img');
+    if (img) {
+      img.onload = () => layout();
+      img.onerror = () => {
+        const st = $v('#ed-status');
+        if (st) st.textContent = '原图加载失败，请检查任务媒体文件';
+      };
+      if (img.complete && img.naturalWidth) layout();
+    }
+    renderBoxes();
+    redraw();
+    /* 窗口尺寸变化后重新适配画布，避免框选位置与图片错位 */
+    const onResize = () => {
+      if (!$v('#ed-stage')) { window.removeEventListener('resize', onResize); return; }
+      layout();
+    };
+    window.addEventListener('resize', onResize);
+
+    const syncAttr = () => {
+      const wrap = $v('#ed-attr-wrap');
+      if (wrap) wrap.style.display = edit.edit_type === 'attribute' ? '' : 'none';
+    };
+    $v('#ed-edit-type').onchange = (ev) => {
+      edit.edit_type = ev.target.value;
+      if (edit.edit_type !== 'attribute') {
+        edit.attribute_dim = [];
+        edit.attribute_value = '';
+        const av = $v('#ed-attr-value');
+        if (av) av.value = '';
+        $$v('[data-ed-dim]').forEach((cb) => { cb.checked = false; cb.closest('.fchip').classList.remove('on'); });
+      }
+      syncAttr(); markDirty(wb);
+    };
+    $$v('[data-ed-dim]').forEach((cb) => {
+      cb.onchange = () => {
+        edit.attribute_dim = $$v('[data-ed-dim]').filter((x) => x.checked).map((x) => x.dataset.edDim);
+        cb.closest('.fchip').classList.toggle('on', cb.checked);
+        markDirty(wb);
+      };
+    });
+    ['ed-attr-value:attribute_value', 'ed-target-name:target_name', 'ed-locator:target_locator', 'ed-note:result_note', 'ed-instruction:instruction'].forEach((pair) => {
+      const [sel, key] = pair.split(':');
+      const el = $v(`#${sel}`);
+      if (!el) return;
+      el.oninput = () => {
+        edit[key] = el.value;
+        if (key === 'instruction') {
+          const n = $v('#ed-ins-count');
+          if (n) n.textContent = String(el.value.length);
+        }
+        markDirty(wb);
+      };
+    });
+    $v('#ed-target-cat').onchange = (ev) => { edit.target_category = ev.target.value; markDirty(wb); };
+    $v('#ed-shadow').onchange = (ev) => { edit.shadow_adjusted = ev.target.checked; markDirty(wb); };
+
+    const renderIssues = (issues) => {
+      const box = $v('#ed-issues');
+      if (!box) return;
+      if (!issues || !issues.length) {
+        box.innerHTML = '<span class="chip done">规范校验通过，可提交质检</span>';
+        return;
+      }
+      box.innerHTML = issues.map((i) => `<div style="display:flex;gap:6px;padding:5px 0;border-bottom:1px solid rgba(30,42,63,.45);font-size:11.5px">
+        <span class="chip ${i.level === 'error' ? 'danger' : 'pending'}" style="flex:none">${i.level === 'error' ? '需修正' : '提示'}</span>
+        <span>${esc(i.message)}</span></div>`).join('');
+    };
+    const validateNow = async () => {
+      const r = await api(`/api/tasks/${wb.task.id}/editing/validate`, { method: 'POST', body: { payload: wb.customPayload() } });
+      renderIssues(r.issues);
+      return r;
+    };
+    $v('#ed-check').onclick = async () => {
+      try {
+        const r = await validateNow();
+        toast(r.ok ? '校验通过' : '存在需修正项', r.ok ? 'ok' : 'warn');
+      } catch (err) { toast(err.message, 'err'); }
+    };
+    $v('#wb-submit').onclick = async () => {
+      if (!wb.canEdit) return;
+      try {
+        const r = await validateNow();
+        if (!r.ok) {
+          const first = r.issues.find((i) => i.level === 'error');
+          toast(first ? first.message : '校验未通过，无法提交', 'err');
+          return;
+        }
+        if (!confirm('规范校验通过，确认提交质检？')) return;
+        await api(`/api/tasks/${wb.task.id}/submit`, { method: 'POST', body: { payload: wb.customPayload() } });
+        toast('已提交质检', 'ok');
+        location.hash = '#/tasks';
+      } catch (err) { toast(err.message, 'err'); }
+    };
+    syncAttr();
   };
 
   /* ------------------------------------------------------------------ 治理中心 */
@@ -1275,6 +1974,282 @@
     };
   }
 
+  /* ------------------------------------------------------------------ 运营服务 */
+  async function pageService(query) {
+    const st = window.CK_STATE || {};
+    let projList = st.projects || [];
+    if (!projList.length) {
+      try { projList = (await api('/api/projects')).projects || []; } catch (e) { projList = []; }
+    }
+    const tab = query.get('tab') || 'report';
+    const pid = Number(query.get('project_id') || st.pid || (projList[0] && projList[0].id) || 0);
+    const month = query.get('month') || new Date().toISOString().slice(0, 7);
+    const base = location.hash.split('?')[0];
+    const go = (extra = {}) => {
+      const q = new URLSearchParams({ tab, project_id: String(pid), month, ...extra });
+      location.hash = `${base}?${q.toString()}`;
+    };
+    const kpi = (label, value, sub = '') => `<div class="kpi"><div class="kpi-label">${label}</div><div class="kpi-value">${value}</div><div class="kpi-delta">${sub}</div></div>`;
+    const projBar = `<select class="select" id="svc-proj" style="width:200px">${projList.map((p) => `<option value="${p.id}" ${Number(p.id) === pid ? 'selected' : ''}>${esc(p.name)}</option>`).join('') || '<option value="0">暂无项目</option>'}</select>`;
+    const tabNav = tabs([['report', '运营月报'], ['tickets', '服务工单'], ['agreements', '保密协议'], ['training', '培训考核']], tab);
+    const ticketChip = (s) => chip(TICKET_LABEL[s] || s, s === 'resolved' || s === 'closed' ? 'done' : s === 'processing' ? 'reviewing' : 'pending');
+
+    if (!pid) {
+      mountPage('service', `${head('运营服务', '运营月报、服务工单、保密协议与培训考核', '')}<div class="empty">请先创建项目并选择项目后查看运营服务</div>`, '运营服务');
+      return;
+    }
+
+    let body = '';
+    if (tab === 'report') {
+      const r = await api(`/api/service/report?project_id=${pid}&month=${encodeURIComponent(month)}`);
+      const k = r.kpis;
+      body = `
+        <div class="filters" style="margin-bottom:14px">
+          <input class="input" type="month" id="svc-month" value="${esc(month)}" style="width:170px" />
+          <button class="btn" id="svc-month-go">查询</button>
+          <a class="btn primary" href="/api/service/report.csv?project_id=${pid}&month=${encodeURIComponent(month)}">导出运营月报 CSV</a>
+        </div>
+        <div class="grid kpi-grid">
+          ${kpi('新增任务', k.task_total, '条')}
+          ${kpi('完成任务', k.task_done, '条')}
+          ${kpi('质检通过率', `${k.qc_pass_rate}%`, `质检 ${k.qc_total} 条`)}
+          ${kpi('返修率', `${k.rework_rate}%`, `平均 ${k.avg_score} 分`)}
+          ${kpi('SLA 按时率', `${k.ticket_sla_rate}%`, `工单 ${k.ticket_total} / 解决 ${k.ticket_resolved}`)}
+          ${kpi('保密协议覆盖率', `${k.agreement_rate}%`, `已签 ${k.agreement_signed} / ${k.member_total} 人`)}
+          ${kpi('培训完成率', `${k.training_rate}%`, `完成 ${k.training_done} / ${k.training_total}`)}
+        </div>
+        <div class="card" style="margin-top:14px"><div class="card-head"><h3 class="card-title">人员产能</h3><span class="card-sub">${esc(r.month)} · 按提交任务数</span></div>
+          ${table(['姓名', '账号', '提交任务数'], r.production.map((x) => [esc(x.name), esc(x.username), x.tasks]), '本月暂无提交记录')}
+        </div>
+        <div class="hint" style="margin-top:10px">报告生成时间：${esc(r.generated_at)}</div>`;
+    } else if (tab === 'tickets') {
+      const d = await api(`/api/service/tickets?project_id=${pid}`);
+      const s = d.summary;
+      body = `
+        <div class="grid kpi-grid" style="margin-bottom:14px">
+          ${kpi('工单总数', s.total, '单')}
+          ${kpi('待处理', s.open, '单')}
+          ${kpi('SLA 按时率', `${s.sla_rate}%`, '已解决工单')}
+        </div>
+        <div class="card"><div class="card-head"><h3 class="card-title">服务工单</h3><button class="btn primary" id="svc-ticket-add" style="margin-left:auto">新建工单</button></div>
+          ${table(['标题', '类别', '优先级', '状态', 'SLA', '负责人', '创建时间', '操作'], d.tickets.map((t) => [
+            esc(t.title),
+            esc(t.category_label),
+            esc(t.priority_label),
+            ticketChip(t.status),
+            `${t.sla_hours}h${t.sla_met === true ? ' · 达标' : t.sla_met === false ? ' · 超时' : ''}`,
+            esc(t.assignee_name || t.requester_name || '-'),
+            time(t.created_at),
+            t.status === 'open' ? `<button class="btn ghost sm" data-tk-start="${t.id}">开始处理</button>`
+              : t.status === 'processing' ? `<button class="btn ghost sm" data-tk-done="${t.id}">解决</button>`
+              : `<span class="sub">${esc(t.resolution || '已闭环')}</span>`,
+          ]), '暂无服务工单')}
+        </div>`;
+    } else if (tab === 'agreements') {
+      const d = await api(`/api/service/agreements?project_id=${pid}`);
+      let memberOpts = '';
+      try {
+        const ms = (await api(`/api/projects/${pid}/members`)).members || [];
+        memberOpts = ms.map((m) => `<option value="${m.id}">${esc(m.name)}（${esc(m.username)}）</option>`).join('');
+      } catch (e) { /* 保持空选项 */ }
+      const s = d.summary;
+      body = `
+        <div class="grid kpi-grid" style="margin-bottom:14px">
+          ${kpi('项目成员', s.member_total, '人')}
+          ${kpi('已签协议', s.signed, '人')}
+          ${kpi('覆盖率', `${s.coverage}%`, '有效协议 / 成员')}
+          ${kpi('30 天内到期', s.expiring, '份')}
+          ${kpi('已过期', s.expired, '份')}
+        </div>
+        <div class="card"><div class="card-head"><h3 class="card-title">保密协议台账</h3><button class="btn primary" id="svc-ag-add" style="margin-left:auto">登记签署</button></div>
+          ${table(['姓名', '账号', '协议编号', '签署日期', '到期日期', '状态', '操作'], d.agreements.map((a) => [
+            esc(a.user_name),
+            esc(a.username),
+            esc(a.agreement_no || '-'),
+            esc(a.signed_at || '-'),
+            esc(a.expires_at || '-'),
+            chip(AGREEMENT_LABEL[a.status] || a.status, a.status === 'active' ? 'done' : a.status === 'expired' ? 'danger' : 'plain'),
+            a.status === 'active' ? `<button class="btn ghost sm" data-ag-renew="${a.id}">续签一年</button><button class="btn ghost sm danger" data-ag-revoke="${a.id}">撤销</button>` : '<span class="sub">-</span>',
+          ]), '暂无协议记录')}
+        </div>
+        <div class="card" style="margin-top:14px"><div class="card-head"><h3 class="card-title">成员签署状态</h3></div>
+          ${table(['姓名', '账号', '项目角色', '状态'], d.members.map((m) => [
+            esc(m.name), esc(m.username), esc(m.project_role || '-'), m.signed ? chip('已签署', 'done') : chip('未签署', 'danger'),
+          ]), '暂无成员')}
+        </div>`;
+    } else {
+      const d = await api('/api/service/training');
+      const s = d.summary;
+      body = `
+        <div class="grid kpi-grid" style="margin-bottom:14px">
+          ${kpi('培训记录', s.total, '条')}
+          ${kpi('已完成', s.completed, '条')}
+          ${kpi('完成率', `${s.rate}%`, '')}
+          ${kpi('课程数', d.courses.length, '门')}
+        </div>
+        <div class="card"><div class="card-head"><h3 class="card-title">培训课程</h3>
+          <button class="btn primary" id="svc-course-add" style="margin-left:auto">新建课程</button></div>
+          ${table(['课程', '适用模态', '时长', '参训', '完成', '完成率'], d.courses.map((c) => [
+            esc(c.title), esc(c.modality_label), `${c.duration_min} 分钟`, c.assigned, c.completed, bar(c.rate),
+          ]), '暂无培训课程')}
+        </div>
+        <div class="card" style="margin-top:14px"><div class="card-head"><h3 class="card-title">培训与考核记录</h3>
+          <button class="btn" id="svc-train-add" style="margin-left:auto">登记培训</button></div>
+          ${table(['学员', '课程', '状态', '成绩', '完成时间', '操作'], d.records.map((r) => [
+            esc(r.user_name), esc(r.course_title), chip(r.status_label, r.status === 'completed' ? 'done' : 'pending'),
+            r.score ? `${r.score} 分` : '-', time(r.completed_at), r.status === 'completed' ? '<span class="sub">-</span>' : `<button class="btn ghost sm" data-tr-done="${r.id}">标记完成</button>`,
+          ]), '暂无培训记录')}
+        </div>`;
+    }
+
+    mountPage('service', `${head('运营服务', '运营月报、服务工单与 SLA、保密协议台账、培训考核记录',
+      `${projBar}<span style="width:8px"></span>${tabNav}`)}<div id="svc-body">${body}</div>`, '运营服务');
+
+    const sel = $v('#svc-proj');
+    if (sel) sel.onchange = () => go({ project_id: sel.value, tab });
+    const tabBtns = $$v('[data-tab]');
+    tabBtns.forEach((b) => { b.onclick = () => go({ tab: b.getAttribute('data-tab') }); });
+    const mg = $v('#svc-month-go');
+    if (mg) mg.onclick = () => go({ month: $v('#svc-month').value || month });
+
+    const reload = () => pageService(query);
+    if (tab === 'report') return;
+
+    if (tab === 'tickets') {
+      const add = $v('#svc-ticket-add');
+      if (add) add.onclick = () => {
+        serviceForm('新建服务工单', `
+          <div class="field"><label>标题</label><input class="input" id="tk-title" placeholder="例如：批次数据导入失败" /></div>
+          <div class="grid" style="grid-template-columns:1fr 1fr">
+            <div class="field"><label>类别</label><select class="select" id="tk-cat">${Object.entries(TICKET_LABEL_CAT).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></div>
+            <div class="field"><label>优先级</label><select class="select" id="tk-pri">${Object.entries(TICKET_LABEL_PRI).map(([k, v]) => `<option value="${k}" ${k === 'normal' ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
+          </div>
+          <div class="field"><label>响应时限（小时）</label><input class="input" id="tk-sla" type="number" min="1" value="24" /></div>
+          <div class="field"><label>问题描述</label><textarea class="input" id="tk-detail" rows="3"></textarea></div>`, async () => {
+          await api('/api/service/tickets', { method: 'POST', body: {
+            project_id: pid, title: $v('#tk-title').value.trim(), category: $v('#tk-cat').value,
+            priority: $v('#tk-pri').value, sla_hours: Number($v('#tk-sla').value) || 24, detail: $v('#tk-detail').value,
+          } });
+          toast('工单已创建', 'ok'); reload();
+        });
+      };
+      $$v('[data-tk-start]').forEach((b) => { b.onclick = async () => {
+        try { await api(`/api/service/tickets/${b.getAttribute('data-tk-start')}`, { method: 'PATCH', body: { status: 'processing' } }); toast('已开始处理', 'ok'); reload(); }
+        catch (e) { toast(e.message, 'err'); }
+      }; });
+      $$v('[data-tk-done]').forEach((b) => { b.onclick = () => {
+        const id = b.getAttribute('data-tk-done');
+        serviceForm('解决工单', `<div class="field"><label>处理结论</label><textarea class="input" id="tk-res" rows="3" placeholder="填写处理过程与结果"></textarea></div>`, async () => {
+          await api(`/api/service/tickets/${id}`, { method: 'PATCH', body: { status: 'resolved', resolution: $v('#tk-res').value.trim() } });
+          toast('工单已解决', 'ok'); reload();
+        });
+      }; });
+    }
+
+    if (tab === 'agreements') {
+      const add = $v('#svc-ag-add');
+      if (add) add.onclick = () => {
+        serviceForm('登记保密协议', `
+          <div class="field"><label>签署人</label><select class="select" id="ag-user">${memberOpts || '<option value="">暂无可选成员</option>'}</select></div>
+          <div class="field"><label>协议编号</label><input class="input" id="ag-no" placeholder="可选，例如 CK-NDA-2026-001" /></div>
+          <div class="grid" style="grid-template-columns:1fr 1fr">
+            <div class="field"><label>签署日期</label><input class="input" type="date" id="ag-signed" value="${new Date().toISOString().slice(0, 10)}" /></div>
+            <div class="field"><label>到期日期</label><input class="input" type="date" id="ag-expires" value="${new Date(Date.now() + 365 * 864e5).toISOString().slice(0, 10)}" /></div>
+          </div>
+          <div class="field"><label>备注</label><input class="input" id="ag-note" /></div>`, async () => {
+          const uid = Number($v('#ag-user').value);
+          if (!uid) throw new Error('请选择签署人');
+          await api('/api/service/agreements', { method: 'POST', body: {
+            project_id: pid, user_id: uid, agreement_no: $v('#ag-no').value.trim(),
+            signed_at: $v('#ag-signed').value, expires_at: $v('#ag-expires').value, note: $v('#ag-note').value.trim(),
+          } });
+          toast('协议已登记', 'ok'); reload();
+        });
+      };
+      $$v('[data-ag-renew]').forEach((b) => { b.onclick = async () => {
+        try {
+          await api(`/api/service/agreements/${b.getAttribute('data-ag-renew')}`, { method: 'PATCH', body: {
+            status: 'active', expires_at: new Date(Date.now() + 365 * 864e5).toISOString().slice(0, 10),
+          } });
+          toast('已续签一年', 'ok'); reload();
+        } catch (e) { toast(e.message, 'err'); }
+      }; });
+      $$v('[data-ag-revoke]').forEach((b) => { b.onclick = async () => {
+        if (!(await confirmModal('撤销协议', '确认撤销该保密协议？撤销后成员将变为未签署状态。', '撤销', true))) return;
+        try { await api(`/api/service/agreements/${b.getAttribute('data-ag-revoke')}`, { method: 'PATCH', body: { status: 'revoked' } }); toast('协议已撤销', 'ok'); reload(); }
+        catch (e) { toast(e.message, 'err'); }
+      }; });
+    }
+
+    if (tab === 'training') {
+      let memberOpts = '';
+      try {
+        const ms = (await api(`/api/projects/${pid}/members`)).members || [];
+        memberOpts = ms.map((m) => `<option value="${m.id}">${esc(m.name)}（${esc(m.username)}）</option>`).join('');
+      } catch (e) { /* ignore */ }
+      const courses = (await api('/api/service/training')).courses || [];
+      const courseOpts = courses.map((c) => `<option value="${c.id}">${esc(c.title)}</option>`).join('');
+      const addCourse = $v('#svc-course-add');
+      if (addCourse) addCourse.onclick = () => {
+        serviceForm('新建培训课程', `
+          <div class="field"><label>课程名称</label><input class="input" id="tc-title" placeholder="例如：图像编辑指令标注规范" /></div>
+          <div class="grid" style="grid-template-columns:1fr 1fr">
+            <div class="field"><label>适用模态</label><select class="select" id="tc-mod"><option value="">通用</option>
+              <option value="audio">语音</option><option value="image">图片</option><option value="video">视频</option>
+              <option value="pointcloud">3D 点云</option><option value="editing">图像编辑指令</option></select></div>
+            <div class="field"><label>时长（分钟）</label><input class="input" type="number" min="0" id="tc-dur" value="60" /></div>
+          </div>
+          <div class="field"><label>课程说明</label><textarea class="input" id="tc-desc" rows="3"></textarea></div>`, async () => {
+          await api('/api/service/training/courses', { method: 'POST', body: {
+            title: $v('#tc-title').value.trim(), modality: $v('#tc-mod').value,
+            duration_min: Number($v('#tc-dur').value) || 0, description: $v('#tc-desc').value.trim(),
+          } });
+          toast('课程已创建', 'ok'); reload();
+        });
+      };
+      const addTrain = $v('#svc-train-add');
+      if (addTrain) addTrain.onclick = () => {
+        serviceForm('登记培训记录', `
+          <div class="field"><label>课程</label><select class="select" id="tr-course">${courseOpts || '<option value="">请先创建课程</option>'}</select></div>
+          <div class="field"><label>学员</label><select class="select" id="tr-user">${memberOpts || '<option value="">暂无可选成员</option>'}</select></div>
+          <div class="grid" style="grid-template-columns:1fr 1fr">
+            <div class="field"><label>状态</label><select class="select" id="tr-status"><option value="assigned">待完成</option><option value="completed">已完成</option></select></div>
+            <div class="field"><label>考核成绩</label><input class="input" type="number" min="0" max="100" id="tr-score" value="0" /></div>
+          </div>`, async () => {
+          const cid = Number($v('#tr-course').value);
+          const uid = Number($v('#tr-user').value);
+          if (!cid) throw new Error('请先创建课程');
+          if (!uid) throw new Error('请选择学员');
+          await api('/api/service/training/records', { method: 'POST', body: {
+            course_id: cid, user_id: uid, status: $v('#tr-status').value, score: Number($v('#tr-score').value) || 0,
+          } });
+          toast('培训记录已登记', 'ok'); reload();
+        });
+      };
+      $$v('[data-tr-done]').forEach((b) => { b.onclick = () => {
+        const id = b.getAttribute('data-tr-done');
+        serviceForm('标记培训完成', `<div class="field"><label>考核成绩</label><input class="input" type="number" min="0" max="100" id="tr-done-score" value="90" /></div>`, async () => {
+          await api(`/api/service/training/records/${id}`, { method: 'PATCH', body: { status: 'completed', score: Number($v('#tr-done-score').value) || 0 } });
+          toast('已标记完成', 'ok'); reload();
+        });
+      }; });
+    }
+  }
+
+  const TICKET_LABEL = { open: '待响应', processing: '处理中', resolved: '已解决', closed: '已关闭' };
+  const TICKET_LABEL_CAT = { data: '数据问题', system: '系统故障', training: '培训支持', other: '其他' };
+  const TICKET_LABEL_PRI = { low: '低', normal: '普通', high: '高', urgent: '紧急' };
+  const AGREEMENT_LABEL = { active: '有效', expired: '已过期', revoked: '已撤销' };
+
+  function serviceForm(title, bodyHtml, onSubmit) {
+    openModal(`<div class="modal-head"><h3>${esc(title)}</h3><button class="x" data-close>×</button></div>
+      <div class="modal-body">${bodyHtml}</div>
+      <div class="modal-foot"><button class="btn ghost" data-close>取消</button><button class="btn primary" id="svc-form-ok">确定</button></div>`, 'sm');
+    $v('#svc-form-ok').onclick = async () => {
+      try { await onSubmit(); closeModal(); } catch (e) { toast(e.message, 'err'); }
+    };
+  }
+
   window.CK_NAV = [
     ['hall', '任务大厅', 'tasks', 'task.read'],
     ['jobs', '作业中心', 'upload', 'task.write'],
@@ -1284,13 +2259,14 @@
     ['governance', '治理中心', 'database', 'org.read'],
     ['issues', '问题清单', 'qc', 'task.read'],
     ['ops', '运维中心', 'settings', 'settings.write'],
+    ['service', '运营服务', 'shield', 'member.read'],
     ['help', '帮助中心', 'search', ''],
     ['preferences', '个人偏好', 'members', ''],
   ];
   window.CK_PAGES = {
     hall: pageHall, jobs: pageJobs, components: pageComponents, operators: pageOperators,
     quality: pageQuality, issues: pageIssues, ops: pageOps, help: pageHelp, preferences: pagePreferences,
-    governance: pageGovernance,
+    governance: pageGovernance, service: pageService,
   };
   window.CK_WORKBENCH = WB;
   window.CK_AFTER_MOUNT = annotateExtras;

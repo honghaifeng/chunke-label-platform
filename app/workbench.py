@@ -63,13 +63,13 @@ def _assert_write(user: dict, pid: int) -> dict:
     raise HTTPException(403, "仅平台管理员 / 项目管理者可执行该操作")
 
 
-def _task(tid: int, user: dict) -> dict:
+def _task(tid: int, user: dict, include_deleted: bool = False) -> dict:
     t = db.row(
         "SELECT t.*,p.name project_name,p.code project_code,p.modality FROM tasks t"
         " JOIN projects p ON p.id=t.project_id WHERE t.id=?",
         (tid,),
     )
-    if not t:
+    if not t or (t.get("deleted") and not include_deleted):
         raise HTTPException(404, "任务不存在")
     auth.assert_task(user, t)
     return t
@@ -244,11 +244,12 @@ def _probe_duration(path: str) -> float:
 @job_handler("audio_denoise")
 def _job_audio_denoise(j: dict, report) -> dict:
     task = db.row("SELECT * FROM tasks WHERE id=?", (j["task_id"],))
-    if not task or not task["media_path"] or not os.path.exists(task["media_path"]):
+    src = db.media_abspath(task["media_path"]) if task else ""
+    if not task or not src or not os.path.exists(src):
         raise RuntimeError("任务媒体不存在")
     report(15, "正在降噪")
     out = os.path.join(db.MEDIA_DIR, f"{task['project_id']}-{task['id']}-dn-{uuid.uuid4().hex[:6]}.wav")
-    _ffmpeg(["-i", task["media_path"], "-af", "afftdn=nf=-25,loudnorm=I=-16:TP=-1.5:LRA=11", "-ar", "16000", "-ac", "1", out])
+    _ffmpeg(["-i", src, "-af", "afftdn=nf=-25,loudnorm=I=-16:TP=-1.5:LRA=11", "-ar", "16000", "-ac", "1", out])
     report(80, "正在回写")
     dur = _probe_duration(out)
     db.execute("UPDATE tasks SET media_path=?,duration=?,updated_at=? WHERE id=?", (out, dur, db.now(), task["id"]))
@@ -260,7 +261,8 @@ def _job_audio_denoise(j: dict, report) -> dict:
 @job_handler("video_frames")
 def _job_video_frames(j: dict, report) -> dict:
     task = db.row("SELECT * FROM tasks WHERE id=?", (j["task_id"],))
-    if not task or not task["media_path"] or not os.path.exists(task["media_path"]):
+    src = db.media_abspath(task["media_path"]) if task else ""
+    if not task or not src or not os.path.exists(src):
         raise RuntimeError("任务媒体不存在")
     payload = _json(j["payload"], {})
     interval = float(payload.get("interval") or 1)
@@ -268,7 +270,7 @@ def _job_video_frames(j: dict, report) -> dict:
     prefix = f"frames-{task['id']}-{uuid.uuid4().hex[:6]}"
     pattern = os.path.join(db.MEDIA_DIR, f"{prefix}-%05d.jpg")
     report(10, "开始抽帧")
-    _ffmpeg(["-i", task["media_path"], "-vf", f"fps=1/{max(0.04, interval)},scale=1280:-2", pattern])
+    _ffmpeg(["-i", src, "-vf", f"fps=1/{max(0.04, interval)},scale=1280:-2", pattern])
     names = sorted(n for n in os.listdir(db.MEDIA_DIR) if n.startswith(prefix) and n.endswith(".jpg"))[:max_frames]
     for n in names:
         db.execute(
@@ -282,11 +284,12 @@ def _job_video_frames(j: dict, report) -> dict:
 @job_handler("video_compress")
 def _job_video_compress(j: dict, report) -> dict:
     task = db.row("SELECT * FROM tasks WHERE id=?", (j["task_id"],))
-    if not task or not task["media_path"]:
+    src = db.media_abspath(task["media_path"]) if task else ""
+    if not task or not src or not os.path.exists(src):
         raise RuntimeError("任务媒体不存在")
     report(20, "转码中")
     out = os.path.join(db.MEDIA_DIR, f"{task['id']}-{uuid.uuid4().hex[:6]}.mp4")
-    _ffmpeg(["-i", task["media_path"], "-vf", "scale='min(1280,iw)':-2", "-c:v", "libx264", "-crf", "28", "-preset", "veryfast", "-c:a", "aac", out])
+    _ffmpeg(["-i", src, "-vf", "scale='min(1280,iw)':-2", "-c:v", "libx264", "-crf", "28", "-preset", "veryfast", "-c:a", "aac", out])
     db.execute("UPDATE tasks SET media_path=?,duration=?,updated_at=? WHERE id=?", (out, _probe_duration(out), db.now(), task["id"]))
     return {"media": f"/media/{os.path.basename(out)}"}
 
@@ -357,7 +360,11 @@ def _job_import_urls(j: dict, report) -> dict:
             (project["id"], name, os.path.join(db.MEDIA_DIR, local), _media_kind(ext), 0, "pending", "normal", batch, "url", db.now(), db.now()),
         )
         created.append({"url": url, "task_id": tid})
-    return {"created": created, "count": len([c for c in created if c.get("task_id")])}
+    ok = [c for c in created if c.get("task_id")]
+    if not ok:
+        first = next((c.get("error") for c in created if c.get("error")), "全部 URL 下载失败")
+        raise RuntimeError(f"URL 导入失败：{first}")
+    return {"created": created, "count": len(ok)}
 
 
 @router.get("/api/jobs/{jid}/download")
@@ -381,7 +388,7 @@ def task_preprocess(tid: int, body: dict, user: dict = Depends(me)):
     mapping = {"audio_denoise": "语音降噪", "video_frames": "视频抽帧", "video_compress": "视频转码"}
     if kind not in mapping:
         raise HTTPException(400, "不支持的预处理类型")
-    if not task["media_path"] or not os.path.exists(task["media_path"]):
+    if not db.media_abspath(task["media_path"] or "") or not os.path.exists(db.media_abspath(task["media_path"] or "")):
         raise HTTPException(400, "请先上传媒体文件")
     payload = {k: body.get(k) for k in ("interval", "max_frames") if body.get(k) is not None}
     jid = _start_job(kind, f"{mapping[kind]} · {task['name']}", user, payload, project_id=task["project_id"], task_id=tid)
@@ -431,6 +438,12 @@ async def import_files(
     user: dict = Depends(me),
 ):
     project = _assert_write(user, project_id)
+    if project.get("modality") == "editing":
+        raise HTTPException(
+            400,
+            "图像编辑指令项目请使用「样本目录导入」（原图 + 结果图 + 指令 txt），"
+            "系统会自动配对样本并将指令预填到任务，避免把 txt 误建为独立任务",
+        )
     batch = batch or f"导入 {db.now()[:10]}"
     saved: list[dict] = []
     tmp_zip = []
@@ -679,8 +692,9 @@ def annotation_restore(tid: int, vid: int, user: dict = Depends(me)):
 # 归档 / 软删除 / 任务大厅 / 任务包 / 暂停恢复
 # ---------------------------------------------------------------------------
 
-def _task_action(tid: int, user: dict, sql: str, args: tuple, action: str) -> None:
-    task = _task(tid, user)
+def _task_action(tid: int, user: dict, sql: str, args: tuple, action: str,
+                 include_deleted: bool = False) -> None:
+    task = _task(tid, user, include_deleted=include_deleted)
     if not (auth.is_admin(user) or auth.project_role(user, task["project_id"]) == "manager"):
         raise HTTPException(403, "仅项目管理者可执行该操作")
     db.execute(sql, args)
@@ -695,7 +709,7 @@ def archive_task(tid: int, user: dict = Depends(me)):
 
 @router.post("/api/tasks/{tid}/restore")
 def restore_task(tid: int, user: dict = Depends(me)):
-    _task_action(tid, user, "UPDATE tasks SET archived=0,deleted=0,updated_at=? WHERE id=?", (db.now(), tid), "restore_task")
+    _task_action(tid, user, "UPDATE tasks SET archived=0,deleted=0,updated_at=? WHERE id=?", (db.now(), tid), "restore_task", include_deleted=True)
     return {"ok": True}
 
 

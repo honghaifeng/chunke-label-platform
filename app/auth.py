@@ -10,16 +10,25 @@ from fastapi import HTTPException, Request
 from . import db
 
 SESSIONS: dict[str, int] = {}
+ACTIVE_TENANTS: dict[str, int] = {}
 COOKIE = "chunke_session"
 
 PLATFORM_ROLES = {
     "platform_admin": "平台管理员",
+    "tenant_admin": "租户管理员",
     "project_manager": "项目经理",
     "annotator": "标注员",
     "reviewer": "质检员",
+    "acceptor": "验收员",
     "client": "客户(只读)",
 }
-PROJECT_ROLES = {"manager": "项目经理", "annotator": "标注员", "reviewer": "质检员", "viewer": "只读"}
+PROJECT_ROLES = {
+    "manager": "项目经理",
+    "annotator": "标注员",
+    "reviewer": "质检员",
+    "acceptor": "验收员",
+    "viewer": "只读",
+}
 
 
 def create_session(user_id: int) -> str:
@@ -31,6 +40,16 @@ def create_session(user_id: int) -> str:
 def destroy_session(token: str | None) -> None:
     if token:
         SESSIONS.pop(token, None)
+        ACTIVE_TENANTS.pop(token, None)
+
+
+def set_active_tenant(token: str | None, tenant_id: int | None) -> None:
+    if not token:
+        return
+    if tenant_id:
+        ACTIVE_TENANTS[token] = int(tenant_id)
+    else:
+        ACTIVE_TENANTS.pop(token, None)
 
 
 def user_by_token(token: str | None) -> dict | None:
@@ -46,9 +65,21 @@ def user_by_token(token: str | None) -> dict | None:
 
 
 def current_user(request: Request) -> dict:
-    user = user_by_token(request.cookies.get(COOKIE))
+    token = request.cookies.get(COOKIE)
+    user = user_by_token(token)
     if not user or user["status"] != "active":
         raise HTTPException(status_code=401, detail="请先登录")
+    active = ACTIVE_TENANTS.get(token) if token else None
+    if active and active != user.get("tenant_id"):
+        user = dict(user)
+        user["tenant_id"] = active
+        member = db.row(
+            "SELECT org_id,team_id FROM tenant_members WHERE tenant_id=? AND user_id=? AND status='active'",
+            (active, user["id"]),
+        )
+        if member:
+            user["org_id"] = member["org_id"]
+            user["team_id"] = member["team_id"]
     return user
 
 
@@ -77,6 +108,13 @@ def has_perm(user: dict, permission: str) -> bool:
     )
     if hit:
         return True
+    # 该角色已在矩阵中配置过：以矩阵为准（取消勾选即收回），不再回退默认值
+    configured = db.row(
+        "SELECT 1 ok FROM role_permissions WHERE role=? LIMIT 1",
+        (user["platform_role"],),
+    )
+    if configured:
+        return False
     # 矩阵未初始化时回退到内置默认值
     return permission in db.ROLE_PERMISSIONS.get(user["platform_role"], [])
 
@@ -98,6 +136,10 @@ def is_admin(user: dict) -> bool:
 def project_role(user: dict, project_id: int) -> str:
     if is_admin(user):
         return "manager"
+    if user["platform_role"] == "tenant_admin":
+        p = db.row("SELECT tenant_id FROM projects WHERE id=?", (project_id,))
+        if p and p["tenant_id"] and p["tenant_id"] == user.get("tenant_id"):
+            return "manager"
     r = db.row(
         "SELECT project_role FROM project_members WHERE project_id=? AND user_id=?",
         (project_id, user["id"]),
@@ -109,6 +151,10 @@ def visible_project_ids(user: dict) -> list[int]:
     tenant = user.get("tenant_id")
     if is_admin(user):
         return [r["id"] for r in db.rows("SELECT id FROM projects")]
+    if user.get("platform_role") == "tenant_admin":
+        if not tenant:
+            return []
+        return [r["id"] for r in db.rows("SELECT id FROM projects WHERE tenant_id=?", (tenant,))]
     mine = {
         r["project_id"]
         for r in db.rows("SELECT project_id FROM project_members WHERE user_id=?", (user["id"],))
@@ -125,15 +171,31 @@ def visible_project_ids(user: dict) -> list[int]:
 def can_access_task(user: dict, task: dict) -> bool:
     if is_admin(user):
         return True
+    if user.get("tenant_id") and task["project_id"] not in tenant_project_ids(user):
+        return False
     role = project_role(user, task["project_id"])
-    if not role:
+    task_roles = {
+        r["role"]
+        for r in db.rows(
+            "SELECT role FROM task_roles WHERE task_id=? AND user_id=?", (task["id"], user["id"])
+        )
+    }
+    if not role and not task_roles:
         return False
     if role in ("manager", "viewer"):
         return True
-    if role == "annotator":
-        return task["assignee_id"] == user["id"] or task["status"] in ("pending", "annotating")
-    if role == "reviewer":
-        return task["reviewer_id"] == user["id"] or task["status"] in ("submitted", "review")
+    if role == "annotator" or "annotator" in task_roles:
+        return (
+            task["assignee_id"] == user["id"]
+            or task["status"] in ("pending", "annotating")
+            or "acceptor" in task_roles
+        )
+    if role == "reviewer" or "reviewer" in task_roles:
+        return task["reviewer_id"] == user["id"] or task["status"] in (
+            "submitted", "review", "review_done",
+        )
+    if role == "acceptor" or "acceptor" in task_roles:
+        return task["status"] in ("review_done", "done")
     return False
 
 
@@ -142,24 +204,58 @@ def assert_task(user: dict, task: dict) -> None:
         raise HTTPException(status_code=403, detail="无权访问该任务")
 
 
+def tenant_project_ids(user: dict) -> list[int]:
+    """当前租户下的项目（含未绑定租户的演示项目），用于任务级权限的租户隔离。"""
+    tenant = user.get("tenant_id")
+    if not tenant:
+        return []
+    return [
+        r["id"] for r in db.rows(
+            "SELECT id FROM projects WHERE tenant_id=? OR tenant_id IS NULL", (tenant,)
+        )
+    ]
+
+
 def task_scope_sql(user: dict) -> tuple[str, tuple]:
     """返回任务列表的附加过滤条件。"""
-    if is_admin(user) or user["platform_role"] == "project_manager":
+    if is_admin(user) or user["platform_role"] in ("project_manager", "tenant_admin", "client"):
         ids = visible_project_ids(user)
         if not ids:
             return "1=0", ()
         marks = ",".join("?" * len(ids))
         return f"t.project_id IN ({marks})", tuple(ids)
-    if user["platform_role"] == "client":
+    if user["platform_role"] == "acceptor":
         ids = visible_project_ids(user)
-        if not ids:
+        tids = tenant_project_ids(user)
+        clauses = []
+        args: list = []
+        if tids:
+            tmarks = ",".join("?" * len(tids))
+            clauses.append(
+                "(t.id IN (SELECT task_id FROM task_roles WHERE user_id=? AND role='acceptor')"
+                f" AND t.project_id IN ({tmarks}))"
+            )
+            args.append(user["id"])
+            args.extend(tids)
+        if ids:
+            marks = ",".join("?" * len(ids))
+            clauses.append(f"t.project_id IN ({marks})")
+            args.extend(ids)
+        if not clauses:
             return "1=0", ()
-        marks = ",".join("?" * len(ids))
-        return f"t.project_id IN ({marks})", tuple(ids)
+        return "(" + " OR ".join(clauses) + ")", tuple(args)
     if user["platform_role"] == "annotator":
-        return "t.assignee_id=?", (user["id"],)
+        ids = visible_project_ids(user)
+        if not ids:
+            return "1=0", ()
+        marks = ",".join("?" * len(ids))
+        return f"t.assignee_id=? AND t.project_id IN ({marks})", (user["id"], *ids)
     if user["platform_role"] == "reviewer":
-        return "t.reviewer_id=?", (user["id"],)
+        ids = visible_project_ids(user)
+        if not ids:
+            return "1=0", ()
+        marks = ",".join("?" * len(ids))
+        return f"t.reviewer_id=? AND t.project_id IN ({marks})", (user["id"], *ids)
     return "1=0", ()
 
 

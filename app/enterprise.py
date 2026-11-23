@@ -63,12 +63,28 @@ def _assert_project(user: dict, project_id: int, write: bool = False) -> dict:
 @router.get("/api/org/tree")
 def org_tree(user: dict = Depends(me)):
     auth.require_perm(user, "org.read")
-    tenants = db.rows("SELECT * FROM tenants ORDER BY id")
-    orgs = db.rows("SELECT * FROM orgs ORDER BY id")
-    teams = db.rows("SELECT * FROM teams ORDER BY id")
-    members = db.rows(
-        "SELECT id,username,name,platform_role,status,tenant_id,org_id,team_id FROM users ORDER BY id"
-    )
+    scope = None if auth.is_admin(user) else (user.get("tenant_id") or 0)
+    if scope is not None:
+        tenants = db.rows("SELECT * FROM tenants WHERE id=?", (scope,))
+        orgs = db.rows("SELECT * FROM orgs WHERE tenant_id=? ORDER BY id", (scope,))
+        teams = db.rows(
+            "SELECT t.* FROM teams t JOIN orgs o ON o.id=t.org_id WHERE o.tenant_id=? ORDER BY t.id", (scope,)
+        )
+        members = db.rows(
+            "SELECT u.id,u.username,u.name,u.platform_role,u.status,"
+            " COALESCE(m.tenant_id,u.tenant_id) tenant_id,"
+            " COALESCE(m.org_id,u.org_id) org_id,COALESCE(m.team_id,u.team_id) team_id"
+            " FROM users u LEFT JOIN tenant_members m ON m.user_id=u.id AND m.tenant_id=?"
+            " WHERE u.tenant_id=? OR (m.user_id IS NOT NULL AND m.status='active') ORDER BY u.id",
+            (scope, scope),
+        )
+    else:
+        tenants = db.rows("SELECT * FROM tenants ORDER BY id")
+        orgs = db.rows("SELECT * FROM orgs ORDER BY id")
+        teams = db.rows("SELECT * FROM teams ORDER BY id")
+        members = db.rows(
+            "SELECT id,username,name,platform_role,status,tenant_id,org_id,team_id FROM users ORDER BY id"
+        )
     for m in members:
         m["role_label"] = auth.PLATFORM_ROLES.get(m["platform_role"], m["platform_role"])
     team_members = db.rows(
@@ -98,26 +114,66 @@ def org_tree(user: dict = Depends(me)):
     return {"tenants": tenants, "members": members, "teams": teams}
 
 
+def _auto_tenant_code() -> str:
+    base = "T" + time.strftime("%Y%m%d")
+    used = []
+    for r in db.rows("SELECT code FROM tenants WHERE code LIKE ?", (base + "-%",)):
+        tail = r["code"].split("-")[-1]
+        if tail.isdigit():
+            used.append(int(tail))
+    return f"{base}-{max(used, default=0) + 1:02d}"
+
+
 @router.post("/api/tenants")
 def create_tenant(body: dict, user: dict = Depends(me)):
-    auth.require_perm(user, "org.write")
+    auth.require(user, "platform_admin")
     name = (body.get("name") or "").strip()
-    code = (body.get("code") or f"tenant-{uuid.uuid4().hex[:6]}").strip()
     if not name:
         raise HTTPException(400, "租户名称不能为空")
+    code = (body.get("code") or "").strip() or _auto_tenant_code()
     if db.row("SELECT id FROM tenants WHERE code=?", (code,)):
         raise HTTPException(400, "租户编码已存在")
+
+    admin_username = (body.get("admin_username") or "").strip()
+    admin_password = body.get("admin_password") or ""
+    if admin_username or admin_password:
+        if not admin_username or not admin_password:
+            raise HTTPException(400, "管理员账号和初始密码必须同时填写")
+        if len(admin_password) < 6:
+            raise HTTPException(400, "初始密码至少 6 位")
+        if db.row("SELECT id FROM users WHERE username=?", (admin_username,)):
+            raise HTTPException(400, "管理员账号已存在，请更换账号名")
+
     tid = db.execute(
         "INSERT INTO tenants(code,name,status,created_at) VALUES(?,?,?,?)", (code, name, "active", db.now())
     )
-    db.log(user["id"], "create_tenant", f"tenant:{tid}", name)
-    return {"ok": True, "id": tid}
+    admin_user_id = 0
+    if admin_username:
+        admin_user_id = db.execute(
+            "INSERT INTO users(username,name,password_hash,platform_role,tenant_id,created_at)"
+            " VALUES(?,?,?,?,?,?)",
+            (
+                admin_username,
+                (body.get("admin_name") or "").strip() or f"{name}管理员",
+                db.hash_password(admin_password),
+                "tenant_admin",
+                tid,
+                db.now(),
+            ),
+        )
+    db.log(user["id"], "create_tenant", f"tenant:{tid}", f"{name} · {code}")
+    return {"ok": True, "id": tid, "code": code, "admin_user_id": admin_user_id}
 
 
 @router.post("/api/orgs")
 def create_org(body: dict, user: dict = Depends(me)):
     auth.require_perm(user, "org.write")
     tenant_id = int(body.get("tenant_id") or 0)
+    if not auth.is_admin(user):
+        own = user.get("tenant_id") or 0
+        if not own:
+            raise HTTPException(403, "当前账号未归属租户，无法创建组织")
+        tenant_id = own
     if not db.row("SELECT id FROM tenants WHERE id=?", (tenant_id,)):
         raise HTTPException(400, "请选择有效租户")
     name = (body.get("name") or "").strip()
@@ -149,6 +205,8 @@ def create_team(body: dict, user: dict = Depends(me)):
     org = db.row("SELECT * FROM orgs WHERE id=?", (org_id,))
     if not org:
         raise HTTPException(400, "请选择有效组织")
+    if not auth.is_admin(user) and org["tenant_id"] != (user.get("tenant_id") or 0):
+        raise HTTPException(403, "只能管理本租户下的组织与团队")
     name = (body.get("name") or "").strip()
     code = (body.get("code") or f"team-{uuid.uuid4().hex[:6]}").strip()
     if not name:
@@ -176,9 +234,17 @@ def add_team_member(tid: int, body: dict, user: dict = Depends(me)):
     auth.require_perm(user, "org.write")
     if not db.row("SELECT id FROM teams WHERE id=?", (tid,)):
         raise HTTPException(404, "团队不存在")
+    team = db.row(
+        "SELECT t.id,o.tenant_id FROM teams t JOIN orgs o ON o.id=t.org_id WHERE t.id=?", (tid,)
+    )
+    if not auth.is_admin(user) and team["tenant_id"] != (user.get("tenant_id") or 0):
+        raise HTTPException(403, "只能管理本租户下的团队")
     uid = int(body.get("user_id") or 0)
-    if not db.row("SELECT id FROM users WHERE id=?", (uid,)):
+    member = db.row("SELECT id,tenant_id FROM users WHERE id=?", (uid,))
+    if not member:
         raise HTTPException(404, "成员不存在")
+    if not auth.is_admin(user) and (member["tenant_id"] or 0) != (user.get("tenant_id") or 0):
+        raise HTTPException(403, "只能添加本租户的成员")
     role = body.get("team_role") or "member"
     if role not in ("leader", "member"):
         raise HTTPException(400, "团队角色只能是 leader 或 member")
@@ -195,8 +261,21 @@ def update_user_scope(uid: int, body: dict, user: dict = Depends(me)):
     if not target:
         raise HTTPException(404, "成员不存在")
     tenant_id = int(body.get("tenant_id") or target["tenant_id"] or 0) or None
+    if not auth.is_admin(user):
+        own = user.get("tenant_id") or 0
+        if (target["tenant_id"] or 0) != own:
+            raise HTTPException(403, "只能调整本租户成员")
+        tenant_id = own
     org_id = int(body.get("org_id") or target["org_id"] or 0) or None
     team_id = int(body.get("team_id") or 0) or None
+    if not auth.is_admin(user):
+        if org_id and not db.row("SELECT id FROM orgs WHERE id=? AND tenant_id=?", (org_id, tenant_id)):
+            raise HTTPException(403, "只能选择本租户的组织")
+        if team_id and not db.row(
+            "SELECT t.id FROM teams t JOIN orgs o ON o.id=t.org_id WHERE t.id=? AND o.tenant_id=?",
+            (team_id, tenant_id),
+        ):
+            raise HTTPException(403, "只能选择本租户的团队")
     db.execute("UPDATE users SET tenant_id=?, org_id=?, team_id=? WHERE id=?", (tenant_id, org_id, team_id, uid))
     if team_id:
         db.execute(
@@ -223,7 +302,7 @@ def rbac_matrix(user: dict = Depends(me)):
 
 @router.post("/api/rbac/matrix")
 def save_rbac_matrix(body: dict, user: dict = Depends(me)):
-    auth.require_perm(user, "org.write")
+    auth.require(user, "platform_admin")
     role = body.get("role") or ""
     perm = body.get("permission") or ""
     if role not in auth.PLATFORM_ROLES:
@@ -249,10 +328,20 @@ def _dataset_stats(ds: dict) -> dict:
         "SELECT * FROM dataset_versions WHERE dataset_id=? ORDER BY version DESC LIMIT 1", (ds["id"],)
     )
     ds["version_count"] = (db.row("SELECT COUNT(*) c FROM dataset_versions WHERE dataset_id=?", (ds["id"],)) or {}).get("c", 0)
-    ds["item_count"] = (db.row("SELECT COUNT(*) c FROM dataset_items WHERE dataset_id=?", (ds["id"],)) or {}).get("c", 0)
+    # 统计口径跟随最新版本快照，避免历史版本条目重复累计
+    if latest:
+        count_row = db.row(
+            "SELECT COUNT(*) c,COALESCE(SUM(size),0) s FROM dataset_items WHERE dataset_id=? AND version_id=?",
+            (ds["id"], latest["id"]),
+        )
+    else:
+        count_row = db.row(
+            "SELECT COUNT(*) c,COALESCE(SUM(size),0) s FROM dataset_items WHERE dataset_id=?", (ds["id"],)
+        )
+    ds["item_count"] = count_row["c"] if count_row else 0
     ds["latest_version"] = latest["version"] if latest else 0
     ds["latest_version_id"] = latest["id"] if latest else 0
-    ds["size"] = (db.row("SELECT COALESCE(SUM(size),0) s FROM dataset_items WHERE dataset_id=?", (ds["id"],)) or {}).get("s", 0)
+    ds["size"] = count_row["s"] if count_row else 0
     ds["project_name"] = (db.row("SELECT name FROM projects WHERE id=?", (ds["project_id"],)) or {}).get("name", "")
     ds["modality_label"] = db.MODALITY_LABEL.get(ds["modality"], ds["modality"])
     return ds
@@ -321,10 +410,11 @@ def dataset_detail(ds_id: int, user: dict = Depends(me)):
         " WHERE v.dataset_id=? ORDER BY v.version DESC",
         (ds_id,),
     )
+    detail_version_id = versions[0]["id"] if versions else 0
     items = db.rows(
         "SELECT i.*,t.status task_status FROM dataset_items i LEFT JOIN tasks t ON t.id=i.task_id"
-        " WHERE i.dataset_id=? ORDER BY i.id DESC LIMIT 300",
-        (ds_id,),
+        " WHERE i.dataset_id=? AND i.version_id=? ORDER BY i.id DESC LIMIT 300",
+        (ds_id, detail_version_id),
     )
     for it in items:
         it["media_name"] = os.path.basename(it["media_path"] or "")
@@ -335,7 +425,9 @@ def dataset_detail(ds_id: int, user: dict = Depends(me)):
     detail["by_type"] = [
         {"name": db.MODALITY_LABEL.get(r["media_type"], r["media_type"]), "value": r["c"]}
         for r in db.rows(
-            "SELECT media_type,COUNT(*) c FROM dataset_items WHERE dataset_id=? GROUP BY media_type", (ds_id,)
+            "SELECT media_type,COUNT(*) c FROM dataset_items WHERE dataset_id=? AND version_id=?"
+            " GROUP BY media_type",
+            (ds_id, detail_version_id),
         )
     ]
     return detail
@@ -396,10 +488,12 @@ def import_dataset_items(ds_id: int, body: dict, user: dict = Depends(me)):
         )
         db.execute("UPDATE tasks SET dataset_id=? WHERE id=?", (ds_id, t["id"]))
         added += 1
-    total = (db.row("SELECT COUNT(*) c FROM dataset_items WHERE dataset_id=?", (ds_id,)) or {}).get("c", 0)
+    total = (db.row(
+        "SELECT COUNT(*) c FROM dataset_items WHERE dataset_id=? AND version_id=?", (ds_id, version_id)
+    ) or {}).get("c", 0)
     db.execute("UPDATE dataset_versions SET item_count=? WHERE id=?", (total, version_id))
     db.execute("UPDATE datasets SET updated_at=? WHERE id=?", (db.now(), ds_id))
-    db.log(user["id"], "import_dataset", f"dataset:{ds_id}", f"新增 {added} 条，共 {total} 条")
+    db.log(user["id"], "import_dataset", f"dataset:{ds_id}", f"新增 {added} 条，本版共 {total} 条")
     return {"ok": True, "added": added, "total": total, "version": latest["version"] if latest else 1}
 
 
@@ -470,7 +564,9 @@ async def upload_dataset_item(
             db.now(),
         ),
     )
-    total = (db.row("SELECT COUNT(*) c FROM dataset_items WHERE dataset_id=?", (ds_id,)) or {}).get("c", 0)
+    total = (db.row(
+        "SELECT COUNT(*) c FROM dataset_items WHERE dataset_id=? AND version_id=?", (ds_id, version_id)
+    ) or {}).get("c", 0)
     db.execute("UPDATE dataset_versions SET item_count=? WHERE id=?", (total, version_id))
     db.execute("UPDATE datasets SET updated_at=? WHERE id=?", (db.now(), ds_id))
     db.log(user["id"], "upload_dataset_item", f"dataset:{ds_id}", f"{name} · {size}B")
@@ -486,7 +582,13 @@ def create_dataset_version(ds_id: int, body: dict, user: dict = Depends(me)):
         _assert_project(user, ds["project_id"], write=True)
     latest = db.row("SELECT * FROM dataset_versions WHERE dataset_id=? ORDER BY version DESC LIMIT 1", (ds_id,))
     next_v = (latest["version"] + 1) if latest else 1
-    items = db.rows("SELECT * FROM dataset_items WHERE dataset_id=? ORDER BY id", (ds_id,))
+    # 仅基于最新版本快照生成新版本，避免历史版本条目被重复复制
+    if latest:
+        items = db.rows(
+            "SELECT * FROM dataset_items WHERE dataset_id=? AND version_id=? ORDER BY id", (ds_id, latest["id"])
+        )
+    else:
+        items = db.rows("SELECT * FROM dataset_items WHERE dataset_id=? ORDER BY id", (ds_id,))
     ver_id = db.execute(
         "INSERT INTO dataset_versions(dataset_id,version,note,item_count,created_by,created_at) VALUES(?,?,?,?,?,?)",
         (ds_id, next_v, body.get("note") or f"v{next_v} 快照", len(items), user["id"], db.now()),
@@ -524,6 +626,15 @@ def export_dataset(ds_id: int, version: int = 0, user: dict = Depends(me)):
             raise HTTPException(404, "版本不存在")
         sql += " AND version_id=?"
         args += (ver["id"],)
+        export_label = f"v{version}"
+    else:
+        latest = db.row(
+            "SELECT * FROM dataset_versions WHERE dataset_id=? ORDER BY version DESC LIMIT 1", (ds_id,)
+        )
+        if latest:
+            sql += " AND version_id=?"
+            args += (latest["id"],)
+        export_label = f"v{latest['version']}" if latest else "empty"
     items = db.rows(sql + " ORDER BY id", args)
     buf = io.StringIO()
     writer = csv.writer(buf)
@@ -532,8 +643,8 @@ def export_dataset(ds_id: int, version: int = 0, user: dict = Depends(me)):
         writer.writerow(
             [it["id"], it["name"], os.path.basename(it["media_path"]), it["media_type"], it["size"], it["task_id"], it["created_at"]]
         )
-    db.log(user["id"], "export_dataset", f"dataset:{ds_id}", f"v{version or 'all'} · {len(items)} 条")
-    filename = f"{ds['code']}-v{version or 'all'}.csv"
+    db.log(user["id"], "export_dataset", f"dataset:{ds_id}", f"{export_label} · {len(items)} 条")
+    filename = f"{ds['code']}-{export_label}.csv"
     return Response(
         content="\ufeff" + buf.getvalue(),
         media_type="text/csv; charset=utf-8",
@@ -1169,7 +1280,7 @@ def v1_review(task_id: int, body: dict, key: dict = Depends(v1_key)):
     )
     if result == "approved":
         db.execute("UPDATE annotations SET status='approved', updated_at=? WHERE id=?", (db.now(), ann["id"]))
-        db.execute("UPDATE tasks SET status='done', updated_at=? WHERE id=?", (db.now(), task_id))
+        db.execute("UPDATE tasks SET status='review_done', updated_at=? WHERE id=?", (db.now(), task_id))
     else:
         db.execute("UPDATE annotations SET status='rejected', updated_at=? WHERE id=?", (db.now(), ann["id"]))
         db.execute(
@@ -1196,10 +1307,13 @@ def v1_dataset_items(ds_id: int, key: dict = Depends(v1_key)):
         raise HTTPException(404, "数据集不存在")
     if ds["project_id"] and ds["project_id"] not in _v1_project_ids(key):
         raise HTTPException(403, "密钥无权访问该数据集")
+    latest = db.row(
+        "SELECT * FROM dataset_versions WHERE dataset_id=? ORDER BY version DESC LIMIT 1", (ds_id,)
+    )
     items = db.rows(
         "SELECT id,version_id,task_id,name,media_path,media_type,size,created_at FROM dataset_items"
-        " WHERE dataset_id=? ORDER BY id LIMIT 500",
-        (ds_id,),
+        " WHERE dataset_id=? AND version_id=? ORDER BY id LIMIT 500",
+        (ds_id, latest["id"] if latest else 0),
     )
     for it in items:
         it["media_name"] = os.path.basename(it["media_path"] or "")

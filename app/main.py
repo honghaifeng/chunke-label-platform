@@ -10,11 +10,11 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any
 
-from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import advanced, auth, db, enterprise, extras, ops, prelabel, workbench
+from . import advanced, auth, db, editing, enterprise, extras, ops, prelabel, serviceops, workbench
 
 BASE_DIR = db.BASE_DIR
 STATIC_DIR = os.path.join(BASE_DIR, "app", "static")
@@ -25,6 +25,8 @@ app.include_router(workbench.router)
 app.include_router(ops.router)
 app.include_router(extras.router)
 app.include_router(advanced.router)
+app.include_router(editing.router)
+app.include_router(serviceops.router)
 
 
 @app.middleware("http")
@@ -58,6 +60,8 @@ def _startup() -> None:
     db.init_db()
     extras.init_schema()
     advanced.init_schema()
+    advanced.seed_demo_v4()
+    editing.seed()
 
 
 def me(request: Request) -> dict:
@@ -218,7 +222,7 @@ def list_projects(user: dict = Depends(me)):
 
 @app.post("/api/projects")
 def create_project(body: dict, user: dict = Depends(me)):
-    auth.require(user, "platform_admin", "project_manager")
+    auth.require(user, "platform_admin", "project_manager", "tenant_admin")
     name = (body.get("name") or "").strip()
     modality = body.get("modality") or "audio"
     if not name:
@@ -347,7 +351,7 @@ def list_tasks(status: str = "", project_id: int = 0, q: str = "", archived: int
 
 
 def _get_task(task_id: int, user: dict) -> dict:
-    t = db.row(TASK_SQL + " WHERE t.id=?", (task_id,))
+    t = db.row(TASK_SQL + " WHERE t.id=? AND t.deleted=0", (task_id,))
     if not t:
         raise HTTPException(404, "任务不存在")
     auth.assert_task(user, t)
@@ -405,16 +409,36 @@ def assign_task(tid: int, body: dict, user: dict = Depends(me)):
         or user["platform_role"] == "project_manager"
     ):
         raise HTTPException(403, "仅项目经理可分配任务")
-    assignee = int(body.get("assignee_id") or 0)
-    reviewer = int(body.get("reviewer_id") or 0) or task["reviewer_id"]
+    assignee = task["assignee_id"]
+    reviewer = task["reviewer_id"]
+    if body.get("assignee_id") is not None:
+        assignee = int(body["assignee_id"] or 0) or None
+    if body.get("reviewer_id") is not None:
+        reviewer = int(body["reviewer_id"] or 0) or None
+
+    def _check(uid, roles, label):
+        if not uid:
+            return
+        m = db.row(
+            "SELECT pm.project_role, u.name FROM project_members pm JOIN users u ON u.id=pm.user_id"
+            " WHERE pm.project_id=? AND pm.user_id=?",
+            (task["project_id"], uid),
+        )
+        if not m:
+            raise HTTPException(400, f"{label}不是本项目成员，请先在项目成员中添加")
+        if m["project_role"] not in roles:
+            raise HTTPException(400, f"{label}的项目角色为 {m['project_role']}，不能担任该角色")
+
+    _check(assignee, ("annotator", "manager"), "标注员")
+    _check(reviewer, ("reviewer", "manager"), "质检员")
     db.execute(
         "UPDATE tasks SET assignee_id=?, reviewer_id=?, updated_at=? WHERE id=?",
-        (assignee or None, reviewer, db.now(), tid),
+        (assignee, reviewer, db.now(), tid),
     )
-    if assignee:
+    if assignee and assignee != task["assignee_id"]:
         db.notify(assignee, "收到新任务", f"{task['project_name']} · {task['name']}", "assign", f"#/annotate/{tid}")
-    db.log(user["id"], "assign_task", f"task:{tid}", f"assignee:{assignee}")
-    return {"ok": True}
+    db.log(user["id"], "assign_task", f"task:{tid}", f"assignee:{assignee or 0} reviewer:{reviewer or 0}")
+    return {"ok": True, "assignee_id": assignee or 0, "reviewer_id": reviewer or 0}
 
 
 @app.post("/api/tasks")
@@ -501,15 +525,17 @@ async def upload_media(tid: int, file: UploadFile = File(...), user: dict = Depe
         out_path = os.path.join(db.MEDIA_DIR, name)
         with open(out_path, "wb") as f:
             shutil.copyfileobj(file.file, f)
+        # 多模态任务的主媒体只是其中一图，不能被单文件类型覆盖
+        keep_type = task["media_type"] if task.get("media_type") == "multimodal" else kind
         db.execute(
             "UPDATE tasks SET media_path=?, media_type=?, duration=0, updated_at=? WHERE id=?",
-            (out_path, kind, db.now(), tid),
+            (out_path, keep_type, db.now(), tid),
         )
         db.log(user["id"], "upload_media", f"task:{tid}", f"{kind} · {name}")
         return {
             "ok": True,
             "media": f"/media/{name}",
-            "media_type": kind,
+            "media_type": keep_type,
             "size": os.path.getsize(out_path),
         }
 
@@ -556,13 +582,84 @@ async def upload_media(tid: int, file: UploadFile = File(...), user: dict = Depe
     return {"ok": True, "media": f"/media/{name}", "duration": duration}
 
 
+def _can_manage_task_media(user: dict, task: dict) -> bool:
+    return bool(
+        user["platform_role"] in ("platform_admin", "project_manager")
+        or task["assignee_id"] == user["id"]
+        or auth.project_role(user, task["project_id"]) == "manager"
+    )
+
+
+@app.post("/api/tasks/{tid}/attachments")
+async def upload_task_attachment(
+    tid: int,
+    file: UploadFile = File(...),
+    role: str = Form("attachment"),
+    user: dict = Depends(me),
+):
+    """为任务挂载附加媒体：双图对照（原图/结果图）、参考图、抽帧等。"""
+    task = _get_task(tid, user)
+    if not _can_manage_task_media(user, task):
+        raise HTTPException(403, "仅任务标注员可挂载附件")
+    role = role if role in ("result", "reference") else "attachment"
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    kind = _media_kind(ext)
+    if role == "result" and task.get("modality") == editing.MODALITY and kind != "image":
+        raise HTTPException(400, "编辑结果图必须为图片文件（jpg / png / webp 等）")
+    name = f"{task['project_code']}-{tid}-ref-{uuid.uuid4().hex[:6]}{ext or '.bin'}"
+    out_path = os.path.join(db.MEDIA_DIR, name)
+    with open(out_path, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+    size = os.path.getsize(out_path)
+    meta = {"source": role, "role": role, "original": file.filename or name, "size": size}
+    if role == "result":
+        # 每个任务仅保留一张结果图，替换时清理旧记录与文件
+        for old in db.rows("SELECT id,path,meta FROM task_media WHERE task_id=?", (tid,)):
+            try:
+                old_meta = json.loads(old["meta"] or "{}")
+            except (TypeError, ValueError):
+                old_meta = {}
+            if old_meta.get("role") == "result" or old_meta.get("source") == "result":
+                db.execute("DELETE FROM task_media WHERE id=?", (old["id"],))
+                try:
+                    os.remove(db.media_abspath(old["path"]))
+                except OSError:
+                    pass
+    mid = db.execute(
+        "INSERT INTO task_media(task_id,kind,path,name,meta,created_at) VALUES(?,?,?,?,?,?)",
+        (tid, kind, out_path, name, json.dumps(meta, ensure_ascii=False), db.now()),
+    )
+    db.log(user["id"], "attach_media", f"task:{tid}", f"{role} · {name}")
+    return {"ok": True, "id": mid, "name": name, "kind": kind, "size": size, "role": role,
+            "url": f"/media/{name}"}
+
+
+@app.delete("/api/tasks/{tid}/attachments/{mid}")
+def delete_task_attachment(tid: int, mid: int, user: dict = Depends(me)):
+    task = _get_task(tid, user)
+    if not _can_manage_task_media(user, task):
+        raise HTTPException(403, "仅任务标注员可删除附件")
+    row = db.row("SELECT * FROM task_media WHERE id=? AND task_id=?", (mid, tid))
+    if not row:
+        raise HTTPException(404, "附件不存在")
+    db.execute("DELETE FROM task_media WHERE id=?", (mid,))
+    path = db.media_abspath(row["path"] or "")
+    if path and os.path.dirname(path) == os.path.abspath(db.MEDIA_DIR) and os.path.exists(path):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    db.log(user["id"], "detach_media", f"task:{tid}", row["name"])
+    return {"ok": True}
+
+
 @app.post("/api/tasks/{tid}/prelabel")
 def run_prelabel(tid: int, body: dict | None = None, user: dict = Depends(me)):
     task = _get_task(tid, user)
     body = body or {}
     media_type = task.get("media_type") or "audio"
-    media_path = task["media_path"]
-    if not media_path:
+    media_path = db.media_abspath(task["media_path"] or "")
+    if not media_path or not os.path.exists(media_path):
         raise HTTPException(400, "该任务尚未上传媒体文件")
 
     if media_type == "image":
@@ -632,8 +729,13 @@ def save_annotation(tid: int, body: dict, user: dict = Depends(me)):
         or auth.project_role(user, task["project_id"]) == "manager"
     ):
         raise HTTPException(403, "仅任务标注员可保存标注")
+    if task["status"] in ("submitted", "review", "review_done", "done"):
+        raise HTTPException(400, "当前任务状态不可修改标注")
     payload = body.get("payload") or {}
-    if (task.get("media_type") or "audio") == "image":
+    if task.get("modality") == editing.MODALITY:
+        # 图像编辑指令：保存时归一化结构，提交时再做硬校验
+        payload = editing.normalize(payload)
+    elif (task.get("media_type") or "audio") == "image":
         # 图片标注：归一化坐标并丢弃无效框
         boxes = []
         for b in payload.get("boxes") or []:
@@ -738,7 +840,12 @@ def submit_annotation(tid: int, body: dict, user: dict = Depends(me)):
         raise HTTPException(403, "仅任务标注员可提交质检")
     payload = body.get("payload") or {}
     modality = task.get("media_type") or "audio"
-    if modality == "image":
+    if task["status"] not in ("pending", "annotating"):
+        raise HTTPException(400, "当前任务状态不可提交质检（已提交待质检 / 待验收 / 已完成）")
+    if task.get("modality") == editing.MODALITY:
+        # 硬校验：同类目标数、唯一定位、编辑类型、影子确认、结果图缺一不可
+        payload = editing.assert_valid(payload, tid)
+    elif modality == "image":
         if not (payload.get("boxes") or []):
             raise HTTPException(400, "至少需要一个标注目标才能提交")
     elif modality in ("text", "llm"):
@@ -756,6 +863,9 @@ def submit_annotation(tid: int, body: dict, user: dict = Depends(me)):
     elif modality == "multimodal":
         if not (payload.get("boxes") or payload.get("segments") or payload.get("items")):
             raise HTTPException(400, "请先完成多模态标注")
+    elif modality == "pdf":
+        if not (payload.get("doc_regions") or payload.get("qa") or str(payload.get("text") or "").strip()):
+            raise HTTPException(400, "请先完成文档区域或问答标注")
     elif not (payload.get("segments") or []):
         raise HTTPException(400, "至少需要一段标注结果才能提交")
     ann = db.row("SELECT * FROM annotations WHERE task_id=? ORDER BY id DESC LIMIT 1", (tid,))
@@ -782,7 +892,7 @@ def submit_annotation(tid: int, body: dict, user: dict = Depends(me)):
             (tid, ann["id"], user["id"], "auto_approved", 100, f"按抽审策略自动通过（{sample_reason}）", db.now()),
         )
         db.execute(
-            "UPDATE tasks SET status='done', qc_required=0, qc_round=qc_round+1, updated_at=? WHERE id=?",
+            "UPDATE tasks SET status='review_done', qc_required=0, qc_round=qc_round+1, updated_at=? WHERE id=?",
             (db.now(), tid),
         )
     db.log(
@@ -824,6 +934,33 @@ def qc_queue(user: dict = Depends(me)):
     return {"tasks": out}
 
 
+@app.get("/api/quality/error-types")
+def quality_error_types(user: dict = Depends(me)):
+    """质检错误类型分布：漏标、错标、框选偏差等，用于质量改进。"""
+    auth.require_perm(user, "task.review")
+    ids = auth.visible_project_ids(user)
+    if not ids:
+        return {"items": [], "total": 0}
+    marks = ",".join("?" * len(ids))
+    rows = db.rows(
+        "SELECT q.error_types, q.created_at, t.project_id FROM qc_records q"
+        " JOIN tasks t ON t.id=q.task_id"
+        f" WHERE q.result='rejected' AND t.deleted=0 AND t.project_id IN ({marks})"
+        " ORDER BY q.id DESC LIMIT 2000",
+        tuple(ids),
+    )
+    counts: dict[str, int] = {}
+    for r in rows:
+        try:
+            types = json.loads(r.get("error_types") or "[]")
+        except (TypeError, ValueError):
+            types = []
+        for t in types:
+            counts[t] = counts.get(t, 0) + 1
+    items = [{"type": k, "count": v} for k, v in sorted(counts.items(), key=lambda x: -x[1])]
+    return {"items": items, "total": sum(counts.values()), "rejected": len(rows)}
+
+
 @app.post("/api/tasks/{tid}/review")
 def review(tid: int, body: dict, user: dict = Depends(me)):
     task = _get_task(tid, user)
@@ -837,6 +974,12 @@ def review(tid: int, body: dict, user: dict = Depends(me)):
     ann = db.row("SELECT * FROM annotations WHERE task_id=? ORDER BY id DESC LIMIT 1", (tid,))
     if not ann:
         raise HTTPException(400, "任务尚未提交标注")
+    if ann["status"] not in ("submitted", "approved"):
+        raise HTTPException(400, "标注尚未提交质检")
+    if task["status"] not in ("submitted", "review"):
+        raise HTTPException(400, "当前任务状态不可质检")
+    if result == "approved" and task.get("modality") == editing.MODALITY:
+        editing.assert_valid(json.loads(ann["payload"] or "{}"), tid)
     score = float(body.get("score") or 0)
     dims = body.get("dims") or {}
     item_index = int(body.get("item_index", -1))
@@ -852,18 +995,27 @@ def review(tid: int, body: dict, user: dict = Depends(me)):
     comment = (body.get("comment") or "").strip()
     if result == "rejected" and policy.get("require_comment") and not comment:
         raise HTTPException(400, "该流程要求返修时填写质检意见")
+    error_types = body.get("error_types") or []
+    if not isinstance(error_types, list):
+        error_types = []
+    allowed_errors = {"漏标", "错标", "框选偏差", "标签错误", "属性错误", "其他"}
+    error_types = [x for x in error_types if isinstance(x, str) and x in allowed_errors]
     db.execute(
-        "INSERT INTO qc_records(task_id,annotation_id,reviewer_id,result,score,comment,dims,item_index,created_at)"
-        " VALUES(?,?,?,?,?,?,?,?,?)",
-        (tid, ann["id"], user["id"], result, score, comment, json.dumps(dims, ensure_ascii=False), item_index, db.now()),
+        "INSERT INTO qc_records(task_id,annotation_id,reviewer_id,result,score,comment,dims,item_index,error_types,created_at)"
+        " VALUES(?,?,?,?,?,?,?,?,?,?)",
+        (tid, ann["id"], user["id"], result, score, comment, json.dumps(dims, ensure_ascii=False), item_index,
+         json.dumps(error_types, ensure_ascii=False), db.now()),
     )
     if result == "approved":
         db.execute(
             "UPDATE annotations SET status='approved', updated_at=? WHERE id=?", (db.now(), ann["id"])
         )
-        db.execute("UPDATE tasks SET status='done', progress=100, updated_at=? WHERE id=?", (db.now(), tid))
+        db.execute(
+            "UPDATE tasks SET status='review_done', progress=90, updated_at=? WHERE id=?",
+            (db.now(), tid),
+        )
         escalated = False
-        db.notify(task["assignee_id"], "任务质检通过", f"{task['name']} · {score} 分", "qc", f"#/annotate/{tid}")
+        db.notify(task["assignee_id"], "任务质检通过", f"{task['name']} · {score} 分 · 待验收", "qc", f"#/annotate/{tid}")
     else:
         db.execute(
             "UPDATE annotations SET status='rejected', updated_at=? WHERE id=?", (db.now(), ann["id"])
@@ -885,6 +1037,98 @@ def review(tid: int, body: dict, user: dict = Depends(me)):
         f"{result} {score}" + (" · 超返修上限升级" if escalated else ""),
     )
     return {"ok": True, "escalated": escalated, "max_rework": policy.get("max_rework")}
+
+
+# ---------------------------------------------------------------------------
+# 验收
+# ---------------------------------------------------------------------------
+
+@app.get("/api/acceptance")
+def acceptance_queue(user: dict = Depends(me)):
+    where, args = auth.task_scope_sql(user)
+    items = db.rows(
+        TASK_SQL + f" WHERE {where} AND t.status='review_done' AND t.deleted=0 ORDER BY t.updated_at DESC",
+        tuple(args),
+    )
+    out = []
+    for t in items:
+        ann = db.row(
+            "SELECT id,updated_at,payload FROM annotations WHERE task_id=? ORDER BY updated_at DESC LIMIT 1",
+            (t["id"],),
+        )
+        qc = db.row(
+            "SELECT result,score,comment,created_at FROM qc_records WHERE task_id=? ORDER BY id DESC LIMIT 1",
+            (t["id"],),
+        )
+        acceptor = db.row(
+            "SELECT u.name FROM task_roles tr JOIN users u ON u.id=tr.user_id"
+            " WHERE tr.task_id=? AND tr.role='acceptor' LIMIT 1",
+            (t["id"],),
+        )
+        t["has_annotation"] = bool(ann)
+        t["qc"] = qc or {}
+        t["modality_label"] = db.MODALITY_LABEL.get(t["modality"], t["modality"])
+        t["acceptor_name"] = acceptor["name"] if acceptor else ""
+        out.append(t)
+    return {"tasks": out}
+
+
+@app.post("/api/tasks/{tid}/accept")
+def accept_task(tid: int, body: dict, user: dict = Depends(me)):
+    task = _get_task(tid, user)
+    project_ok = auth.project_role(user, task["project_id"]) in ("manager", "acceptor")
+    task_ok = db.row(
+        "SELECT 1 ok FROM task_roles WHERE task_id=? AND user_id=? AND role='acceptor'",
+        (tid, user["id"]),
+    )
+    if not (
+        auth.is_admin(user)
+        or user["platform_role"] in ("tenant_admin", "project_manager")
+        or project_ok
+        or task_ok
+    ):
+        raise HTTPException(403, "仅验收员可执行验收")
+    if task["status"] not in ("review_done", "done"):
+        raise HTTPException(400, "任务尚未进入验收阶段")
+    result = body.get("result") or ""
+    if result not in ("approved", "rejected"):
+        raise HTTPException(400, "验收结论必须为 approved 或 rejected")
+    if result == "approved" and task.get("modality") == editing.MODALITY:
+        ann = db.row(
+            "SELECT payload FROM annotations WHERE task_id=? ORDER BY updated_at DESC, id DESC LIMIT 1",
+            (tid,),
+        )
+        if not ann:
+            raise HTTPException(400, "任务尚无标注结果，无法验收")
+        editing.assert_valid(json.loads(ann["payload"] or "{}"), tid)
+    comment = (body.get("comment") or "").strip()
+    score = float(body.get("score") or (100 if result == "approved" else 0))
+    db.execute(
+        "INSERT INTO acceptance_records(task_id,acceptor_id,result,score,comment,created_at)"
+        " VALUES(?,?,?,?,?,?)",
+        (tid, user["id"], result, score, comment, db.now()),
+    )
+    if result == "approved":
+        db.execute(
+            "UPDATE tasks SET status='done', progress=100, updated_at=? WHERE id=?", (db.now(), tid)
+        )
+        db.notify(task["assignee_id"], "任务验收通过", f"{task['name']} · 已交付", "accept", f"#/annotate/{tid}")
+        next_status = "done"
+    else:
+        next_status = "review" if body.get("target") == "review" else "annotating"
+        db.execute(
+            "UPDATE tasks SET status=?, progress=0, rework_count=rework_count+1, updated_at=? WHERE id=?",
+            (next_status, db.now(), tid),
+        )
+        db.notify(
+            task["assignee_id"], "任务验收驳回",
+            f"{task['name']} · {comment[:60] or '请按验收意见整改'}", "rework", f"#/annotate/{tid}",
+        )
+    db.log(
+        user["id"], "accept", f"task:{tid}",
+        f"{result} {score}" + (f" · {comment[:60]}" if comment else ""),
+    )
+    return {"ok": True, "status": next_status}
 
 
 # ---------------------------------------------------------------------------
@@ -971,14 +1215,22 @@ def stats(user: dict = Depends(me)):
 
 @app.get("/api/members")
 def members(user: dict = Depends(me)):
-    if not auth.is_admin(user) and user["platform_role"] != "project_manager":
+    if not auth.has_perm(user, "member.read"):
         raise HTTPException(403, "无权查看成员")
+    where, vals = "", ()
+    if not auth.is_admin(user):
+        where, vals = (
+            " WHERE (u.tenant_id=? OR EXISTS(SELECT 1 FROM tenant_members m"
+            " WHERE m.user_id=u.id AND m.tenant_id=? AND m.status='active'))",
+            (user.get("tenant_id") or 0, user.get("tenant_id") or 0),
+        )
     items = db.rows(
         "SELECT u.id,u.username,u.name,u.platform_role,u.status,u.created_at,u.tenant_id,u.org_id,u.team_id,"
         " t.name tenant_name,o.name org_name,tm.name team_name FROM users u"
         " LEFT JOIN tenants t ON t.id=u.tenant_id"
         " LEFT JOIN orgs o ON o.id=u.org_id"
-        " LEFT JOIN teams tm ON tm.id=u.team_id ORDER BY u.id"
+        " LEFT JOIN teams tm ON tm.id=u.team_id" + where + " ORDER BY u.id",
+        vals,
     )
     for it in items:
         it["role_label"] = auth.PLATFORM_ROLES.get(it["platform_role"], it["platform_role"])
@@ -990,7 +1242,8 @@ def members(user: dict = Depends(me)):
 
 @app.post("/api/members")
 def create_member(body: dict, user: dict = Depends(me)):
-    auth.require(user, "platform_admin")
+    if not auth.has_perm(user, "member.write"):
+        raise HTTPException(403, "无权新增成员")
     username = (body.get("username") or "").strip()
     if not username:
         raise HTTPException(400, "账号不能为空")
@@ -999,17 +1252,94 @@ def create_member(body: dict, user: dict = Depends(me)):
     role = body.get("platform_role") or "annotator"
     if role not in auth.PLATFORM_ROLES:
         raise HTTPException(400, "非法角色")
+    tenant_id = None
+    if auth.is_admin(user):
+        tenant_id = int(body.get("tenant_id") or 0) or None
+    else:
+        tenant_id = user.get("tenant_id") or 0
+        if not tenant_id:
+            raise HTTPException(403, "当前账号未归属租户")
+        if role in ("platform_admin", "tenant_admin"):
+            raise HTTPException(403, "租户管理员只能创建本租户的业务成员")
     uid = db.execute(
-        "INSERT INTO users(username,name,password_hash,platform_role,created_at) VALUES(?,?,?,?,?)",
-        (username, body.get("name") or username, db.hash_password(body.get("password") or db.DEFAULT_PASSWORD), role, db.now()),
+        "INSERT INTO users(username,name,password_hash,platform_role,tenant_id,created_at) VALUES(?,?,?,?,?,?)",
+        (
+            username,
+            body.get("name") or username,
+            db.hash_password(body.get("password") or db.DEFAULT_PASSWORD),
+            role,
+            tenant_id,
+            db.now(),
+        ),
     )
+    if tenant_id:
+        db.execute(
+            "INSERT OR REPLACE INTO tenant_members(tenant_id,user_id,member_role,status,created_at)"
+            " VALUES(?,?,?,?,?)",
+            (tenant_id, uid, "admin" if role == "tenant_admin" else "member", "active", db.now()),
+        )
     db.log(user["id"], "create_member", f"user:{uid}", role)
     return {"ok": True, "id": uid}
 
 
+@app.post("/api/members/import-batch")
+def import_members(body: dict, user: dict = Depends(me)):
+    """批量导入成员：账号、姓名、角色、初始密码，按行返回失败原因。"""
+    if not auth.has_perm(user, "member.write"):
+        raise HTTPException(403, "无权批量导入成员")
+    items = body.get("users") or []
+    if not isinstance(items, list) or not items:
+        raise HTTPException(400, "导入数据不能为空")
+    if len(items) > 500:
+        raise HTTPException(400, "单次最多导入 500 人")
+    is_platform = auth.is_admin(user)
+    own_tenant = user.get("tenant_id") or 0
+    if not is_platform and not own_tenant:
+        raise HTTPException(403, "当前账号未归属租户")
+    created, errors = [], []
+    for idx, raw in enumerate(items, start=1):
+        if not isinstance(raw, dict):
+            errors.append({"row": idx, "username": "", "error": "数据格式错误"})
+            continue
+        username = str(raw.get("username") or "").strip()
+        name = str(raw.get("name") or "").strip() or username
+        role = str(raw.get("platform_role") or raw.get("role") or "annotator").strip()
+        role = {
+            "平台管理员": "platform_admin", "租户管理员": "tenant_admin", "项目经理": "project_manager",
+            "标注员": "annotator", "质检员": "reviewer", "验收员": "acceptor", "客户": "client",
+        }.get(role, role)
+        if not username:
+            errors.append({"row": idx, "username": "", "error": "账号为空"})
+            continue
+        if role not in auth.PLATFORM_ROLES:
+            errors.append({"row": idx, "username": username, "error": f"非法角色：{role}"})
+            continue
+        if not is_platform and role in ("platform_admin", "tenant_admin"):
+            errors.append({"row": idx, "username": username, "error": "无权创建管理员角色"})
+            continue
+        if db.row("SELECT id FROM users WHERE username=?", (username,)):
+            errors.append({"row": idx, "username": username, "error": "账号已存在"})
+            continue
+        tenant_id = (int(raw.get("tenant_id") or 0) or None) if is_platform else own_tenant
+        uid = db.execute(
+            "INSERT INTO users(username,name,password_hash,platform_role,tenant_id,created_at) VALUES(?,?,?,?,?,?)",
+            (username, name, db.hash_password(raw.get("password") or db.DEFAULT_PASSWORD), role, tenant_id, db.now()),
+        )
+        if tenant_id:
+            db.execute(
+                "INSERT OR REPLACE INTO tenant_members(tenant_id,user_id,member_role,status,created_at)"
+                " VALUES(?,?,?,?,?)",
+                (tenant_id, uid, "admin" if role == "tenant_admin" else "member", "active", db.now()),
+            )
+        created.append({"id": uid, "username": username})
+    db.log(user["id"], "import_members", "user:batch", f"成功 {len(created)} / 失败 {len(errors)}")
+    return {"ok": True, "created": created, "failed": errors, "total": len(items)}
+
+
 @app.patch("/api/members/{uid}")
 def update_member(uid: int, body: dict, user: dict = Depends(me)):
-    auth.require(user, "platform_admin")
+    if not auth.has_perm(user, "member.write"):
+        raise HTTPException(403, "无权修改成员")
     target = db.row("SELECT * FROM users WHERE id=?", (uid,))
     if not target:
         raise HTTPException(404, "成员不存在")
@@ -1017,6 +1347,12 @@ def update_member(uid: int, body: dict, user: dict = Depends(me)):
     status = body.get("status") or target["status"]
     if role not in auth.PLATFORM_ROLES:
         raise HTTPException(400, "非法角色")
+    if not auth.is_admin(user):
+        own = user.get("tenant_id") or 0
+        if (target["tenant_id"] or 0) != own:
+            raise HTTPException(403, "只能管理本租户成员")
+        if target["platform_role"] in ("platform_admin", "tenant_admin") or role in ("platform_admin", "tenant_admin"):
+            raise HTTPException(403, "租户管理员不能授予或修改平台/租户管理员角色")
     db.execute("UPDATE users SET platform_role=?, status=? WHERE id=?", (role, status, uid))
     db.log(user["id"], "update_member", f"user:{uid}", f"{role}/{status}")
     return {"ok": True}
@@ -1086,6 +1422,7 @@ def bootstrap(user: dict = Depends(me)):
             "tasks": len(tasks),
             "pending": sum(1 for t in tasks if t["status"] == "pending"),
             "review": sum(1 for t in tasks if t["status"] in ("submitted", "review")),
+            "accept": sum(1 for t in tasks if t["status"] == "review_done"),
             "done": sum(1 for t in tasks if t["status"] == "done"),
             "datasets": (db.row("SELECT COUNT(*) c FROM datasets") or {}).get("c", 0),
             "templates": (db.row("SELECT COUNT(*) c FROM templates") or {}).get("c", 0),

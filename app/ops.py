@@ -28,7 +28,7 @@ router = APIRouter()
 START_TS = time.time()
 
 BRAND_KEYS = ("brand_name", "brand_short", "brand_color", "brand_logo")
-SECURITY_KEYS = ("ip_allowlist", "media_token_ttl", "mfa_required", "watermark", "log_retention_days")
+SECURITY_KEYS = ("ip_allowlist", "media_token_ttl", "mfa_required", "watermark", "log_retention_days", "scim_token")
 STORAGE_KEYS = ("storage_driver", "storage_bucket", "storage_region", "storage_endpoint", "storage_access_key", "storage_secret_key")
 
 

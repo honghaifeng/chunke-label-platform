@@ -17,6 +17,28 @@ DB_PATH = os.path.join(DATA_DIR, "chunke.db")
 DEFAULT_PASSWORD = "chunke123"
 
 
+def media_abspath(path: str) -> str:
+    """把媒体路径解析为绝对路径：绝对路径原样返回，相对路径按项目根目录 / data/media 查找。"""
+    if not path:
+        return ""
+    if os.path.isabs(path):
+        return path
+    for base in (BASE_DIR, MEDIA_DIR):
+        cand = os.path.join(base, path)
+        if os.path.exists(cand):
+            return cand
+    return os.path.join(MEDIA_DIR, os.path.basename(path))
+
+
+def normalize_media_paths() -> None:
+    """兼容历史数据：把任务与数据集条目中的相对媒体路径补全为绝对路径。"""
+    for table in ("tasks", "dataset_items"):
+        for r in rows(f"SELECT id,media_path FROM {table} WHERE media_path<>'' AND media_path NOT LIKE '/%'"):
+            p = media_abspath(r["media_path"])
+            if os.path.exists(p):
+                execute(f"UPDATE {table} SET media_path=? WHERE id=?", (p, r["id"]))
+
+
 def hash_password(password: str, salt: str | None = None) -> str:
     salt = salt or os.urandom(8).hex()
     digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 120_000).hex()
@@ -503,6 +525,59 @@ CREATE TABLE IF NOT EXISTS schema_migrations(
   name TEXT NOT NULL,
   applied_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS service_tickets(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER,
+  title TEXT NOT NULL,
+  category TEXT NOT NULL DEFAULT 'other',
+  priority TEXT NOT NULL DEFAULT 'normal',
+  status TEXT NOT NULL DEFAULT 'open',
+  requester_id INTEGER,
+  assignee_id INTEGER,
+  sla_hours INTEGER NOT NULL DEFAULT 24,
+  detail TEXT NOT NULL DEFAULT '',
+  resolution TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  responded_at TEXT,
+  resolved_at TEXT,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS confidentiality_agreements(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  project_id INTEGER,
+  agreement_no TEXT NOT NULL DEFAULT '',
+  signed_at TEXT NOT NULL DEFAULT '',
+  expires_at TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'active',
+  note TEXT NOT NULL DEFAULT '',
+  created_by INTEGER,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS training_courses(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  modality TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '',
+  duration_min INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'active',
+  created_by INTEGER,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS training_records(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  course_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'assigned',
+  score REAL NOT NULL DEFAULT 0,
+  note TEXT NOT NULL DEFAULT '',
+  completed_at TEXT,
+  created_by INTEGER,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 """
 
 # 平台权限点：用于 RBAC 权限矩阵与接口二次校验
@@ -512,6 +587,7 @@ PERMISSIONS = {
     "task.read": "查看任务",
     "task.write": "标注与提交任务",
     "task.review": "质检与返修",
+    "task.accept": "验收与交付",
     "dataset.read": "查看数据集",
     "dataset.write": "导入/版本/导出数据集",
     "template.read": "查看模板",
@@ -530,13 +606,20 @@ PERMISSIONS = {
 
 ROLE_PERMISSIONS = {
     "platform_admin": list(PERMISSIONS.keys()),
+    "tenant_admin": [
+        "project.read", "project.write", "task.read", "task.write", "task.review", "task.accept",
+        "dataset.read", "dataset.write", "template.read", "template.write",
+        "workflow.read", "workflow.write", "org.read", "org.write",
+        "member.read", "member.write", "api.read",
+    ],
     "project_manager": [
-        "project.read", "project.write", "task.read", "task.write", "task.review",
+        "project.read", "project.write", "task.read", "task.write", "task.review", "task.accept",
         "dataset.read", "dataset.write", "template.read", "workflow.read", "workflow.write",
         "org.read", "member.read", "api.read", "security.read",
     ],
     "annotator": ["project.read", "task.read", "task.write", "dataset.read", "template.read", "workflow.read"],
     "reviewer": ["project.read", "task.read", "task.review", "dataset.read", "template.read", "workflow.read"],
+    "acceptor": ["project.read", "task.read", "task.accept", "dataset.read", "template.read", "workflow.read"],
     "client": ["project.read", "task.read", "dataset.read"],
 }
 
@@ -545,6 +628,7 @@ MODALITY_LABEL = {
     "image": "图片",
     "video": "视频",
     "pointcloud": "3D 点云",
+    "editing": "图像编辑指令",
 }
 
 DEFAULT_LABELS = {
@@ -557,6 +641,11 @@ DEFAULT_LABELS = {
     "image": {"目标类别": ["商品主体", "价签", "货架", "遮挡"], "质量": ["清晰", "模糊", "过曝"]},
     "pointcloud": {"目标类别": ["轿车", "卡车", "行人", "骑行者"], "属性": ["静止", "运动", "遮挡"]},
     "video": {"行为": ["正常", "异常"], "事件": ["进入", "离开"]},
+    "editing": {
+        "编辑类型": ["删除目标", "修改属性"],
+        "属性维度": ["颜色", "纹理", "尺寸", "材质"],
+        "目标类别": ["人物", "动物", "物品", "食物"],
+    },
 }
 
 
@@ -604,6 +693,7 @@ def init_db() -> None:
         _ensure_column(conn, "annotations", "source", "TEXT NOT NULL DEFAULT 'manual'")
         _ensure_column(conn, "qc_records", "dims", "TEXT NOT NULL DEFAULT '{}'")
         _ensure_column(conn, "qc_records", "item_index", "INTEGER NOT NULL DEFAULT -1")
+        _ensure_column(conn, "qc_records", "error_types", "TEXT NOT NULL DEFAULT '[]'")
         _ensure_column(conn, "dataset_versions", "digest", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(conn, "datasets", "webhook_url", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(conn, "datasets", "sync_enabled", "INTEGER NOT NULL DEFAULT 0")
@@ -624,6 +714,9 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_dataset_items_version ON dataset_items(version_id,name);
             CREATE INDEX IF NOT EXISTS idx_api_requests_created ON api_requests(created_at);
             CREATE INDEX IF NOT EXISTS idx_security_events_created ON security_events(created_at);
+            CREATE INDEX IF NOT EXISTS idx_service_tickets_project ON service_tickets(project_id,status);
+            CREATE INDEX IF NOT EXISTS idx_agreements_user ON confidentiality_agreements(user_id,status);
+            CREATE INDEX IF NOT EXISTS idx_training_records_course ON training_records(course_id,status);
             """
         )
         conn.commit()
@@ -631,6 +724,8 @@ def init_db() -> None:
     if rows("SELECT id FROM users LIMIT 1"):
         _seed_v2()
         _seed_v3()
+        _migrate_accept_perm()
+        normalize_media_paths()
         return
 
     ts = now()
@@ -764,6 +859,8 @@ def init_db() -> None:
 
     _seed_v2()
     _seed_v3()
+    _migrate_accept_perm()
+    normalize_media_paths()
     log(uids["admin"], "init", "system", "初始化平台数据与演示任务")
 
 
@@ -878,13 +975,14 @@ def _seed_v2() -> None:
                     ),
                 )
 
-    if not rows("SELECT role FROM role_permissions LIMIT 1"):
-        for role, perms in ROLE_PERMISSIONS.items():
-            for perm in perms:
-                execute(
-                    "INSERT OR IGNORE INTO role_permissions(role,permission) VALUES(?,?)",
-                    (role, perm),
-                )
+    for role, perms in ROLE_PERMISSIONS.items():
+        if rows("SELECT role FROM role_permissions WHERE role=? LIMIT 1", (role,)):
+            continue
+        for perm in perms:
+            execute(
+                "INSERT OR IGNORE INTO role_permissions(role,permission) VALUES(?,?)",
+                (role, perm),
+            )
 
     tpl_ids = {}
     for t in BUILTIN_TEMPLATES:
@@ -1020,6 +1118,22 @@ DEFAULT_HELP = [
     ("开放平台", "API Key 与 OpenAPI", "在开放平台创建 API Key（read/write/admin 范围），通过 X-API-Key 调用 /api/v1/*；所有调用均记录在调用日志中。"),
     ("运维", "备份与恢复", "运维中心可创建 SQLite 热备份，恢复前自动生成安全副本；建议每日定时备份并异地保存。"),
 ]
+
+
+def _migrate_accept_perm() -> None:
+    """验收权限默认授予（一次性迁移，之后尊重 RBAC 矩阵的手工调整）。"""
+    if row("SELECT 1 ok FROM schema_migrations WHERE version=6"):
+        return
+    ts = now()
+    for role in ("tenant_admin", "project_manager", "acceptor"):
+        execute(
+            "INSERT OR IGNORE INTO role_permissions(role,permission) VALUES(?,?)",
+            (role, "task.accept"),
+        )
+    execute(
+        "INSERT OR IGNORE INTO schema_migrations(version,name,applied_at) VALUES(?,?,?)",
+        (6, "验收阶段与 task.accept 权限", ts),
+    )
 
 
 def _seed_v3() -> None:

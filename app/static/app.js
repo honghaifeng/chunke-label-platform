@@ -54,6 +54,7 @@ const STATUS = {
   annotating: ['标注中', 'annotating'],
   submitted: ['待质检', 'submitted'],
   review: ['质检中', 'reviewing'],
+  review_done: ['待验收', 'reviewing'],
   done: ['已完成', 'done'],
   paused: ['已暂停', 'pending'],
   ended: ['已结束', 'plain'],
@@ -65,7 +66,7 @@ const statusChip = (s) => {
   const [label, cls] = STATUS[s] || [s, 'plain'];
   return `<span class="chip ${cls}"><i class="dot"></i>${label}</span>`;
 };
-const MODALITY_ICON = { audio: 'audio', image: 'image', video: 'video', pointcloud: 'cloud' };
+const MODALITY_ICON = { audio: 'audio', image: 'image', video: 'video', pointcloud: 'cloud', editing: 'spark' };
 const SPK_COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#8B5CF6', '#06B6D4', '#EF4444'];
 
 /* 目标类别配色：画布、列表、结果面板统一取色 */
@@ -110,6 +111,9 @@ const state = {
   members: [],
   current: null,
   wb: null,
+  context: null,
+  space: '',
+  pid: 0,
 };
 
 /* ---------------- API ---------------- */
@@ -208,7 +212,8 @@ function renderLogin() {
     try {
       const r = await api('/api/login', { method: 'POST', body: { username: $('#login-user').value.trim(), password: e.target.password.value } });
       state.user = r.user;
-      location.hash = '#/dashboard';
+      state.context = null; state.space = ''; state.pid = 0;
+      location.hash = '';
       await boot();
     } catch (err) {
       toast(err.message, 'err');
@@ -218,48 +223,102 @@ function renderLogin() {
 }
 
 /* ---------------- 外壳 ---------------- */
-const NAV = [
-  ['dashboard', '工作台', 'dashboard'],
+const ADMIN_NAV = [
+  ['dashboard', '平台总览', 'dashboard'],
+  ['org', '租户与组织', 'shield'],
+  ['members', '用户管理', 'members'],
+  ['projects', '全部项目', 'projects'],
+  ['stats', '平台统计', 'stats'],
+  ['service', '运营服务', 'shield'],
+  ['openapi', '开放平台', 'key'],
+  ['ops', '运维中心', 'settings'],
+  ['console', '平台控制台', 'shield'],
+  ['settings', '系统设置', 'settings'],
+];
+
+const TENANT_NAV = [
+  ['dashboard', '租户概览', 'dashboard'],
+  ['projects', '项目管理', 'projects'],
   ['tasks', '任务中心', 'tasks'],
   ['qc', '质检中心', 'qc'],
-  ['projects', '项目管理', 'projects'],
+  ['acceptance', '验收中心', 'check'],
   ['datasets', '数据集', 'database'],
   ['templates', '模板中心', 'layers'],
   ['workflows', '工作流', 'spark'],
   ['org', '组织架构', 'shield'],
   ['members', '成员管理', 'members'],
-  ['openapi', '开放平台', 'key'],
   ['stats', '数据统计', 'stats'],
-  ['settings', '系统设置', 'settings'],
+  ['service', '运营服务', 'shield'],
+];
+
+const PROJECT_NAV = [
+  ['dashboard', '工作台', 'dashboard'],
+  ['tasks', '我的任务', 'tasks'],
+  ['qc', '质检中心', 'qc'],
+  ['acceptance', '验收中心', 'check'],
+  ['projects', '项目空间', 'projects'],
+  ['datasets', '数据集', 'database'],
+  ['templates', '模板中心', 'layers'],
+  ['workflows', '工作流', 'spark'],
+  ['stats', '数据统计', 'stats'],
+  ['help', '帮助中心', 'search'],
 ];
 
 const NAV_PERM = {
+  acceptance: 'task.accept',
   datasets: 'dataset.read', templates: 'template.read', workflows: 'workflow.read',
   org: 'org.read', members: 'member.read', openapi: 'api.read', settings: 'settings.write',
+  ops: 'settings.write', console: 'settings.write', service: 'member.read',
 };
 
+function navDef() {
+  const base = state.space === 'admin' ? ADMIN_NAV : state.space === 'tenant' ? TENANT_NAV : PROJECT_NAV;
+  const extras = state.space === 'project'
+    ? (window.CK_NAV || [])
+      .filter(([, , , perm]) => !perm || can(perm))
+      .filter(([key]) => !base.some(([k]) => k === key))
+    : [];
+  return base.concat(extras).filter(([key, , , perm]) => {
+    const need = perm || NAV_PERM[key];
+    return !need || can(need);
+  });
+}
+
+function hrefFor(key) {
+  if (state.space === 'project') return `#/project/${state.pid || 0}/${key}`;
+  return `#/${state.space || 'project'}/${key}`;
+}
+
 function shell(active, content, crumb = '') {
-  const extras = (window.CK_NAV || []).filter(([, , , perm]) => !perm || can(perm));
-  const allowed = NAV.concat(extras).filter(([key]) => !NAV_PERM[key] || can(NAV_PERM[key]));
-  const nav = allowed.map(([key, label, ico]) => {
-    const href = key === 'tasks' ? '#/tasks' : `#/${key}`;
-    return `<a class="nav-item ${active === key ? 'active' : ''}" href="${href}">${icon(ico)}<span>${label}</span>${key === 'qc' ? '<b class="tag" id="nav-qc-count">0</b>' : ''}</a>`;
+  const nav = navDef().map(([key, label, ico]) => {
+    const badge = key === 'qc'
+      ? '<b class="tag" id="nav-qc-count">0</b>'
+      : key === 'acceptance' ? '<b class="tag" id="nav-accept-count">0</b>' : '';
+    return `<a class="nav-item ${active === key ? 'active' : ''}" href="${hrefFor(key)}">${icon(ico)}<span>${label}</span>${badge}</a>`;
   }).join('');
   const role = state.user.role_label || '';
+  const ctx = state.context || {};
+  const tenantName = ctx.tenant ? ctx.tenant.name : (ctx.space === 'admin' ? '平台视角' : '未归属租户');
+  const scope = [
+    ctx.tenant && ctx.tenant.code,
+    ctx.org && ctx.org.name,
+    ctx.team && ctx.team.name,
+  ].filter(Boolean).join(' · ');
   return `
   <div class="layout">
     <aside class="sidebar">
-      <div class="side-brand"><div class="logo-mark">CK</div><div><span>春科标注</span><small>CHUNKE LABEL</small></div></div>
+      <div class="side-brand"><div class="logo-mark">CK</div><div><span>春科标注</span><small>${esc(ctx.space_label || 'CHUNKE LABEL')}</small></div></div>
       <nav class="nav">${nav}</nav>
       <div class="side-foot">
         <b>${esc(state.user.name)}</b> · ${esc(role)}<br/>
-        引擎：CVAT · labelU · FunASR
+        ${esc(scope || '未归属租户 / 团队')}
       </div>
     </aside>
     <div class="main">
       <div class="topbar">
-        <div class="crumb">春科数据 / <b>${esc(crumb)}</b></div>
+        <div class="crumb">${esc(ctx.space_label || '春科数据')} / <b>${esc(crumb)}</b></div>
         <div class="top-actions">
+          <button class="btn sm ghost" id="tenant-switch" title="切换租户">${icon('shield')} ${esc(tenantName)}</button>
           <div class="search">${icon('search')}<input id="top-search" placeholder="搜索任务或项目，回车" /></div>
           <button class="icon-btn" id="notif-btn" title="通知">${icon('bell')}<b class="tag" id="notif-dot" style="display:none">0</b></button>
           <div class="user-chip" id="user-chip"><div class="avatar">${esc(state.user.name.slice(0, 1))}</div><div><b>${esc(state.user.name)}</b><br/><span>${esc(role)}</span></div></div>
@@ -276,13 +335,56 @@ function mount(active, crumb, content) {
     const el = $('#nav-qc-count');
     if (el) el.textContent = state.counts.review;
   }
+  if (state.context && state.context.counts && state.context.counts.accept) {
+    const el = $('#nav-accept-count');
+    if (el) el.textContent = state.context.counts.accept;
+  }
   $('#top-search').onkeydown = (e) => {
-    if (e.key === 'Enter') location.hash = `#/tasks?q=${encodeURIComponent(e.target.value.trim())}`;
+    if (e.key === 'Enter') {
+      const base = hrefFor('tasks');
+      location.hash = `${base}?q=${encodeURIComponent(e.target.value.trim())}`;
+    }
   };
   $('#user-chip').onclick = () => userMenu();
+  $('#tenant-switch').onclick = () => tenantSwitcher();
   const nb = $('#notif-btn');
   if (nb) nb.onclick = () => { if (window.CK_OPEN_NOTIFICATIONS) window.CK_OPEN_NOTIFICATIONS(); };
   if (window.CK_AFTER_MOUNT) window.CK_AFTER_MOUNT(active);
+}
+
+async function tenantSwitcher() {
+  const ctx = state.context || await api('/api/context');
+  const items = ctx.tenants || [];
+  const current = ctx.tenant ? ctx.tenant.id : 0;
+  openModal(`
+    <div class="modal-head"><h3>切换租户</h3><button class="x" data-close>×</button></div>
+    <div class="modal-body">
+      <div class="hint" style="margin-bottom:10px">同一账号可加入多个租户，切换后组织、团队、项目与数据范围随之隔离。</div>
+      <div class="tenant-list">${items.length ? items.map((t) => `
+        <button class="tenant-item ${t.id === current ? 'active' : ''}" data-tenant="${t.id}">
+          <b>${esc(t.name)}</b><span class="mono">${esc(t.code)}</span>
+          ${t.id === current ? '<span class="chip done">当前</span>' : '<span class="chip plain">进入</span>'}
+        </button>`).join('') : '<div class="empty">当前账号未加入任何租户</div>'}</div>
+    </div>
+    <div class="modal-foot"><button class="btn ghost" data-close>关闭</button></div>`, 'sm');
+  $$('[data-tenant]').forEach((b) => {
+    b.onclick = async () => {
+      try {
+        await api('/api/tenant/switch', { method: 'POST', body: { tenant_id: Number(b.dataset.tenant) } });
+        state.context = await api('/api/context');
+        state.space = state.context.space;
+        state.pid = state.context.projects && state.context.projects[0] ? state.context.projects[0].id : state.pid;
+        closeModal();
+        toast('已切换租户', 'ok');
+        const qb = await api('/api/bootstrap');
+        state.user = qb.user;
+        state.permissions = qb.permissions || [];
+        state.counts = qb.counts;
+        location.hash = hrefFor('dashboard');
+        await route();
+      } catch (err) { toast(err.message, 'err'); }
+    };
+  });
 }
 
 async function userMenu() {
@@ -299,23 +401,62 @@ async function userMenu() {
   $('#logout-btn').onclick = async () => {
     await api('/api/logout', { method: 'POST' });
     state.user = null;
+    state.context = null; state.space = ''; state.pid = 0;
     closeModal();
+    location.hash = '';
     renderLogin();
   };
 }
 
 /* ---------------- 路由 ---------------- */
 function parseHash() {
-  const raw = location.hash.replace(/^#/, '') || '/dashboard';
+  const raw = location.hash.replace(/^#/, '') || '';
   const [path, query] = raw.split('?');
   const parts = path.split('/').filter(Boolean);
-  return { page: parts[0] || 'dashboard', id: parts[1] ? Number(parts[1]) : null, query: new URLSearchParams(query || '') };
+  let space = '';
+  let pid = 0;
+  if (['admin', 'tenant', 'project'].includes(parts[0])) {
+    space = parts.shift();
+    if (space === 'project') pid = Number(parts.shift()) || 0;
+  }
+  return {
+    space,
+    pid,
+    page: parts[0] || 'dashboard',
+    id: parts[1] ? Number(parts[1]) : null,
+    query: new URLSearchParams(query || ''),
+  };
 }
 
 async function route() {
   if (!state.user) return;
-  const { page, id, query } = parseHash();
+  const h = parseHash();
+  if (h.space && state.context) {
+    const own = state.context.space;
+    const allowed = own === 'admin'
+      ? ['admin', 'tenant', 'project']
+      : own === 'tenant' ? ['tenant', 'project'] : ['project'];
+    if (!allowed.includes(h.space)) {
+      const prefix = own === 'project' ? `/project/${state.pid || 0}` : `/${own}`;
+      const q = h.query.toString();
+      location.hash = `#${prefix}/${h.page}${q ? `?${q}` : ''}`;
+      return;
+    }
+  }
+  if (h.space) {
+    state.space = h.space;
+    if (h.pid) state.pid = h.pid;
+  } else if (h.page !== 'annotate') {
+    // 旧链接兼容：自动补全为当前入口的三段式路由
+    const sp = state.space || (state.context && state.context.space) || 'project';
+    const prefix = sp === 'project' ? `/project/${state.pid || 0}` : `/${sp}`;
+    const q = h.query.toString();
+    location.hash = `#${prefix}/${h.page}${q ? `?${q}` : ''}`;
+    return;
+  }
+  const { page, id, query } = h;
   try {
+    if (!document.getElementById('page')) $('#app').innerHTML = shell('', '', '');
     const need = NAV_PERM[page];
     if (need && !can(need)) {
       $('#page').innerHTML = `<div class="empty"><b>没有访问权限</b>当前角色未开通该模块，请联系平台管理员调整 RBAC 权限矩阵</div>`;
@@ -324,6 +465,7 @@ async function route() {
     if (page === 'dashboard') await pageDashboard();
     else if (page === 'tasks') await pageTasks(query);
     else if (page === 'qc') await pageQC();
+    else if (page === 'acceptance') await pageAcceptance();
     else if (page === 'projects') await pageProjects();
     else if (page === 'datasets') await pageDatasets();
     else if (page === 'templates') await pageTemplates();
@@ -561,21 +703,38 @@ async function assignTaskModal(tid, pid) {
     api(`/api/projects/${pid}/members`),
     Promise.resolve((state.tasks || []).find((x) => x.id === tid)),
   ]);
-  const opts = (roles, current) => `<option value="0">${current ? '保持不变' : '未分配'}</option>` + d.members
-    .filter((m) => roles.includes(m.project_role))
-    .map((m) => `<option value="${m.id}">${esc(m.name)}（${esc(m.project_role_label)}）</option>`).join('');
+  const opts = (roles, current, roleLabel) => {
+    const list = d.members.filter((m) => roles.includes(m.project_role));
+    let html = `<option value="">${current ? '保持不变' : '暂不分配'}</option>`;
+    if (current) html += '<option value="0">未分配（清空）</option>';
+    html += list.map((m) => `<option value="${m.id}">${esc(m.name)}（${esc(m.project_role_label)}）</option>`).join('');
+    return { html, empty: !list.length, roleLabel };
+  };
+  const aOpt = opts(['annotator', 'manager'], t && t.assignee_id, '标注员');
+  const rOpt = opts(['reviewer', 'manager'], t && t.reviewer_id, '质检员');
+  const missing = [aOpt.empty ? '标注员' : '', rOpt.empty ? '质检员' : ''].filter(Boolean);
+  const hint = missing.length
+    ? `<div class="hint" style="margin-top:8px;color:#F59E0B">当前项目暂无可分配的${missing.join('、')}，请先在「项目管理 → 成员」中添加对应角色的成员。</div>`
+    : `<div class="hint" style="margin-top:8px">选择「保持不变」时保留原负责人；选择「未分配（清空）」才会取消分配。</div>`;
   openModal(`
     <div class="modal-head"><h3>分配任务 · ${esc(t ? t.name : '')}</h3><button class="x" data-close>×</button></div>
     <div class="modal-body"><div class="form-grid">
-      <div class="field"><label>标注员</label><select class="select" id="as-assignee">${opts(['annotator', 'manager'], t && t.assignee_id)}</select></div>
-      <div class="field"><label>质检员</label><select class="select" id="as-reviewer">${opts(['reviewer', 'manager'], t && t.reviewer_id)}</select></div>
-    </div><div class="hint" style="margin-top:8px">选择「保持不变 / 未分配」时不会清空原有的质检员。</div></div>
+      <div class="field"><label>标注员</label><select class="select" id="as-assignee">${aOpt.html}</select></div>
+      <div class="field"><label>质检员</label><select class="select" id="as-reviewer">${rOpt.html}</select></div>
+    </div>${hint}${missing.length ? '<div style="margin-top:10px"><button class="btn ghost sm" id="as-members">管理项目成员</button></div>' : ''}</div>
     <div class="modal-foot"><button class="btn ghost" data-close>取消</button><button class="btn primary" id="as-ok">保存</button></div>`, 'sm');
+  const mb = $('#as-members');
+  if (mb) mb.onclick = () => { closeModal(); projectMembers(pid); };
   $('#as-ok').onclick = async () => {
+    const a = $('#as-assignee').value;
+    const r = $('#as-reviewer').value;
     try {
       await api(`/api/tasks/${tid}/assign`, {
         method: 'POST',
-        body: { assignee_id: Number($('#as-assignee').value) || 0, reviewer_id: Number($('#as-reviewer').value) || 0 },
+        body: {
+          assignee_id: a === '' ? null : Number(a),
+          reviewer_id: r === '' ? null : Number(r),
+        },
       });
       closeModal(); toast('任务已分配', 'ok');
       await pageTasks(parseHash().query);
@@ -602,16 +761,19 @@ async function pageAnnotate(id) {
   state.current = data;
   const { task, project, annotation, qc, can_edit } = data;
   const mediaName = task.media_path ? task.media_path.split('/').pop() : '';
-  const mediaType = task.media_type || (task.modality === 'image' ? 'image' : 'audio');
+  const isEditing = !!(project && project.modality === 'editing');
+  const mediaType = isEditing ? 'editing' : (task.media_type || (task.modality === 'image' ? 'image' : 'audio'));
   const labels = (project && project.labels) || {};
   const payload = (annotation && annotation.payload) || {};
   const pre = (annotation && annotation.prelabel) || {};
 
   // 统一 wb 结构：audio 和 image 共用头部/侧栏框架
-  const classes = labels['目标类别'] || ['商品主体', '价签', '货架', '遮挡'];
+  const classes = isEditing ? ['同类目标'] : (labels['目标类别'] || ['商品主体', '价签', '货架', '遮挡']);
   const wb = {
     task, project, labels, canEdit: can_edit,
-    mediaType, mediaName, pre,
+    mediaType, mediaName, pre, editing: isEditing,
+    media: data.media || [],
+    edit: (payload.edit && typeof payload.edit === 'object') ? payload.edit : {},
     // 音频
     segments: (payload.segments && payload.segments.length ? payload.segments : pre.segments || []).map((s) => ({ ...s, events: s.events || [] })),
     // 图片
@@ -622,6 +784,7 @@ async function pageAnnotate(id) {
           source: b.source || (typeof b.conf === 'number' ? 'ai' : 'manual'),
           auto_cls: b.auto_cls || '',
           conf: b.conf, x: b.x, y: b.y, w: b.w, h: b.h,
+          target: !!b.target,
         }))
       : (Array.isArray(pre.boxes) ? pre.boxes.map((b) => ({
           cls: classes.includes(b.cls) ? b.cls : classes[0],
@@ -1121,11 +1284,17 @@ function segRows(wb) {
         </span>
         <span class="seg-dur">${dur.toFixed(2)}s</span>
         <span class="spacer"></span>
+        <select class="seg-lang" data-f="lang" title="语种">${['中文', '英文', '日语', '粤语', '混合', '其他'].map((x) => `<option ${(s.lang || '中文') === x ? 'selected' : ''}>${x}</option>`).join('')}</select>
         <select class="seg-emo" data-f="emotion" title="情绪">${emotions.map((x) => `<option ${x === s.emotion ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>
+        <input class="seg-int" data-f="emo_intensity" type="number" min="1" max="5" value="${Number(s.emo_intensity) || 3}" title="情绪强度 1-5" />
         ${events.length ? `<select class="seg-evt" data-f="event" title="添加事件"><option value="">+ 事件</option>${events.filter((x) => !evs.includes(x)).map((x) => `<option>${esc(x)}</option>`).join('')}</select>` : ''}
         <button class="seg-del" data-del="${i}" title="删除该段">${icon('x')}</button>
       </div>
       <textarea class="seg-text" data-f="text" rows="2" placeholder="转写文本…">${esc(s.text)}</textarea>
+      <div class="seg-pron-row">
+        <select data-f="pron_type" title="发音问题类型">${['无', '错读', '漏读', '多读', '声调错误'].map((x) => `<option ${(s.pron_type || '无') === x ? 'selected' : ''}>${x}</option>`).join('')}</select>
+        <input data-f="pron_note" value="${esc(s.pron_note || '')}" placeholder="发音校对说明，如：声调应读二声" />
+      </div>
       ${evs.length ? `<div class="seg-tags">${evs.map((x) => `<span class="seg-tag">${esc(x)}<button type="button" data-del-event="${esc(x)}" data-seg="${i}" title="移除">${icon('x')}</button></span>`).join('')}</div>` : ''}
     </div>`;
   }).join('');
@@ -1650,8 +1819,9 @@ function bindWorkbench(wb, mediaName) {
     if (!document.body.contains($('#wb'))) return;
     if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return;
     if (e.code === 'Space') { e.preventDefault(); toggle(); }
-    if (e.key === 'ArrowLeft' && audio) audio.currentTime = Math.max(0, audio.currentTime - 1);
-    if (e.key === 'ArrowRight' && audio) audio.currentTime = Math.min(wb.duration, audio.currentTime + 1);
+    const step = (e.ctrlKey || e.metaKey) ? 5 : 0.5;
+    if (e.key === 'ArrowLeft' && audio) audio.currentTime = Math.max(0, audio.currentTime - step);
+    if (e.key === 'ArrowRight' && audio) audio.currentTime = Math.min(wb.duration, audio.currentTime + step);
   };
 
   const list = $('#seg-list');
@@ -1702,7 +1872,7 @@ function bindWorkbench(wb, mediaName) {
 
   $('#btn-add-seg').onclick = () => {
     const start = Math.round((audio ? audio.currentTime : 0) * 100) / 100;
-    wb.segments.push({ start, end: Math.min(wb.duration || start + 3, start + 3), text: '', spk: speakerList(wb)[0] || '说话人1', emotion: (wb.labels['情绪'] || ['中性'])[0], events: [] });
+    wb.segments.push({ start, end: Math.min(wb.duration || start + 3, start + 3), text: '', spk: speakerList(wb)[0] || '说话人1', emotion: (wb.labels['情绪'] || ['中性'])[0], emo_intensity: 3, lang: '中文', pron_type: '无', pron_note: '', events: [] });
     markDirty(wb);
     renderSegs(wb); drawWave(wb);
   };
@@ -1811,6 +1981,10 @@ function payloadOf(wb) {
       text: s.text || '',
       spk: s.spk || '说话人1',
       emotion: s.emotion || '中性',
+      emo_intensity: Number(s.emo_intensity) || 3,
+      lang: s.lang || '中文',
+      pron_type: s.pron_type && s.pron_type !== '无' ? s.pron_type : '',
+      pron_note: s.pron_note || '',
       events: s.events || [],
     })),
     summary: wb.summary || '',
@@ -1877,15 +2051,35 @@ async function openReview(tid) {
   const boxes = payload.boxes || [];
   const preBoxes = pre.boxes || [];
   const mediaName = d.task.media_path ? d.task.media_path.split('/').pop() : '';
+  const isEditing = !!(d.project && d.project.modality === 'editing') || payload.media_type === 'editing';
+  const edit = payload.edit || {};
+  const resultMedia = (d.media || []).find((m) => m.meta && (m.meta.role === 'result' || m.meta.source === 'result'));
+  const dimLabel = { color: '颜色', texture: '纹理', size: '尺寸', material: '材质' };
+  const editPane = isEditing ? `<div class="review-pane"><h4>编辑指令</h4>
+    ${[
+      ['编辑类型', edit.edit_type === 'delete' ? '删除目标' : (edit.edit_type === 'attribute' ? '修改属性' : '未填写')],
+      ['属性维度', (edit.attribute_dim || []).map((x) => dimLabel[x] || x).join('、') || '—'],
+      ['属性值', edit.attribute_value || '—'],
+      ['目标', `${edit.target_name || '未填写'} · ${edit.target_category || '未分类'}`],
+      ['定位', edit.target_locator || '—'],
+      ['同类目标数', edit.same_target_count || 0],
+      ['影子调整', edit.shadow_adjusted ? '已确认' : '未确认'],
+      ['指令', edit.instruction || '—'],
+    ].map(([k, v]) => `<div class="review-line"><span class="s">${k}</span><span>${esc(String(v))}</span></div>`).join('')}
+  </div>` : '';
   const pane = (arr, title) => `<div class="review-pane"><h4>${title} · ${arr.length} 段</h4>
     ${arr.map((s) => `<div class="review-line"><span class="t">${Number(s.start).toFixed(2)}</span><span class="s">${esc(s.spk || '—')}</span><span>${esc(s.text)}</span></div>`).join('') || '<div class="hint">无内容</div>'}</div>`;
   const boxPane = (arr, title) => `<div class="review-pane"><h4>${title} · ${arr.length} 个目标</h4>
     ${arr.map((b, i) => `<div class="review-line"><span class="t">#${i + 1}</span><span class="s">${esc(b.cls || '—')}</span><span>${esc(b.name || '未命名')}${typeof b.conf === 'number' ? ` · ${Math.round(b.conf * 100)}%` : ''} · 位置 ${(Number(b.x) * 100).toFixed(1)},${(Number(b.y) * 100).toFixed(1)} · 尺寸 ${(Number(b.w) * 100).toFixed(1)}×${(Number(b.h) * 100).toFixed(1)}%</span></div>`).join('') || '<div class="hint">无内容</div>'}</div>`;
   const panes = isImage
-    ? `${boxPane(boxes, '人工标注目标')}${boxPane(preBoxes, 'AI 预识别目标')}`
+    ? `${editPane}${boxPane(boxes, '人工标注目标')}${preBoxes.length ? boxPane(preBoxes, 'AI 预识别目标') : ''}`
     : `${pane(segs, '人工标注结果')}${pane(preSegs, 'AI 预识别结果')}`;
   const preview = isImage && mediaName
-    ? `<div style="margin-bottom:12px"><img src="/media/${encodeURIComponent(mediaName)}" alt="待质检图片" style="max-height:220px;max-width:100%;border-radius:8px;border:1px solid var(--border)" /></div>`
+    ? `<div style="display:flex;gap:12px;margin-bottom:12px;flex-wrap:wrap">
+        <div style="flex:1;min-width:220px"><div class="hint" style="margin-bottom:4px">原图</div><img src="/media/${encodeURIComponent(mediaName)}" alt="待质检图片" style="max-height:220px;max-width:100%;border-radius:8px;border:1px solid var(--border)" /></div>
+        ${resultMedia ? `<div style="flex:1;min-width:220px"><div class="hint" style="margin-bottom:4px">编辑结果图</div><img src="${resultMedia.url}" alt="编辑结果" style="max-height:220px;max-width:100%;border-radius:8px;border:1px solid var(--border)" /></div>`
+          : (isEditing ? '<div style="flex:1;min-width:220px"><div class="hint" style="margin-bottom:4px">编辑结果图</div><div class="empty" style="padding:30px 10px">未挂载结果图</div></div>' : '')}
+      </div>`
     : '';
   const resultCount = isImage ? boxes.length : segs.length;
   openModal(`
@@ -1893,10 +2087,14 @@ async function openReview(tid) {
     <div class="modal-body">
       ${preview}
       <div class="review-grid">${panes}</div>
+      ${isEditing ? '<div id="qc-editing-issues" style="margin-top:10px"><span class="hint">正在执行图像编辑规范校验…</span></div>' : ''}
       <div class="divider"></div>
       <div class="form-grid">
         <div class="field"><label>质检评分（0-100）</label><input class="input" type="number" id="qc-score" min="0" max="100" value="${resultCount ? 85 : 60}" /></div>
         <div class="field"><label>业务分类</label><input class="input" value="${esc(payload.business || '未分类')}" disabled /></div>
+        <div class="field full"><label>错误类型（驳回时勾选）</label><div class="filters" id="qc-errors">
+          ${['漏标', '错标', '框选偏差', '标签错误', '属性错误', '其他'].map((x) => `<label class="toggle-wrap"><input type="checkbox" value="${x}"> ${x}</label>`).join('')}
+        </div></div>
         <div class="field full"><label>质检意见</label><textarea class="input textarea" id="qc-comment" placeholder="填写返修点或通过说明"></textarea></div>
       </div>
     </div>
@@ -1905,13 +2103,32 @@ async function openReview(tid) {
       <button class="btn danger" id="qc-reject">驳回返修</button>
       <button class="btn success" id="qc-approve">通过</button>
     </div>`, 'wide');
+  let editingOk = null;
+  if (isEditing) {
+    api(`/api/tasks/${tid}/editing/validate`, { method: 'POST', body: { payload } }).then((r) => {
+      editingOk = !!r.ok;
+      const box = $('#qc-editing-issues');
+      if (!box) return;
+      box.innerHTML = r.issues.length
+        ? `<div class="section-label" style="font-size:12px;color:var(--muted);margin-bottom:6px">图像编辑规范校验</div>` +
+          r.issues.map((i) => `<div style="display:flex;gap:6px;padding:4px 0;font-size:11.5px">
+            <span class="chip ${i.level === 'error' ? 'danger' : 'pending'}" style="flex:none">${i.level === 'error' ? '需修正' : '提示'}</span><span>${esc(i.message)}</span></div>`).join('')
+        : '<span class="chip done">图像编辑规范校验通过</span>';
+    }).catch(() => {
+      const box = $('#qc-editing-issues');
+      if (box) box.innerHTML = '<span class="hint">规范校验暂不可用</span>';
+    });
+  }
   const submit = async (result) => {
+    if (result === 'approved' && isEditing && editingOk === false) {
+      return toast('该样本未通过图像编辑规范校验，请驳回返修', 'err');
+    }
     try {
       await api(`/api/tasks/${tid}/review`, {
         method: 'POST',
-        body: { result, score: Number($('#qc-score').value) || 0, comment: $('#qc-comment').value.trim() },
+        body: { result, score: Number($('#qc-score').value) || 0, comment: $('#qc-comment').value.trim(), error_types: $$('#qc-errors input:checked').map((x) => x.value) },
       });
-      closeModal(); toast(result === 'approved' ? '质检通过，任务已完成' : '已驳回，任务回到标注中', 'ok');
+      closeModal(); toast(result === 'approved' ? '质检通过，已进入待验收' : '已驳回，任务回到标注中', 'ok');
       pageQC();
     } catch (err) { toast(err.message, 'err'); }
   };
@@ -1922,11 +2139,80 @@ async function openReview(tid) {
   };
 }
 
+/* ---------------- 验收中心 ---------------- */
+async function pageAcceptance() {
+  const data = await api('/api/acceptance');
+  const tasks = data.tasks || [];
+  const content = `
+    <div class="page-head"><div><h1 class="page-title">验收中心</h1><p class="page-sub">质检通过的任务进入验收，验收通过后完成任务并进入交付</p></div>
+      <div class="page-actions"><span class="tag">${tasks.length} 个待验收</span></div></div>
+    <div class="card"><div class="table-wrap">
+      <table class="table"><thead><tr><th>任务</th><th>项目</th><th>标注员</th><th>质检结果</th><th>验收员</th><th>更新时间</th><th class="right">操作</th></tr></thead>
+      <tbody>${tasks.map((t) => {
+        const qc = t.qc || {};
+        const qcText = qc.result === 'approved' || qc.result === 'auto_approved'
+          ? `${qc.result === 'auto_approved' ? '免检' : '通过'}${qc.score ? ` · ${qc.score} 分` : ''}`
+          : (qc.result === 'rejected' ? '驳回' : '—');
+        return `<tr>
+          <td><div class="name">${esc(t.name)}</div><div class="sub">#${t.id} · ${esc(t.modality_label)}</div></td>
+          <td>${esc(t.project_name)}</td>
+          <td>${esc(t.assignee_name || '—')}</td>
+          <td>${esc(qcText)}</td>
+          <td>${esc(t.acceptor_name || '未指派')}</td>
+          <td class="mono">${esc((t.updated_at || '').slice(5, 16))}</td>
+          <td class="right" style="white-space:nowrap">
+            <a class="btn sm ghost" href="#/annotate/${t.id}">查看</a>
+            <button class="btn sm success" data-accept="${t.id}">通过</button>
+            <button class="btn sm danger" data-reject="${t.id}">驳回</button>
+          </td></tr>`;
+      }).join('') || '<tr><td colspan="7" class="empty"><b>验收队列为空</b>质检通过的任务会出现在这里</td></tr>'}</tbody></table>
+    </div></div>`;
+  mount('acceptance', '验收中心', content);
+  $$('[data-accept]').forEach((b) => (b.onclick = async () => {
+    if (!(await confirmModal('验收通过', '确认通过该任务？通过后任务标记为已完成并进入交付。', '通过并完成'))) return;
+    try {
+      await api(`/api/tasks/${b.dataset.accept}/accept`, { method: 'POST', body: { result: 'approved' } });
+      toast('验收通过，任务已完成', 'ok');
+      state.context = await api('/api/context');
+      pageAcceptance();
+    } catch (err) { toast(err.message, 'err'); }
+  }));
+  $$('[data-reject]').forEach((b) => (b.onclick = () => rejectModal(Number(b.dataset.reject))));
+}
+
+function rejectModal(tid) {
+  openModal(`
+    <div class="modal-head"><h3>验收驳回</h3><button class="x" data-close>×</button></div>
+    <div class="modal-body">
+      <div class="field"><label>驳回原因</label><textarea class="input textarea" id="ac-comment" placeholder="说明需要整改的问题"></textarea></div>
+      <div class="field"><label>退回阶段</label><select class="select" id="ac-target">
+        <option value="annotating">标注阶段（返修）</option>
+        <option value="review">质检阶段（复核）</option>
+      </select></div>
+    </div>
+    <div class="modal-foot"><button class="btn ghost" data-close>取消</button>
+    <button class="btn danger" id="ac-ok">确认驳回</button></div>`, 'sm');
+  $('#ac-ok').onclick = async () => {
+    const comment = $('#ac-comment').value.trim();
+    if (!comment) return toast('请填写驳回原因', 'warn');
+    try {
+      await api(`/api/tasks/${tid}/accept`, {
+        method: 'POST',
+        body: { result: 'rejected', comment, target: $('#ac-target').value },
+      });
+      closeModal(); toast('已驳回', 'ok');
+      state.context = await api('/api/context');
+      pageAcceptance();
+    } catch (err) { toast(err.message, 'err'); }
+  };
+}
+
 /* ---------------- 项目管理 ---------------- */
 async function pageProjects() {
   const data = await api('/api/projects');
   state.projects = data.projects;
-  const canCreate = ['platform_admin', 'project_manager'].includes(state.user.platform_role);
+  const canCreate = ['platform_admin', 'project_manager', 'tenant_admin'].includes(state.user.platform_role);
+  const canManage = (p) => ['platform_admin', 'tenant_admin'].includes(state.user.platform_role) || p.my_role === 'manager';
   const content = `
     <div class="page-head"><div><h1 class="page-title">项目管理</h1><p class="page-sub">项目级数据隔离，平台角色与项目角色双重控制</p></div>
       <div class="page-actions">${canCreate ? `<button class="btn primary" id="btn-new-proj">${icon('plus')} 新建项目</button>` : ''}</div></div>
@@ -1940,6 +2226,7 @@ async function pageProjects() {
         <div class="progress"><i style="width:${p.stats.progress}%"></i></div>
         <div class="proj-foot">
           <button class="btn sm" data-members="${p.id}">${icon('members')} 成员</button>
+          ${p.modality === 'editing' ? `${canManage(p) ? `<button class="btn sm" data-ed-import="${p.id}">样本目录导入</button>` : ''}<button class="btn sm" data-ed-audit="${p.id}">规范体检</button>` : ''}
           ${p.engine_url ? `<a class="btn sm" href="${esc(p.engine_url)}" target="_blank" rel="noreferrer">${icon('arrow')} ${esc(p.engine || '标注引擎')}</a>` : ''}
           <a class="btn sm primary" href="#/tasks?project=${p.id}">${icon('tasks')} 任务</a>
         </div>
@@ -1947,6 +2234,8 @@ async function pageProjects() {
     </div>`;
   mount('projects', '项目管理', content);
   $$('[data-members]').forEach((b) => (b.onclick = () => projectMembers(Number(b.dataset.members))));
+  $$('[data-ed-import]').forEach((b) => (b.onclick = () => editingImportModal(Number(b.dataset.edImport))));
+  $$('[data-ed-audit]').forEach((b) => (b.onclick = () => editingAuditModal(`/api/projects/${b.dataset.edAudit}/editing/audit`, '项目规范体检')));
   const nb = $('#btn-new-proj');
   if (nb) nb.onclick = newProjectModal;
 }
@@ -1964,7 +2253,7 @@ async function projectMembers(pid) {
       ${canManage ? `<div class="divider"></div><div class="form-grid">
         <div class="field"><label>添加成员</label><select class="select" id="pm-user">${all.members.map((u) => `<option value="${u.id}">${esc(u.name)}（${esc(u.username)}）</option>`).join('')}</select></div>
         <div class="field"><label>项目角色</label><select class="select" id="pm-role">
-          <option value="annotator">标注员</option><option value="reviewer">质检员</option><option value="manager">项目经理</option><option value="viewer">只读</option></select></div>
+          <option value="annotator">标注员</option><option value="reviewer">质检员</option><option value="acceptor">验收员</option><option value="manager">项目经理</option><option value="viewer">只读</option></select></div>
       </div>` : ''}
     </div>
     <div class="modal-foot"><button class="btn ghost" data-close>关闭</button>${canManage ? '<button class="btn primary" id="pm-add">添加成员</button>' : ''}</div>`);
@@ -1978,8 +2267,47 @@ async function projectMembers(pid) {
   };
 }
 
+function editingImportModal(pid) {
+  const proj = (state.projects || []).find((p) => p.id === pid) || {};
+  openModal(`
+    <div class="modal-head"><h3>样本目录导入 · ${esc(proj.name || '')}</h3><button class="x" data-close>×</button></div>
+    <div class="modal-body">
+      <div class="hint" style="line-height:1.8;margin-bottom:10px">支持 ZIP 压缩包或直接选择多个文件。目录结构：<b>原图</b>（jpg/png）+ <b>结果图</b>（文件名含 result）+ <b>指令 txt</b>（同一前缀自动配对），每个样本生成一个任务，指令自动预填。</div>
+      <div class="form-grid">
+        <div class="field full"><label>样本文件（ZIP / 图片 / txt）</label><input class="input" type="file" id="ei-files" multiple accept=".zip,.jpg,.jpeg,.png,.webp,.txt,.md" /></div>
+        <div class="field full"><label>批次名称（可选）</label><input class="input" id="ei-batch" placeholder="例如 0407-K-281 第一批" /></div>
+      </div>
+      <div id="ei-result" style="margin-top:12px"></div>
+    </div>
+    <div class="modal-foot"><button class="btn ghost" data-close>取消</button><button class="btn primary" id="ei-ok">开始导入</button></div>`);
+  $('#ei-ok').onclick = async () => {
+    const files = $('#ei-files').files;
+    if (!files || !files.length) return toast('请选择样本文件或 ZIP 包', 'warn');
+    const fd = new FormData();
+    for (const f of files) fd.append('files', f);
+    fd.append('batch', $('#ei-batch').value.trim());
+    const btn = $('#ei-ok');
+    btn.disabled = true;
+    btn.textContent = '导入中…';
+    try {
+      const r = await api(`/api/projects/${pid}/editing/import`, { method: 'POST', body: fd });
+      const errs = (r.errors || []).slice(0, 12).map((e) => `<div class="sub">${esc(e.sample)}：${esc(e.reason)}</div>`).join('');
+      $('#ei-result').innerHTML = `<div class="chip done">成功创建 ${r.created} 个任务</div>
+        ${r.skipped ? `<span class="chip pending">跳过 ${r.skipped} 个（同名已存在）</span>` : ''}
+        ${errs ? `<div class="section-label" style="font-size:12px;color:var(--muted);margin:10px 0 4px">未导入样本</div>${errs}` : ''}`;
+      toast(`导入完成：${r.created} 个任务`, 'ok');
+      state.context = await api('/api/context');
+    } catch (err) {
+      toast(err.message, 'err');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '开始导入';
+    }
+  };
+}
+
 function newProjectModal() {
-  const labels = { audio: '语音', image: '图片', video: '视频', pointcloud: '点云' };
+  const labels = { audio: '语音', image: '图片', video: '视频', pointcloud: '点云', editing: '图像编辑指令' };
   openModal(`
     <div class="modal-head"><h3>新建项目</h3><button class="x" data-close>×</button></div>
     <div class="modal-body"><div class="form-grid">
@@ -2007,25 +2335,30 @@ async function pageMembers() {
   try { data = await api('/api/members'); } catch (e) { data = { members: [] }; }
   state.members = data.members;
   const isAdmin = state.user.platform_role === 'platform_admin';
-  const roles = { platform_admin: '平台管理员', project_manager: '项目经理', annotator: '标注员', reviewer: '质检员', client: '客户(只读)' };
+  const canManage = can('member.write');
+  const roles = { platform_admin: '平台管理员', tenant_admin: '租户管理员', project_manager: '项目经理', annotator: '标注员', reviewer: '质检员', acceptor: '验收员', client: '客户(只读)' };
+  const roleOptions = isAdmin ? Object.entries(roles) : Object.entries(roles).filter(([k]) => !['platform_admin', 'tenant_admin'].includes(k));
   const content = `
     <div class="page-head"><div><h1 class="page-title">成员管理</h1><p class="page-sub">平台角色决定功能权限，项目角色决定数据可见范围</p></div>
-      <div class="page-actions">${isAdmin ? `<button class="btn primary" id="btn-new-user">${icon('plus')} 新增成员</button>` : ''}</div></div>
+      <div class="page-actions">${canManage ? `<button class="btn" id="btn-import-user">${icon('upload')} 批量导入</button><button class="btn primary" id="btn-new-user">${icon('plus')} 新增成员</button>` : ''}</div></div>
     <div class="grid two-col">
       <div class="card"><div class="card-head"><h3 class="card-title">平台成员</h3><span class="card-sub">${data.members.length} 人</span></div>
         <div class="table-wrap"><table class="table"><thead><tr><th>成员</th><th>平台角色</th><th>项目数</th><th>状态</th><th class="right">操作</th></tr></thead>
-        <tbody>${data.members.map((m) => `<tr>
-          <td><div class="name">${esc(m.name)}</div><div class="sub mono">${esc(m.username)}</div></td>
-          <td>${isAdmin ? `<select class="select" data-role="${m.id}" style="width:130px;height:28px;padding:2px 6px">${Object.entries(roles).map(([k, v]) => `<option value="${k}" ${m.platform_role === k ? 'selected' : ''}>${v}</option>`).join('')}</select>` : `<span class="tag">${esc(m.role_label)}</span>`}</td>
+        <tbody>${data.members.map((m) => {
+          const editable = isAdmin || !['platform_admin', 'tenant_admin'].includes(m.platform_role);
+          return `<tr>
+          <td><div class="name">${esc(m.name)}</div><div class="sub mono">${esc(m.username)}</div>${m.tenant_name ? `<div class="sub">${esc(m.tenant_name)}</div>` : ''}</td>
+          <td>${canManage && editable ? `<select class="select" data-role="${m.id}" style="width:130px;height:28px;padding:2px 6px">${roleOptions.map(([k, v]) => `<option value="${k}" ${m.platform_role === k ? 'selected' : ''}>${v}</option>`).join('')}</select>` : `<span class="tag">${esc(m.role_label)}</span>`}</td>
           <td>${m.project_count}</td>
           <td>${m.status === 'active' ? '<span class="chip done">正常</span>' : '<span class="chip danger">停用</span>'}</td>
-          <td class="right">${isAdmin ? `<button class="btn sm ghost" data-toggle-user="${m.id}" data-status="${m.status}">${m.status === 'active' ? '停用' : '启用'}</button>` : '—'}</td>
-        </tr>`).join('')}</tbody></table></div>
+          <td class="right">${canManage && editable ? `<button class="btn sm ghost" data-toggle-user="${m.id}" data-status="${m.status}">${m.status === 'active' ? '停用' : '启用'}</button>` : '—'}</td>
+        </tr>`; }).join('')}</tbody></table></div>
       </div>
       <div class="card"><div class="card-head"><h3 class="card-title">权限模型</h3><span class="card-sub">双重控制</span></div>
         <div class="card-body">
           <div class="panel-label">平台角色</div>
           <div class="kv"><span>平台管理员</span><b>全部项目 / 成员 / 设置</b></div>
+          <div class="kv"><span>租户管理员</span><b>本租户的组织 / 团队 / 成员</b></div>
           <div class="kv"><span>项目经理</span><b>所属项目全流程</b></div>
           <div class="kv"><span>标注员</span><b>仅本人任务</b></div>
           <div class="kv"><span>质检员</span><b>被指派项目的质检</b></div>
@@ -2041,6 +2374,7 @@ async function pageMembers() {
     </div>`;
   mount('members', '成员管理', content);
   $('#btn-new-user') && ($('#btn-new-user').onclick = newUserModal);
+  $('#btn-import-user') && ($('#btn-import-user').onclick = importUserModal);
   $$('[data-role]').forEach((s) => (s.onchange = async () => {
     try {
       await api(`/api/members/${s.dataset.role}`, { method: 'PATCH', body: { platform_role: s.value } });
@@ -2063,8 +2397,9 @@ function newUserModal() {
       <div class="field"><label>姓名</label><input class="input" id="nu-name" placeholder="真实姓名" /></div>
       <div class="field"><label>初始密码</label><input class="input" id="nu-pass" value="chunke123" /></div>
       <div class="field"><label>平台角色</label><select class="select" id="nu-role">
-        <option value="annotator">标注员</option><option value="reviewer">质检员</option>
-        <option value="project_manager">项目经理</option><option value="client">客户(只读)</option><option value="platform_admin">平台管理员</option></select></div>
+        <option value="annotator">标注员</option><option value="reviewer">质检员</option><option value="acceptor">验收员</option>
+        <option value="project_manager">项目经理</option><option value="client">客户(只读)</option>${state.user.platform_role === 'platform_admin' ? '<option value="tenant_admin">租户管理员</option><option value="platform_admin">平台管理员</option>' : ''}</select>
+        ${state.user.platform_role === 'platform_admin' ? '' : '<div class="hint">新成员将自动归入当前租户</div>'}</div>
     </div></div>
     <div class="modal-foot"><button class="btn ghost" data-close>取消</button><button class="btn primary" id="nu-ok">创建</button></div>`);
   $('#nu-ok').onclick = async () => {
@@ -2072,6 +2407,36 @@ function newUserModal() {
       await api('/api/members', { method: 'POST', body: { username: $('#nu-username').value.trim(), name: $('#nu-name').value.trim(), password: $('#nu-pass').value, platform_role: $('#nu-role').value } });
       closeModal(); toast('成员已创建', 'ok'); pageMembers();
     } catch (err) { toast(err.message, 'err'); }
+  };
+}
+
+function importUserModal() {
+  openModal(`
+    <div class="modal-head"><h3>批量导入成员</h3><button class="x" data-close>×</button></div>
+    <div class="modal-body">
+      <p class="hint" style="margin-top:0">每行一个成员：<code>账号,姓名,角色,初始密码</code>。角色可填中文或英文键；密码留空则使用默认密码。</p>
+      <textarea class="input" id="mi-text" rows="10" placeholder="zhangsan,张三,标注员,chunke123&#10;lisi,李四,质检员&#10;wangwu,王五,验收员"></textarea>
+      <div id="mi-result" style="margin-top:10px"></div>
+    </div>
+    <div class="modal-foot"><button class="btn ghost" data-close>取消</button><button class="btn primary" id="mi-ok">开始导入</button></div>`);
+  $('#mi-ok').onclick = async () => {
+    const roleMap = { '平台管理员': 'platform_admin', '租户管理员': 'tenant_admin', '项目经理': 'project_manager', '标注员': 'annotator', '质检员': 'reviewer', '验收员': 'acceptor', '客户': 'client' };
+    const users = $('#mi-text').value.split('\n').map((line) => line.trim()).filter(Boolean).map((line) => {
+      const [username, name, role, password] = line.split(/[,，\t]/).map((x) => (x || '').trim());
+      return { username, name, platform_role: roleMap[role] || role || 'annotator', password: password || '' };
+    });
+    if (!users.length) return toast('请先填写导入数据', 'err');
+    const btn = $('#mi-ok');
+    btn.disabled = true; btn.textContent = '导入中…';
+    try {
+      const r = await api('/api/members/import-batch', { method: 'POST', body: { users } });
+      $('#mi-result').innerHTML = `<div class="chip done">成功 ${r.created.length} 人</div>${r.failed.length ? `<div class="chip danger" style="margin-left:6px">失败 ${r.failed.length} 行</div><div style="margin-top:8px;max-height:160px;overflow:auto">${r.failed.map((f) => `<div class="sub">第 ${f.row} 行 ${esc(f.username || '')}：${esc(f.error)}</div>`).join('')}</div>` : ''}`;
+      toast(`导入完成：成功 ${r.created.length} 人`, 'ok');
+      if (r.created.length) setTimeout(() => { closeModal(); pageMembers(); }, 1200);
+    } catch (err) {
+      toast(err.message, 'err');
+      btn.disabled = false; btn.textContent = '开始导入';
+    }
   };
 }
 
@@ -2272,6 +2637,7 @@ async function datasetDetail(id) {
         <button class="btn sm" id="dd-upload">${icon('upload')} 上传数据</button>
         <button class="btn sm" id="dd-version">新建版本快照</button>
         <a class="btn sm" href="/api/datasets/${d.id}/export">${icon('download')} 导出 CSV</a>
+        ${d.modality === 'editing' ? `<button class="btn sm" id="dd-audit">图像编辑体检</button><a class="btn sm" href="/api/datasets/${d.id}/export.jsonl">${icon('download')} 导出 JSONL</a>` : ''}
         <input type="file" id="dd-file" style="display:none" />
       </div>
       <div class="divider"></div>
@@ -2299,6 +2665,8 @@ async function datasetDetail(id) {
       datasetDetail(id);
     } catch (err) { toast(err.message, 'err'); }
   };
+  const auditBtn = $('#dd-audit');
+  if (auditBtn) auditBtn.onclick = () => editingAuditModal(`/api/datasets/${id}/editing/audit`, d.name);
   $('#dd-upload').onclick = () => $('#dd-file').click();
   $('#dd-file').onchange = async (e) => {
     const f = e.target.files[0];
@@ -2328,6 +2696,45 @@ function previewDatasetItem(it) {
       : `<audio src="${src}" controls style="width:100%"></audio>`;
   openModal(`<div class="modal-head"><h3>${esc(it.name)}</h3><button class="x" data-close>×</button></div>
     <div class="modal-body" style="text-align:center">${media}<div class="hint" style="margin-top:10px">${esc(it.media_name)} · ${fmtBytes(it.size)}</div></div>
+    <div class="modal-foot"><button class="btn ghost" data-close>关闭</button></div>`, 'wide');
+}
+
+async function editingAuditModal(url, title) {
+  let d;
+  try { d = await api(url); } catch (err) { return toast(err.message, 'err'); }
+  const dist = (arr, key = 'label') => (arr || []).length
+    ? arr.map((x) => `<span class="chip ${Number(x.percent) > 10 ? 'danger' : 'plain'}">${esc(x[key] || x.name)} · ${x.count}（${x.percent}%）</span>`).join('')
+    : '<span class="hint">暂无</span>';
+  const issueRows = (d.issues || []).map((i) => {
+    const samples = (i.samples || []).slice(0, 4).map((s) => `<div class="sub">${esc(s.name || s.instruction || '')}${s.count ? ` ×${s.count}` : ''}${s.task_id ? ` · #${s.task_id}` : ''}</div>`).join('');
+    return `<tr><td><span class="chip ${i.level === 'error' ? 'danger' : 'pending'}">${i.level === 'error' ? '需修正' : '提示'}</span></td>
+      <td>${esc(i.message)}<div class="sub">${i.count} 条 · ${i.percent}%</div>${samples}</td></tr>`;
+  }).join('');
+  const typeRows = (d.detail_types || []).map((t) => `<tr><td>${esc(t.name)}</td><td class="mono">${t.count}</td>
+    <td><span class="chip ${t.percent > 10 ? 'danger' : 'plain'}">${t.percent}%</span></td></tr>`).join('');
+  openModal(`
+    <div class="modal-head"><h3>图像编辑体检 · ${esc(title)}</h3><button class="x" data-close>×</button></div>
+    <div class="modal-body">
+      <div class="grid three-col" style="margin-bottom:14px">
+        <div class="card"><div class="card-body"><div class="hint">规范总分</div><div style="font-size:30px;font-weight:700;color:${d.passed ? 'var(--success)' : 'var(--danger)'}">${d.score}</div><div class="sub">${d.passed ? '通过' : '存在需修正项'}</div></div></div>
+        <div class="card"><div class="card-body"><div class="hint">样本总数</div><div style="font-size:30px;font-weight:700">${d.total}</div><div class="sub">已完成 ${d.completed} · 未完成 ${d.pending}</div></div></div>
+        <div class="card"><div class="card-body"><div class="hint">版本</div><div style="font-size:30px;font-weight:700">v${(d.dataset && d.dataset.version) || '—'}</div><div class="sub">单一细分类型上限 10%</div></div></div>
+      </div>
+      <div class="section-label" style="font-size:12px;color:var(--muted);margin-bottom:6px">编辑类型分布</div>
+      <div class="chip-row" style="margin-bottom:12px">${dist(d.edit_types)}</div>
+      <div class="section-label" style="font-size:12px;color:var(--muted);margin-bottom:6px">目标大类分布</div>
+      <div class="chip-row" style="margin-bottom:12px">${dist(d.categories, 'name')}</div>
+      <div class="section-label" style="font-size:12px;color:var(--muted);margin-bottom:6px">属性维度分布</div>
+      <div class="chip-row" style="margin-bottom:12px">${dist(d.attributes)}</div>
+      <div class="divider"></div>
+      <div class="section-label" style="font-size:12px;color:var(--muted);margin-bottom:6px">合规问题</div>
+      <div class="table-wrap" style="max-height:260px"><table class="table"><thead><tr><th style="width:90px">级别</th><th>问题与样例</th></tr></thead>
+        <tbody>${issueRows || '<tr><td colspan="2"><div class="empty">未发现合规问题</div></td></tr>'}</tbody></table></div>
+      <div class="divider"></div>
+      <div class="section-label" style="font-size:12px;color:var(--muted);margin-bottom:6px">细分类型 Top 20</div>
+      <div class="table-wrap" style="max-height:220px"><table class="table"><thead><tr><th>类型</th><th>数量</th><th>占比</th></tr></thead>
+        <tbody>${typeRows || '<tr><td colspan="3"><div class="empty">暂无数据</div></td></tr>'}</tbody></table></div>
+    </div>
     <div class="modal-foot"><button class="btn ghost" data-close>关闭</button></div>`, 'wide');
 }
 
@@ -2580,13 +2987,14 @@ async function pageOrg() {
   const [tree, mx] = await Promise.all([api('/api/org/tree'), api('/api/rbac/matrix')]);
   state.orgTree = tree; state.matrix = mx;
   const isAdmin = can('org.write');
+  const isPlatformAdmin = state.user && state.user.platform_role === 'platform_admin';
   const orgs = (tree.tenants || []).flatMap((t) => t.orgs || []);
   const teams = orgs.flatMap((o) => o.teams || []);
   const content = `
     <div class="page-head"><div><h1 class="page-title">组织架构与权限</h1><p class="page-sub">多租户隔离，组织 → 团队 → 成员三层结构，RBAC 权限矩阵可按角色配置</p></div>
       <div class="page-actions">
-        ${isAdmin ? `<button class="btn" id="org-add-tenant">新增租户</button>
-        <button class="btn" id="org-add-org">新增组织</button>
+        ${isPlatformAdmin ? `<button class="btn" id="org-add-tenant">新增租户</button>` : ''}
+        ${isAdmin ? `<button class="btn" id="org-add-org">新增组织</button>
         <button class="btn primary" id="org-add-team">${icon('plus')} 新增团队</button>` : ''}</div></div>
     <div class="grid kpi-grid" style="margin-bottom:14px">
       <div class="kpi"><div class="kpi-label">租户</div><div class="kpi-value">${(tree.tenants || []).length}</div><div class="kpi-delta">逻辑隔离</div></div>
@@ -2611,11 +3019,11 @@ async function pageOrg() {
             <td class="right">${isAdmin ? `<button class="btn sm" data-scope="${m.id}">调整归属</button>` : ''}</td></tr>`).join('')}
           </tbody></table></div></div>
       </div>
-      <div class="card"><div class="card-head"><h3 class="card-title">RBAC 权限矩阵</h3><span class="card-sub">${isAdmin ? '点击勾选即时保存' : '只读'}</span></div>
+      <div class="card"><div class="card-head"><h3 class="card-title">RBAC 权限矩阵</h3><span class="card-sub">${isPlatformAdmin ? '点击勾选即时保存' : '只读'}</span></div>
         <div class="table-wrap" style="max-height:640px"><table class="table matrix"><thead><tr><th>权限点</th>
           ${mx.roles.map((r) => `<th class="center">${esc(r.label)}</th>`).join('')}</tr></thead><tbody>
           ${mx.permissions.map((p) => `<tr><td><div>${esc(p.label)}</div><div class="sub mono">${esc(p.key)}</div></td>
-            ${mx.roles.map((r) => `<td class="center"><input type="checkbox" data-role="${r.key}" data-perm="${p.key}" ${(mx.matrix[r.key] || {})[p.key] ? 'checked' : ''} ${isAdmin && r.key !== 'platform_admin' ? '' : 'disabled'} /></td>`).join('')}
+            ${mx.roles.map((r) => `<td class="center"><input type="checkbox" data-role="${r.key}" data-perm="${p.key}" ${(mx.matrix[r.key] || {})[p.key] ? 'checked' : ''} ${isPlatformAdmin && r.key !== 'platform_admin' ? '' : 'disabled'} /></td>`).join('')}
           </tr>`).join('')}
         </tbody></table></div></div>
     </div>`;
@@ -2637,13 +3045,28 @@ async function pageOrg() {
 function tenantModal() {
   openModal(`<div class="modal-head"><h3>新增租户</h3><button class="x" data-close>×</button></div>
     <div class="modal-body"><div class="form-grid">
-      <div class="field"><label>租户名称</label><input class="input" id="tn-name" /></div>
-      <div class="field"><label>租户编码</label><input class="input" id="tn-code" placeholder="tenant-a" /></div>
+      <div class="field"><label>租户名称 <span style="color:#EF4444">*</span></label><input class="input" id="tn-name" placeholder="如 华东数据服务有限公司" /></div>
+      <div class="field"><label>租户编码</label><input class="input" id="tn-code" placeholder="留空由系统自动生成，如 T20261112-01" /></div>
+      <div class="field"><label>管理员姓名</label><input class="input" id="tn-admin-name" placeholder="如 张伟" /></div>
+      <div class="field"><label>管理员账号 <span style="color:#EF4444">*</span></label><input class="input" id="tn-admin-user" placeholder="登录账号，如 hd_admin" autocomplete="off" /></div>
+      <div class="field full"><label>初始密码 <span style="color:#EF4444">*</span></label><input class="input" id="tn-admin-pass" type="text" value="chunke123" autocomplete="off" />
+        <div class="hint">该账号将以「租户管理员」身份登录，只能查看和管理本租户的组织、团队与成员。</div></div>
     </div></div><div class="modal-foot"><button class="btn ghost" data-close>取消</button><button class="btn primary" id="tn-ok">创建</button></div>`);
   $('#tn-ok').onclick = async () => {
+    const name = $('#tn-name').value.trim();
+    const username = $('#tn-admin-user').value.trim();
+    const password = $('#tn-admin-pass').value.trim();
+    if (!name) return toast('请填写租户名称', 'err');
+    if (!username || !password) return toast('请设置管理员账号和初始密码', 'err');
     try {
-      await api('/api/tenants', { method: 'POST', body: { name: $('#tn-name').value.trim(), code: $('#tn-code').value.trim() } });
-      closeModal(); toast('租户已创建', 'ok'); pageOrg();
+      const r = await api('/api/tenants', { method: 'POST', body: {
+        name, code: $('#tn-code').value.trim(),
+        admin_name: $('#tn-admin-name').value.trim(),
+        admin_username: username, admin_password: password,
+      } });
+      closeModal();
+      toast(`租户已创建，编码 ${r.code}，管理员 ${username} 可直接登录`, 'ok');
+      pageOrg();
     } catch (err) { toast(err.message, 'err'); }
   };
 }
@@ -2801,7 +3224,7 @@ function showKeyModal(key) {
 /* ---------------- 启动 ---------------- */
 async function boot() {
   try {
-    const b = await api('/api/bootstrap');
+    const [b, ctx] = await Promise.all([api('/api/bootstrap'), api('/api/context')]);
     state.user = b.user;
     state.permissions = b.permissions || [];
     state.projects = b.projects;
@@ -2810,10 +3233,16 @@ async function boot() {
     state.counts = b.counts;
     state.preferences = b.preferences || {};
     state.notifications = b.notifications || {};
+    state.context = ctx;
+    state.space = ctx.space || 'project';
+    state.pid = ctx.projects && ctx.projects[0] ? ctx.projects[0].id : 0;
     window.CK_STATE = state;
     applyBrand(b.brand, b.notifications);
     document.documentElement.dataset.lang = state.preferences.language || 'zh';
-    if (!location.hash || location.hash === '#') location.hash = '#/dashboard';
+    if (!location.hash || location.hash === '#') {
+      const prefix = state.space === 'project' ? `/project/${state.pid}` : `/${state.space}`;
+      location.hash = `#${prefix}/dashboard`;
+    }
     await route();
   } catch (err) {
     if (err.message === '请先登录') renderLogin();

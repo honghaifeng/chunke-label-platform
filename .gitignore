@@ -24,6 +24,20 @@ data/media/upload-*
 /479-*.docx
 data/media/06e83288-img.jpg
 
+# 运行期/测试媒体（示例媒体已入库，新增演示素材如需入库请 git add -f）
+data/media/kb-*
+data/media/editing-*
+data/media/k0407-*
+data/media/duo-*
+data/media/ds1-*
+data/media/ds35-*
+data/media/qa-*
+
+# 招标/商务文档与敏感凭据（不入库）
+docs/*.pdf
+docs/*.pptx
+docs/github-recovery-codes.txt
+
 # 编辑器 & 系统
 .DS_Store
 .idea/
