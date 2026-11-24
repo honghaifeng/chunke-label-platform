@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -763,8 +764,21 @@ def claim_tasks(body: dict, user: dict = Depends(me)):
         raise HTTPException(400, "请选择要领取的任务")
     claimed: list[int] = []
     skipped: list[dict] = []
+    # 考试门禁：项目开启 require_exam 后，标注员须已通过本项目上岗考试
+    first = db.row("SELECT project_id FROM tasks WHERE id=?", (ids[0],)) if ids else None
+    if first:
+        proj = db.row("SELECT id,name,require_exam FROM projects WHERE id=?", (first["project_id"],))
+        if proj and proj.get("require_exam") and user["platform_role"] not in (
+            "platform_admin", "tenant_admin", "project_manager",
+        ) and auth.project_role(user, proj["id"]) != "manager":
+            passed = db.row(
+                "SELECT 1 ok FROM exam_records WHERE project_id=? AND user_id=? AND passed=1",
+                (proj["id"], user["id"]),
+            )
+            if not passed:
+                raise HTTPException(403, f"项目《{proj['name']}》已开启上岗考试，请先在「运营服务 → 培训考核」通过考试后再领取任务")
     for tid in ids:
-        t = db.row("SELECT id,project_id,name,status,assignee_id FROM tasks WHERE id=?", (tid,))
+        t = db.row("SELECT id,project_id,name,status,assignee_id,est_minutes,package_id FROM tasks WHERE id=?", (tid,))
         if not t:
             skipped.append({"id": tid, "reason": "任务不存在"})
             continue
@@ -774,6 +788,15 @@ def claim_tasks(body: dict, user: dict = Depends(me)):
         if not auth.is_admin(user) and auth.project_role(user, t["project_id"]) not in ("annotator", "manager"):
             skipped.append({"id": tid, "reason": "当前角色不能领取该项目任务"})
             continue
+        # 时长配额：任务所属任务包设有 quota_minutes 时按 est_minutes 扣减
+        if t.get("package_id"):
+            pkg = db.row("SELECT quota_minutes,used_minutes FROM task_packages WHERE id=?", (t["package_id"],))
+            if pkg and (pkg["quota_minutes"] or 0) > 0:
+                est = float(t["est_minutes"] or 0.5)
+                remain = float(pkg["quota_minutes"]) - float(pkg["used_minutes"] or 0)
+                if est > remain:
+                    skipped.append({"id": tid, "reason": f"任务包时长配额不足（需 {est}h，剩余 {round(remain, 2)}h）"})
+                    continue
         # 原子领取：状态+负责人在同一条 UPDATE 中校验，避免并发重复领取
         with db.connect() as conn:
             cur = conn.execute(
@@ -785,6 +808,11 @@ def claim_tasks(body: dict, user: dict = Depends(me)):
             hit = cur.rowcount > 0
         if hit:
             claimed.append(tid)
+            if t.get("package_id"):
+                db.execute(
+                    "UPDATE task_packages SET used_minutes=used_minutes+? WHERE id=?",
+                    (float(t["est_minutes"] or 0.5), t["package_id"]),
+                )
             db.notify(user["id"], "任务领取成功", f"{t['name']} · 已加入我的任务", "assign", f"#/annotate/{tid}")
         else:
             skipped.append({"id": tid, "reason": "手慢一步，已被他人领取"})
@@ -825,9 +853,10 @@ def create_package(body: dict, user: dict = Depends(me)):
         raise HTTPException(400, "任务包名称不能为空")
     code = body.get("code") or f"pkg-{uuid.uuid4().hex[:6]}"
     pkg_id = db.execute(
-        "INSERT INTO task_packages(project_id,code,name,description,status,task_count,created_by,created_at,updated_at)"
-        " VALUES(?,?,?,?,?,?,?,?,?)",
-        (pid, code, name, body.get("description") or "", "open", len(task_ids), user["id"], db.now(), db.now()),
+        "INSERT INTO task_packages(project_id,code,name,description,status,task_count,quota_minutes,created_by,"
+        "created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+        (pid, code, name, body.get("description") or "", "open", len(task_ids),
+         max(0.0, float(body.get("quota_minutes") or 0)), user["id"], db.now(), db.now()),
     )
     for tid in task_ids:
         db.execute("INSERT OR IGNORE INTO task_package_items(package_id,task_id) VALUES(?,?)", (pkg_id, tid))
@@ -847,6 +876,9 @@ def package_detail(pkg_id: int, user: dict = Depends(me)):
         (pkg_id,),
     )
     pkg["tasks"] = tasks
+    est = db.row("SELECT COALESCE(SUM(est_minutes),0) s FROM tasks WHERE package_id=?", (pkg["id"],))
+    pkg["est_total_minutes"] = round((est or {}).get("s") or 0, 2)
+    pkg["remain_minutes"] = round((pkg.get("quota_minutes") or 0) - (pkg.get("used_minutes") or 0), 2)
     return pkg
 
 
@@ -1500,6 +1532,187 @@ def run_rules(tid: int, user: dict = Depends(me)):
     result = evaluate_rules(task, _json(ann["payload"], {}), rules)
     result["task_id"] = tid
     return result
+
+
+# ---------------------------------------------------------------- 长音频切分工序
+def _media_duration(path: str) -> float:
+    if path.lower().endswith(".wav"):
+        import wave
+        try:
+            with wave.open(path, "rb") as w:
+                return w.getnframes() / float(w.getframerate() or 1)
+        except Exception:
+            return 0.0
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration", "-of", "csv=p=0", path],
+            capture_output=True, text=True, timeout=30,
+        )
+        return float(out.stdout.strip() or 0)
+    except Exception:
+        return 0.0
+
+
+@job_handler("audio_split")
+def _audio_split_job(j: dict, progress):
+    payload = json.loads(j["payload"] or "{}")
+    pid = int(payload.get("project_id") or 0)
+    minutes = max(0.5, float(payload.get("minutes") or 5))
+    files = payload.get("files") or []
+    project = db.row("SELECT id,modality FROM projects WHERE id=?", (pid,))
+    if not project:
+        raise RuntimeError("目标项目不存在")
+    total_tasks = 0
+    for fi, f in enumerate(files):
+        src, name = f.get("path"), f.get("name") or f"audio-{fi + 1}"
+        if not src or not os.path.exists(src):
+            continue
+        dur = _media_duration(src)
+        if dur <= 0:
+            raise RuntimeError(f"无法读取音频时长：{name}（仅支持 wav，或安装 ffmpeg）")
+        n = max(1, int(dur // (minutes * 60)) + (1 if dur % (minutes * 60) > 15 else 0))
+        stem = re.sub(r"\.[^.]+$", "", os.path.basename(name))
+        for k in range(n):
+            if _canceled(j["id"]):
+                return {"tasks": total_tasks, "canceled": True}
+            out = os.path.join(db.MEDIA_DIR, f"split-{uuid.uuid4().hex[:8]}-{k + 1:02d}.wav")
+            s = k * minutes * 60
+            if shutil.which("ffmpeg"):
+                r = subprocess.run(
+                    ["ffmpeg", "-y", "-v", "error", "-i", src, "-ss", str(s), "-t", str(minutes * 60), out],
+                    capture_output=True, text=True, timeout=300,
+                )
+                if r.returncode != 0 or not os.path.exists(out):
+                    raise RuntimeError(f"切分失败：{r.stderr[:200]}")
+            else:
+                import wave
+                with wave.open(src, "rb") as w:
+                    rate, ch, sw = w.getframerate(), w.getnchannels(), w.getsampwidth()
+                    w.setpos(min(w.getnframes(), int(s * rate)))
+                    frames = w.readframes(int(minutes * 60 * rate))
+                with wave.open(out, "wb") as o:
+                    o.setnchannels(ch); o.setsampwidth(sw); o.setframerate(rate); o.writeframes(frames)
+            db.execute(
+                "INSERT INTO tasks(project_id,name,media_path,media_type,duration,status,assignee_id,reviewer_id,"
+                "priority,batch,est_minutes,created_at,updated_at) VALUES(?,?,?,?,0,'pending',NULL,NULL,'normal',?,?,?,?)",
+                (pid, f"{stem}-{k + 1:02d}", out, "audio", minutes,
+                 payload.get("batch") or "切分批次", db.now(), db.now()),
+            )
+            total_tasks += 1
+            progress(int(((fi + (k + 1) / n) / max(1, len(files))) * 95), f"{name} → {k + 1}/{n} 段")
+    return {"tasks": total_tasks, "minutes": minutes}
+
+
+@router.post("/api/jobs/audio-split")
+async def audio_split(project_id: int = Form(...), minutes: float = Form(5.0), batch: str = Form(""),
+                      files: list[UploadFile] = File(...), user: dict = Depends(me)):
+    """长音频切分工序：上传音频按固定时长切成子任务，可专人切分、再分轮标注。"""
+    if not auth.is_admin(user) and auth.project_role(user, project_id) != "manager":
+        raise HTTPException(403, "仅项目经理可创建切分作业")
+    if not files:
+        raise HTTPException(400, "请上传音频文件")
+    saved = []
+    for f in files[:20]:
+        ext = os.path.splitext(f.filename or "")[1].lower()
+        if ext not in (".wav", ".mp3", ".flac", ".m4a", ".ogg"):
+            raise HTTPException(400, f"不支持的音频格式：{f.filename}")
+        path = os.path.join(db.TMP_DIR, f"split-{uuid.uuid4().hex[:8]}{ext}")
+        with open(path, "wb") as out:
+            shutil.copyfileobj(f.file, out)
+        saved.append({"path": path, "name": f.filename})
+    jid = _start_job("audio_split", f"音频切分 ×{len(saved)}", user,
+                     {"project_id": project_id, "minutes": minutes, "batch": batch, "files": saved},
+                     project_id=project_id)
+    db.log(user["id"], "audio_split", f"job:{jid}", f"{len(saved)} 个文件 × {minutes} 分钟")
+    return {"ok": True, "job_id": jid}
+
+
+# ---------------------------------------------------------------- 考试门禁
+def _paper_out(r: dict) -> dict:
+    r = dict(r)
+    r["questions"] = json.loads(r.get("questions") or "[]")
+    return r
+
+
+@router.get("/api/projects/{pid}/exam-papers")
+def list_exam_papers(pid: int, user: dict = Depends(me)):
+    items = db.rows("SELECT * FROM exam_papers WHERE project_id=? ORDER BY id DESC", (pid,))
+    return {"papers": [_paper_out(r) for r in items]}
+
+
+@router.post("/api/exam-papers")
+def create_exam_paper(body: dict, user: dict = Depends(me)):
+    pid = int(body.get("project_id") or 0)
+    if not auth.is_admin(user) and auth.project_role(user, pid) != "manager":
+        raise HTTPException(403, "仅项目经理可管理试卷")
+    title = (body.get("title") or "").strip()
+    questions = body.get("questions") or []
+    if not title or not questions:
+        raise HTTPException(400, "请填写试卷标题与题目")
+    ts = db.now()
+    pid_out = db.execute(
+        "INSERT INTO exam_papers(project_id,title,pass_score,questions,created_by,created_at,updated_at)"
+        " VALUES(?,?,?,?,?,?,?)",
+        (pid, title, float(body.get("pass_score") or 60),
+         json.dumps(questions, ensure_ascii=False), user["id"], ts, ts),
+    )
+    db.log(user["id"], "create_exam_paper", f"paper:{pid_out}", title)
+    return {"ok": True, "id": pid_out}
+
+
+@router.delete("/api/exam-papers/{paper_id}")
+def delete_exam_paper(paper_id: int, user: dict = Depends(me)):
+    p = db.row("SELECT * FROM exam_papers WHERE id=?", (paper_id,))
+    if not p:
+        raise HTTPException(404, "试卷不存在")
+    if not auth.is_admin(user) and auth.project_role(user, p["project_id"]) != "manager":
+        raise HTTPException(403, "仅项目经理可管理试卷")
+    db.execute("DELETE FROM exam_papers WHERE id=?", (paper_id,))
+    return {"ok": True}
+
+
+@router.post("/api/projects/{pid}/exam-toggle")
+def toggle_exam(pid: int, body: dict, user: dict = Depends(me)):
+    if not auth.is_admin(user) and auth.project_role(user, pid) != "manager":
+        raise HTTPException(403, "仅项目经理可设置考试门禁")
+    db.execute("UPDATE projects SET require_exam=? WHERE id=?", (1 if body.get("on") else 0, pid))
+    db.log(user["id"], "exam_toggle", f"project:{pid}", str(body.get("on")))
+    return {"ok": True, "require_exam": 1 if body.get("on") else 0}
+
+
+@router.get("/api/projects/{pid}/exam-status")
+def exam_status(pid: int, user: dict = Depends(me)):
+    proj = db.row("SELECT id,require_exam,name FROM projects WHERE id=?", (pid,))
+    if not proj:
+        raise HTTPException(404, "项目不存在")
+    papers = db.rows("SELECT id,title,pass_score,questions FROM exam_papers WHERE project_id=? ORDER BY id DESC", (pid,))
+    rec = db.row(
+        "SELECT r.*, p.title paper_title FROM exam_records r JOIN exam_papers p ON p.id=r.paper_id"
+        " WHERE r.project_id=? AND r.user_id=? ORDER BY r.id DESC LIMIT 1", (pid, user["id"]))
+    return {
+        "project": proj,
+        "papers": [_paper_out(r) for r in papers],
+        "latest": rec or {},
+        "need_exam": bool(proj.get("require_exam")) and not (rec and rec.get("passed")),
+    }
+
+
+@router.post("/api/exams/submit")
+def submit_exam(body: dict, user: dict = Depends(me)):
+    paper = db.row("SELECT * FROM exam_papers WHERE id=?", (int(body.get("paper_id") or 0),))
+    if not paper:
+        raise HTTPException(404, "试卷不存在")
+    answers = body.get("answers") or []
+    questions = json.loads(paper["questions"] or "[]")
+    correct = sum(1 for i, q in enumerate(questions) if i < len(answers) and answers[i] == q.get("answer"))
+    score = round(correct * 100 / max(1, len(questions)), 1)
+    passed = 1 if score >= float(paper["pass_score"] or 60) else 0
+    db.execute(
+        "INSERT INTO exam_records(paper_id,project_id,user_id,score,passed,created_at) VALUES(?,?,?,?,?,?)",
+        (paper["id"], paper["project_id"], user["id"], score, passed, db.now()),
+    )
+    db.log(user["id"], "exam_submit", f"paper:{paper['id']}", f"{score} 分 {'通过' if passed else '未通过'}")
+    return {"ok": True, "score": score, "passed": bool(passed), "pass_score": paper["pass_score"]}
 
 
 # ---------------------------------------------------------------- 规范模板库

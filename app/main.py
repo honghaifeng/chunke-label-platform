@@ -344,10 +344,13 @@ LEFT JOIN users r ON r.id=t.reviewer_id
 
 @app.get("/api/tasks")
 def list_tasks(status: str = "", project_id: int = 0, q: str = "", archived: int = 0,
-               page: int = 1, limit: int = 0, user: dict = Depends(me)):
+               page: int = 1, limit: int = 0, modality: str = "", user: dict = Depends(me)):
     where, args = auth.task_scope_sql(user)
     conds = [where, "t.deleted=0", "t.archived=?"]
     vals = list(args) + [1 if archived else 0]
+    if modality:
+        conds.append("t.media_type=?")
+        vals.append(modality)
     if status:
         conds.append("t.status=?")
         vals.append(status)
@@ -485,7 +488,7 @@ def create_task(body: dict, user: dict = Depends(me)):
     reviewer = int(body.get("reviewer_id") or 0) or None
     tid = db.execute(
         "INSERT INTO tasks(project_id,name,media_path,media_type,duration,status,assignee_id,reviewer_id,"
-        "priority,batch,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+        "priority,batch,est_minutes,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             pid,
             name,
@@ -497,6 +500,7 @@ def create_task(body: dict, user: dict = Depends(me)):
             reviewer,
             priority,
             (body.get("batch") or "").strip(),
+            max(0.0, float(body.get("est_minutes") or 0)),
             db.now(),
             db.now(),
         ),
@@ -735,7 +739,10 @@ def run_prelabel(tid: int, body: dict | None = None, user: dict = Depends(me)):
     if task["status"] == "pending":
         db.execute("UPDATE tasks SET status='annotating', updated_at=? WHERE id=?", (db.now(), tid))
     if result.get("duration"):
-        db.execute("UPDATE tasks SET duration=? WHERE id=?", (result["duration"], tid))
+        db.execute(
+            "UPDATE tasks SET duration=?, est_minutes=MAX(est_minutes, ROUND(?/60.0*2)/2.0) WHERE id=?",
+            (result["duration"], result["duration"], tid),
+        )
     kind = "图片" if media_type == "image" else "音频"
     db.log(user["id"], "prelabel", f"task:{tid}", f"{kind}·{result.get('elapsed_ms')}ms / {seg_count} 个")
     return {"ok": True, "prelabel": result}
@@ -761,7 +768,7 @@ def save_annotation(tid: int, body: dict, user: dict = Depends(me)):
         or auth.project_role(user, task["project_id"]) == "manager"
     ):
         raise HTTPException(403, "仅任务标注员可保存标注")
-    if task["status"] in ("submitted", "review", "review_done", "done"):
+    if task["status"] in ("submitted", "review", "review_done", "done", "appeal"):
         raise HTTPException(400, "当前任务状态不可修改标注")
     payload = body.get("payload") or {}
     if task.get("modality") == editing.MODALITY:
@@ -1310,6 +1317,156 @@ def accept_task(tid: int, body: dict, user: dict = Depends(me)):
 # 统计 / 成员 / 设置 / 审计
 # ---------------------------------------------------------------------------
 
+@app.get("/api/tasks/{tid}/segments-detail")
+def segments_detail(tid: int, user: dict = Depends(me)):
+    """语音段级工作明细：分段 + 逐段质检记录（qc_records.item_index 定位）。"""
+    task = _get_task(tid, user)
+    ann = db.row("SELECT payload FROM annotations WHERE task_id=? ORDER BY id DESC LIMIT 1", (tid,))
+    payload = json.loads(ann["payload"]) if ann and ann.get("payload") else {}
+    segs = payload.get("segments") or []
+    reviews = db.rows(
+        "SELECT item_index,result,score,comment,created_at FROM qc_records WHERE task_id=? AND item_index>=0"
+        " ORDER BY id", (tid,))
+    by_seg: dict[int, list] = {}
+    for r in reviews:
+        by_seg.setdefault(r["item_index"], []).append(r)
+    return {
+        "task_id": tid,
+        "segments": [
+            {"index": i, "start": s.get("start"), "end": s.get("end"), "text": s.get("text"), "spk": s.get("spk")}
+            for i, s in enumerate(segs)
+        ],
+        "reviews": {str(k): v for k, v in by_seg.items()},
+    }
+
+
+@app.get("/api/my/errors")
+def my_errors(user_id: int = 0, user: dict = Depends(me)):
+    """错题本：质检驳回记录按错误类型聚合。标注员默认看自己；管理类角色可查团队成员。"""
+    target = user_id or user["id"]
+    if target != user["id"] and user["platform_role"] not in (
+        "platform_admin", "tenant_admin", "project_manager", "reviewer",
+    ) and auth.project_role(user, 0) != "manager":
+        raise HTTPException(403, "无权查看他人错题")
+    ids = auth.visible_project_ids(user)
+    if not ids:
+        return {"items": [], "by_type": [], "total": 0}
+    marks = ",".join("?" * len(ids))
+    rows_ = db.rows(
+        "SELECT q.id,q.task_id,q.error_types,q.comment,q.score,q.item_index,q.created_at,"
+        " t.name task_name,t.project_id,u.name reviewer_name"
+        " FROM qc_records q JOIN tasks t ON t.id=q.task_id LEFT JOIN users u ON u.id=q.reviewer_id"
+        f" WHERE q.result='rejected' AND q.reviewer_id IS NOT NULL AND t.deleted=0 AND t.project_id IN ({marks})"
+        " AND t.assignee_id=?"
+        " ORDER BY q.id DESC LIMIT 200",
+        tuple(ids) + (target,),
+    )
+    counts: dict[str, int] = {}
+    for r in rows_:
+        try:
+            types = json.loads(r.get("error_types") or "[]")
+        except (TypeError, ValueError):
+            types = []
+        for t in types:
+            counts[t] = counts.get(t, 0) + 1
+    for r in rows_:
+        try:
+            r["error_types"] = json.loads(r.get("error_types") or "[]")
+        except (TypeError, ValueError):
+            r["error_types"] = []
+    return {
+        "items": rows_,
+        "by_type": [{"type": k, "count": v} for k, v in sorted(counts.items(), key=lambda x: -x[1])],
+        "total": len(rows_),
+    }
+
+
+@app.post("/api/tasks/{tid}/appeal")
+def appeal_task(tid: int, body: dict, user: dict = Depends(me)):
+    """验收驳回后申请仲裁：任务挂起为 appeal，由平台/项目经理仲裁。"""
+    task = _get_task(tid, user)
+    if task["assignee_id"] != user["id"] and not auth.is_admin(user):
+        raise HTTPException(403, "仅任务标注员可申诉")
+    if task["status"] != "annotating":
+        raise HTTPException(400, "当前状态不可申诉")
+    last = db.row(
+        "SELECT result FROM acceptance_records WHERE task_id=? ORDER BY id DESC LIMIT 1", (tid,))
+    if not last or last["result"] != "rejected":
+        raise HTTPException(400, "仅验收驳回的任务可申诉")
+    pending = db.row("SELECT 1 ok FROM appeal_records WHERE task_id=? AND status='pending'", (tid,))
+    if pending:
+        raise HTTPException(400, "该任务已有待仲裁的申诉")
+    reason = (body.get("reason") or "").strip()
+    if not reason:
+        raise HTTPException(400, "请填写申诉理由")
+    db.execute(
+        "INSERT INTO appeal_records(task_id,applicant_id,reason,status,created_at) VALUES(?,?,?,'pending',?)",
+        (tid, user["id"], reason, db.now()),
+    )
+    db.execute("UPDATE tasks SET status='appeal', updated_at=? WHERE id=?", (db.now(), tid))
+    managers = db.rows(
+        "SELECT user_id FROM project_members WHERE project_id=? AND project_role='manager'",
+        (task["project_id"],),
+    )
+    for m in managers:
+        db.notify(m["user_id"], "任务申诉待仲裁", f"{task['name']} · {reason[:60]}", "rework", f"#/annotate/{tid}")
+    db.log(user["id"], "appeal", f"task:{tid}", reason[:60])
+    return {"ok": True, "status": "appeal"}
+
+
+@app.get("/api/appeals")
+def appeals_list(scope: str = "queue", user: dict = Depends(me)):
+    """仲裁队列（管理角色）或我的申诉（标注员）。"""
+    if scope == "my":
+        rows_ = db.rows(
+            "SELECT a.*, t.name task_name FROM appeal_records a JOIN tasks t ON t.id=a.task_id"
+            " WHERE a.applicant_id=? ORDER BY a.id DESC LIMIT 100", (user["id"],))
+        return {"appeals": rows_}
+    if user["platform_role"] not in ("platform_admin", "tenant_admin", "project_manager"):
+        raise HTTPException(403, "无权查看仲裁队列")
+    ids = auth.visible_project_ids(user)
+    if not ids:
+        return {"appeals": []}
+    marks = ",".join("?" * len(ids))
+    rows_ = db.rows(
+        "SELECT a.*, t.name task_name, t.project_id, u.name applicant_name"
+        " FROM appeal_records a JOIN tasks t ON t.id=a.task_id LEFT JOIN users u ON u.id=a.applicant_id"
+        f" WHERE t.project_id IN ({marks}) ORDER BY CASE a.status WHEN 'pending' THEN 0 ELSE 1 END, a.id DESC LIMIT 200",
+        tuple(ids),
+    )
+    return {"appeals": rows_}
+
+
+@app.post("/api/appeals/{aid}/arbitrate")
+def arbitrate(aid: int, body: dict, user: dict = Depends(me)):
+    if user["platform_role"] not in ("platform_admin", "tenant_admin", "project_manager"):
+        raise HTTPException(403, "仅平台/项目经理可仲裁")
+    a = db.row("SELECT * FROM appeal_records WHERE id=?", (aid,))
+    if not a:
+        raise HTTPException(404, "申诉不存在")
+    if a["status"] != "pending":
+        raise HTTPException(400, "该申诉已处理")
+    result = body.get("result") or ""
+    if result not in ("upheld", "overturned"):
+        raise HTTPException(400, "仲裁结论必须为 upheld（维持驳回）或 overturned（改判通过）")
+    comment = (body.get("comment") or "").strip()
+    task = db.row("SELECT * FROM tasks WHERE id=?", (a["task_id"],))
+    if not task or auth.project_role(user, task["project_id"]) not in ("manager",) and not auth.is_admin(user)             and user["platform_role"] not in ("tenant_admin", "project_manager"):
+        raise HTTPException(403, "无权仲裁该任务")
+    db.execute(
+        "UPDATE appeal_records SET status=?, arbiter_id=?, comment=?, resolved_at=? WHERE id=?",
+        (result, user["id"], comment, db.now(), aid),
+    )
+    if result == "overturned":
+        db.execute("UPDATE tasks SET status='done', progress=100, updated_at=? WHERE id=?", (db.now(), task["id"]))
+        db.notify(task["assignee_id"], "申诉改判通过", f"{task['name']} · 仲裁结论：通过", "accept", f"#/annotate/{task['id']}")
+    else:
+        db.execute("UPDATE tasks SET status='annotating', progress=0, updated_at=? WHERE id=?", (db.now(), task["id"]))
+        db.notify(task["assignee_id"], "申诉未获支持", f"{task['name']} · {comment[:60] or '请按质检意见继续返修'}", "rework", f"#/annotate/{task['id']}")
+    db.log(user["id"], "arbitrate", f"task:{task['id']}", f"{result} {comment[:60]}")
+    return {"ok": True, "result": result}
+
+
 @app.get("/api/stats")
 def stats(user: dict = Depends(me)):
     # 统计口径与任务列表一致：标注员仅统计本人任务，质检员仅统计本人质检任务，
@@ -1574,7 +1731,7 @@ def audit(page: int = 1, limit: int = 60, action: str = "", user: dict = Depends
 @app.get("/api/bootstrap")
 def bootstrap(user: dict = Depends(me)):
     projects = list_projects(user)["projects"]
-    tasks = list_tasks("", 0, "", 0, 1, 0, user)["tasks"]
+    tasks = list_tasks(user=user)["tasks"]
     data = {r["key"]: r["value"] for r in db.rows("SELECT key,value FROM settings")}
     return {
         "user": {**user, "role_label": auth.PLATFORM_ROLES.get(user["platform_role"], "")},

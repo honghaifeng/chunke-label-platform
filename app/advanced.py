@@ -350,12 +350,24 @@ def usage(tenant_id: int = 0, user: dict = Depends(me)):
     u = _tenant_usage(tenant_id)
     t = db.row("SELECT * FROM tenants WHERE id=?", (tenant_id,)) or {}
     price = float(ops.get_setting("billing.price_per_k", "12") or 12)
+    price_h = float(ops.get_setting("billing.price_per_hour", "25") or 25)
+    mode = ops.get_setting("billing.mode", "per_item") or "per_item"
+    minutes = db.row(
+        "SELECT COALESCE(SUM(t.est_minutes),0) s FROM tasks t"
+        " WHERE t.deleted=0 AND t.status='done'"
+    ) or {"s": 0}
     api_calls = (db.row("SELECT COUNT(*) c FROM api_requests WHERE created_at>=?", (db.now()[:7],)) or {}).get("c", 0)
     amount = round(u["annotations"] / 1000 * price, 2)
     return {
         "tenant": t, "usage": u, "quota": {"users": t.get("max_users", 0), "projects": t.get("max_projects", 0),
                                           "storage_gb": t.get("max_storage_gb", 0)},
-        "billing": {"unit_price_per_k": price, "amount": amount, "period": db.now()[:7], "api_calls": api_calls},
+        "billing": {
+            "mode": mode,
+            "unit_price_per_k": price, "unit_price_per_hour": price_h,
+            "amount": amount,
+            "hours_done": round((minutes.get("s") or 0) / 60.0, 2),
+            "period": db.now()[:7], "api_calls": api_calls,
+        },
     }
 
 
@@ -363,7 +375,11 @@ def usage(tenant_id: int = 0, user: dict = Depends(me)):
 def billing_policy(body: dict, user: dict = Depends(me)):
     _admin(user)
     ops.set_setting("billing.price_per_k", str(float(body.get("price_per_k") or 12)))
-    db.log(user["id"], "billing_policy", "system", f"单价 {body.get('price_per_k')}")
+    if body.get("price_per_hour") is not None:
+        ops.set_setting("billing.price_per_hour", str(float(body.get("price_per_hour") or 25)))
+    if body.get("mode") in ("per_item", "per_hour"):
+        ops.set_setting("billing.mode", body["mode"])
+    db.log(user["id"], "billing_policy", "system", f"单价 {body.get('price_per_k')} 模式 {body.get('mode')}")
     return {"ok": True}
 
 
@@ -1316,6 +1332,67 @@ def run_operator(body: dict, user: dict = Depends(me)):
     )
     db.log(user["id"], "operator_run", f"task:{tid}", f"{key} · {result.get('provider')} · {elapsed}ms")
     return {"ok": True, "operator": key, "elapsed_ms": elapsed, "result": result}
+
+
+# ---------------------------------------------------------------------------
+# AI 助手（读取当前任务规范与质检记录做规则问答）
+# ---------------------------------------------------------------------------
+@router.post("/api/assistant/ask")
+def assistant_ask(body: dict, user: dict = Depends(me)):
+    q = str(body.get("question") or "").strip()
+    if not q:
+        raise HTTPException(400, "请输入问题")
+    tid = int(body.get("task_id") or 0)
+    task = None
+    if tid:
+        task = _task(tid, user)
+    context: list[str] = []
+    if task:
+        context.append(f"任务：{task['name']}（批次 {task.get('batch') or '—'}，状态 {task['status']}）")
+        if task.get("instruction"):
+            context.append("标注说明：" + str(task["instruction"]))
+        proj = db.row("SELECT * FROM projects WHERE id=?", (task["project_id"],))
+        if proj and proj.get("spec_id"):
+            spec = db.row("SELECT * FROM spec_templates WHERE id=?", (proj["spec_id"],))
+            if spec:
+                context.append("适用规范《" + spec["name"] + "》：")
+                context.extend([ln.strip() for ln in (spec["content"] or "").split("\n") if ln.strip()])
+        qc = db.rows(
+            "SELECT comment,error_types FROM qc_records WHERE task_id=? AND comment!='' ORDER BY id DESC LIMIT 3",
+            (tid,))
+        for r in qc:
+            context.append("历史质检意见：" + r["comment"])
+    url = ops.get_setting("operator.llm.url")
+    if url:
+        try:
+            res = _call_external(url, {"assistant": True, "question": q, "context": context})
+            answer = res.get("answer") or res.get("polished") or res.get("text") or json.dumps(res, ensure_ascii=False)
+            return {"provider": "external", "answer": str(answer)}
+        except (urllib.error.URLError, TimeoutError, ValueError) as exc:
+            raise HTTPException(502, f"外部助手调用失败：{str(exc)[:200]}")
+    # 内置检索式降级：按关键词命中度从规范/质检上下文中取最相关条目
+    keys = [k for k in re.split(r"[\s，。？！、,.?!]+", q) if len(k) >= 2]
+    scored = []
+    for ln in context:
+        score = sum(1 for k in keys if k in ln)
+        if score:
+            scored.append((score, ln))
+    scored.sort(key=lambda x: -x[0])
+    if scored:
+        hits = []
+        for _, ln in scored[:4]:
+            if ln not in hits:
+                hits.append(ln)
+        answer = "根据当前任务规范与质检记录，以下条目可能与你的问题相关：\n\n" + "\n".join(f"• {h}" for h in hits)
+        if task:
+            answer += "\n\n提示：保存/提交时会自动执行规范校验，违规项会在工作台顶部预警条提示。"
+    else:
+        answer = ("已收到你的问题。当前任务未检索到直接相关的规范条目。\n"
+                  "• 右侧「标注规范」面板可查看全部规范条文与示例截图\n"
+                  "• 保存草稿会自动运行规则校验并列出违规项\n"
+                  "• 配置 operator.llm.url 后可接入真实大模型获得更完整的回答")
+    db.log(user["id"], "assistant_ask", f"task:{tid}", q[:60])
+    return {"provider": "builtin", "answer": answer}
 
 
 # ---------------------------------------------------------------------------

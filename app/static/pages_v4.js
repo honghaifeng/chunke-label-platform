@@ -92,14 +92,20 @@
         ${[['标注条数', data.usage.annotations], ['任务数', data.usage.tasks], ['API 调用（本月）', data.billing.api_calls], ['预估费用', '¥' + data.billing.amount]]
           .map(([k, v]) => `<div class="card"><div class="card-body"><div class="sub">${k}</div><div style="font-size:24px;font-weight:600">${v}</div></div></div>`).join('')}
       </div>
-      <div class="filters" style="margin-top:16px"><span class="hint">单价（元 / 千条）</span>
+      <div class="filters" style="margin-top:16px"><span class="hint">计价模式</span>
+        <select class="input" id="bl-mode" style="width:130px">
+          <option value="per_item" ${data.billing.mode !== 'per_hour' ? 'selected' : ''}>按件（元/千条）</option>
+          <option value="per_hour" ${data.billing.mode === 'per_hour' ? 'selected' : ''}>按时长（元/小时）</option>
+        </select>
         <input class="input" id="bl-price" value="${data.billing.unit_price_per_k}" style="width:110px">
+        <span class="hint">时长单价（元/小时）</span>
+        <input class="input" id="bl-price-h" value="${data.billing.unit_price_per_hour}" style="width:110px">
         <button class="btn primary" id="bl-save">保存计费策略</button>
-        <span class="spacer"></span><span class="hint">存储 ${fmtBytes(data.usage.storage_bytes)} / 配额 ${data.quota.storage_gb} GB</span></div>
+        <span class="spacer"></span><span class="hint">已完成时长 ${data.billing.hours_done}h · 存储 ${fmtBytes(data.usage.storage_bytes)} / 配额 ${data.quota.storage_gb} GB</span></div>
       </div></div>`;
     $('#bl-tenant').onchange = (ev) => { location.hash = `#/console?tab=billing&tenant=${ev.target.value}`; };
     $('#bl-save').onclick = async () => {
-      await api('/api/billing/policy', { method: 'POST', body: { price_per_k: $('#bl-price').value } });
+      await api('/api/billing/policy', { method: 'POST', body: { price_per_k: $('#bl-price').value, price_per_hour: $('#bl-price-h').value, mode: $('#bl-mode').value } });
       toast('计费策略已保存', 'ok');
     };
   }

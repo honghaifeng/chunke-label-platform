@@ -57,3 +57,4 @@ docs/github-recovery-codes.txt
 .ruff_cache/
 .mypy_cache/
 .pytest_cache/
+data/media/split-*

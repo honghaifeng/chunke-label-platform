@@ -384,6 +384,36 @@ CREATE TABLE IF NOT EXISTS sessions(
   created_at TEXT NOT NULL,
   expires_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS exam_papers(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER,
+  title TEXT NOT NULL,
+  pass_score REAL NOT NULL DEFAULT 60,
+  questions TEXT NOT NULL DEFAULT '[]',
+  created_by INTEGER,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS exam_records(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  paper_id INTEGER NOT NULL,
+  project_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  score REAL NOT NULL DEFAULT 0,
+  passed INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS appeal_records(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id INTEGER NOT NULL,
+  applicant_id INTEGER NOT NULL,
+  reason TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending',
+  arbiter_id INTEGER,
+  comment TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  resolved_at TEXT
+);
 CREATE TABLE IF NOT EXISTS spec_templates(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
@@ -699,6 +729,10 @@ def init_db() -> None:
         _ensure_column(conn, "projects", "tenant_id", "INTEGER")
         _ensure_column(conn, "projects", "template_id", "INTEGER")
         _ensure_column(conn, "projects", "spec_id", "INTEGER")
+        _ensure_column(conn, "projects", "require_exam", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "tasks", "est_minutes", "REAL NOT NULL DEFAULT 0")
+        _ensure_column(conn, "task_packages", "quota_minutes", "REAL NOT NULL DEFAULT 0")
+        _ensure_column(conn, "task_packages", "used_minutes", "REAL NOT NULL DEFAULT 0")
         _ensure_column(conn, "tasks", "workflow_id", "INTEGER")
         _ensure_column(conn, "tasks", "dataset_id", "INTEGER")
         _ensure_column(conn, "tasks", "qc_required", "INTEGER NOT NULL DEFAULT 1")
@@ -751,6 +785,7 @@ def init_db() -> None:
         _migrate_accept_perm()
         _migrate_v7()
         _migrate_v8()
+        _migrate_v9()
         normalize_media_paths()
         return
 
@@ -888,6 +923,7 @@ def init_db() -> None:
     _migrate_accept_perm()
     _migrate_v7()
     _migrate_v8()
+    _migrate_v9()
     normalize_media_paths()
     log(uids["admin"], "init", "system", "初始化平台数据与演示任务")
 
@@ -1196,6 +1232,36 @@ def _migrate_v7() -> None:
     execute(
         "INSERT OR IGNORE INTO schema_migrations(version,name,applied_at) VALUES(?,?,?)",
         (7, "验收员演示账号与质检员指派清理", ts),
+    )
+
+
+def _migrate_v9() -> None:
+    """v9：语音时长配额（est_minutes 回填）+ 考试门禁演示试卷（默认关闭）。"""
+    if row("SELECT 1 ok FROM schema_migrations WHERE version=9"):
+        return
+    ts = now()
+    execute(
+        "UPDATE tasks SET est_minutes=MAX(0.5, ROUND(duration/60.0*2)/2.0)"
+        " WHERE est_minutes=0 AND duration>0"
+    )
+    proj = row("SELECT id FROM projects WHERE code='voice-cs'")
+    if proj and not row("SELECT 1 ok FROM exam_papers WHERE project_id=?", (proj["id"],)):
+        questions = [
+            {"q": "客户通话中转写文本出现同音错别字，应如何处理？", "options": ["直接忽略", "按发音校对标记错读并修正", "删除该分段", "整单退回"], "answer": 1},
+            {"q": "分段结束时间超过实际说话结束点 0.5 秒，属于哪类质检错误？", "options": ["漏标", "错标", "框选偏差", "切分偏差"], "answer": 3},
+            {"q": "客户情绪激动但未达到愤怒级别，情绪强度应标为？", "options": ["中性-3", "不满-4", "愤怒-5", "满意-2"], "answer": 1},
+            {"q": "下列哪种情况必须填写质检/返修意见？", "options": ["质检通过", "驳回返修（流程要求时）", "免检通过", "保存草稿"], "answer": 1},
+            {"q": "说话人标签中，坐席与第三方同时发声应标记为？", "options": ["只标坐席", "只标第三方", "重叠发言事件+主说话人", "拆成两段"], "answer": 2},
+        ]
+        execute(
+            "INSERT INTO exam_papers(project_id,title,pass_score,questions,created_by,created_at,updated_at)"
+            " VALUES(?,?,?,?,?,?,?)",
+            (proj["id"], "语音客服标注上岗考试（演示）", 80,
+             json.dumps(questions, ensure_ascii=False), 2, ts, ts),
+        )
+    execute(
+        "INSERT OR IGNORE INTO schema_migrations(version,name,applied_at) VALUES(?,?,?)",
+        (9, "时长配额维度与考试门禁", ts),
     )
 
 

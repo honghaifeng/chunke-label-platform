@@ -61,6 +61,7 @@ const STATUS = {
   draft: ['草稿', 'plain'],
   approved: ['已通过', 'done'],
   rejected: ['已驳回', 'danger'],
+  appeal: ['申诉中', 'purple'],
 };
 const statusChip = (s) => {
   const [label, cls] = STATUS[s] || [s, 'plain'];
@@ -280,9 +281,12 @@ const NAV_PERM = {
 const PROJECT_NAV_BY_ROLE = {
   annotator: [
     ['dashboard', '工作台', 'dashboard'],
+    ['bench-audio', '语音工作台', 'audio', '', '#/tasks?modality=audio'],
+    ['bench-image', '图像工作台', 'image', '', '#/tasks?modality=image'],
     ['tasks', '我的任务', 'tasks'],
     ['hall', '任务大厅', 'tasks'],
     ['issues', '问题清单', 'qc'],
+    ['errors', '我的错题', 'qc'],
     ['help', '帮助中心', 'search'],
     ['preferences', '个人偏好', 'members'],
   ],
@@ -291,6 +295,7 @@ const PROJECT_NAV_BY_ROLE = {
     ['qc', '质检中心', 'qc'],
     ['quality', '规则质检', 'shield'],
     ['issues', '问题清单', 'qc'],
+    ['errors', '团队错题', 'qc'],
     ['help', '帮助中心', 'search'],
     ['preferences', '个人偏好', 'members'],
   ],
@@ -330,11 +335,11 @@ function hrefFor(key) {
 }
 
 function shell(active, content, crumb = '') {
-  const nav = navDef().map(([key, label, ico]) => {
+  const nav = navDef().map(([key, label, ico, , href]) => {
     const badge = key === 'qc'
       ? '<b class="tag" id="nav-qc-count">0</b>'
       : key === 'acceptance' ? '<b class="tag" id="nav-accept-count">0</b>' : '';
-    return `<a class="nav-item ${active === key ? 'active' : ''}" href="${hrefFor(key)}" title="${esc(label)}" aria-current="${active === key ? 'page' : 'false'}">${icon(ico)}<span>${label}</span>${badge}</a>`;
+    return `<a class="nav-item ${active === key ? 'active' : ''}" href="${href || hrefFor(key)}" title="${esc(label)}" aria-current="${active === key ? 'page' : 'false'}">${icon(ico)}<span>${label}</span>${badge}</a>`;
   }).join('');
   const role = state.user.role_label || '';
   const ctx = state.context || {};
@@ -366,6 +371,17 @@ function shell(active, content, crumb = '') {
       </div>
       <div class="page" id="page">${content}</div>
     </div>
+  </div>
+  <button id="ai-bubble" title="AI 助手（读取当前任务规范与质检记录）" style="position:fixed;right:22px;bottom:22px;z-index:60;width:46px;height:46px;border-radius:50%;border:1px solid rgba(59,130,246,.5);background:linear-gradient(135deg,#1D4ED8,#3B82F6);color:#fff;cursor:pointer;font-size:19px;box-shadow:0 4px 16px rgba(29,78,216,.4)">✦</button>
+  <div id="ai-panel" style="display:none;position:fixed;right:22px;bottom:78px;z-index:60;width:340px;max-height:64vh;background:var(--panel);border:1px solid var(--border);border-radius:12px;box-shadow:0 10px 34px rgba(0,0,0,.5);flex-direction:column;overflow:hidden">
+    <div style="padding:10px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px">
+      <b style="font-size:13px">AI 标注助手</b><span class="hint" id="ai-ctx"></span>
+      <button class="x" id="ai-close" style="margin-left:auto">×</button></div>
+    <div id="ai-msgs" style="flex:1;overflow:auto;padding:10px 14px;font-size:12.5px;line-height:1.8"></div>
+    <div style="padding:10px 14px;border-top:1px solid var(--border)">
+      <div style="display:flex;gap:6px">
+        <input class="input" id="ai-input" placeholder="问规范、问质检意见…" style="flex:1;font-size:12.5px" />
+        <button class="btn sm primary" id="ai-send">发送</button></div></div>
   </div>`;
 }
 
@@ -387,9 +403,47 @@ function mount(active, crumb, content) {
   };
   $('#user-chip').onclick = () => userMenu();
   $('#tenant-switch').onclick = () => tenantSwitcher();
+  bindAssistant();
   const nb = $('#notif-btn');
   if (nb) nb.onclick = () => { if (window.CK_OPEN_NOTIFICATIONS) window.CK_OPEN_NOTIFICATIONS(); };
   if (window.CK_AFTER_MOUNT) window.CK_AFTER_MOUNT(active);
+}
+
+/* ---------------- AI 助手 ---------------- */
+function bindAssistant() {
+  const bubble = $('#ai-bubble');
+  const panel = $('#ai-panel');
+  if (!bubble || bubble._bound) return;
+  bubble._bound = true;
+  const tid = () => { const m = location.hash.match(/#\/annotate\/(\d+)/); return m ? Number(m[1]) : 0; };
+  bubble.onclick = () => {
+    panel.style.display = panel.style.display === 'none' ? 'flex' : 'none';
+    $('#ai-ctx').textContent = tid() ? `任务 #${tid()}` : '未在任务页';
+    if (panel.style.display === 'flex' && !$('#ai-msgs').children.length) {
+      $('#ai-msgs').innerHTML = '<div class="hint">我是标注助手，能基于当前任务的规范条文与历史质检意见回答问题。配置 operator.llm.url 后可接入大模型。</div>';
+    }
+  };
+  $('#ai-close').onclick = () => { panel.style.display = 'none'; };
+  const send = async () => {
+    const input = $('#ai-input');
+    const q = input.value.trim();
+    if (!q) return;
+    input.value = '';
+    const box = $('#ai-msgs');
+    box.insertAdjacentHTML('beforeend', `<div style="text-align:right;margin:6px 0"><span style="display:inline-block;background:rgba(59,130,246,.18);padding:5px 10px;border-radius:9px;max-width:88%">${esc(q)}</span></div>`);
+    box.insertAdjacentHTML('beforeend', `<div id="ai-thinking" class="hint" style="margin:6px 0">思考中…</div>`);
+    box.scrollTop = box.scrollHeight;
+    try {
+      const r = await api('/api/assistant/ask', { method: 'POST', body: { question: q, task_id: tid() } });
+      $('#ai-thinking').remove();
+      box.insertAdjacentHTML('beforeend', `<div style="margin:6px 0"><span style="display:inline-block;background:rgba(148,163,184,.1);padding:6px 10px;border-radius:9px;max-width:95%;white-space:pre-wrap">${esc(r.answer)}</span><div class="hint" style="font-size:10.5px;margin-top:2px">${r.provider === 'external' ? '外部模型' : '内置检索'}</div></div>`);
+    } catch (err) {
+      const th = $('#ai-thinking'); if (th) th.textContent = err.message;
+    }
+    box.scrollTop = box.scrollHeight;
+  };
+  $('#ai-send').onclick = send;
+  $('#ai-input').onkeydown = (e) => { if (e.key === 'Enter') send(); };
 }
 
 async function tenantSwitcher() {
@@ -513,6 +567,8 @@ async function route() {
     else if (page === 'org') await pageOrg();
     else if (page === 'openapi') await pageOpenapi();
     else if (page === 'members') await pageMembers();
+    else if (page === 'errors') await pageErrors();
+    else if (page === 'appeals') await pageAppeals();
     else if (page === 'stats') await pageStats();
     else if (page === 'settings') await pageSettings();
     else if (window.CK_PAGES && window.CK_PAGES[page]) await window.CK_PAGES[page](query, id);
@@ -631,9 +687,11 @@ async function pageDashboard() {
 async function pageTasks(query) {
   const q = query.get('q') || '';
   const pid = query.get('project') || '';
+  const modality = query.get('modality') || '';
   const params = new URLSearchParams();
   if (q) params.set('q', q);
   if (pid) params.set('project_id', pid);
+  if (modality) params.set('modality', modality);
   const data = await api('/api/tasks?' + params.toString());
   state.tasks = data.tasks;
   const tasks = data.tasks;
@@ -649,10 +707,13 @@ async function pageTasks(query) {
         <button data-st="annotating">标注中</button><button data-st="__rework__">返修中</button>
         <button data-st="submitted">待质检</button><button data-st="review">质检中</button>
         <button data-st="review_done">待验收</button><button data-st="paused">已暂停</button>
+        <button data-st="appeal">申诉中</button>
         <button data-st="done">已完成</button>
       </div>
       <select class="select" id="filter-project" style="width:190px"><option value="">全部项目</option>${projOptions}</select>
       <span class="spacer"></span>
+      ${modality ? `<span class="chip info">${esc(({audio:'语音',image:'图片',video:'视频',text:'文本',pointcloud:'点云',llm:'大模型',pdf:'PDF',multimodal:'多模态'})[modality] || modality)}工作台</span>
+        <a class="btn sm ghost" href="${hrefFor('tasks')}">查看全部</a>` : ''}
       <span class="tag">共 ${tasks.length} 条</span>
     </div>
     <div class="card"><div class="table-wrap">
@@ -884,6 +945,8 @@ async function pageAnnotate(id) {
   };
   state.wb = wb;
 
+  // 申诉横幅与入口（验收驳回后可申请仲裁；申诉中任务只读）
+  setTimeout(() => mountAppealUI(task), 0);
   if (mediaType === 'image') {
     renderImageWorkbench(wb, classes, qc);
   } else if (mediaType === 'audio') {
@@ -1493,7 +1556,9 @@ function loadAudio(url, wb) {
       return ctx.decodeAudioData(buf).then((ab) => {
         wb.buffer = ab;
         wb.duration = wb.duration || ab.duration;
-        wb.peaks = calcPeaks(ab, 1400);
+        wb.peaks = calcPeaks(ab, Math.min(32768, Math.max(2000, Math.floor(ab.duration * 100))));
+        wb.viewStart = 0;
+        wb.viewEnd = wb.duration || ab.duration;
         drawWave(wb);
       });
     })
@@ -1527,27 +1592,37 @@ function drawWave(wb, playheadOnly = false) {
   ctx.fillRect(0, 0, w, h);
 
   const dur = wb.duration || 1;
+  const vs = Math.max(0, wb.viewStart || 0);
+  const ve = Math.min(dur, wb.viewEnd || dur);
+  const span = Math.max(0.5, ve - vs);
   const padL = 10, padR = 10;
   const plotW = w - padL - padR;
+  const tx = (t) => padL + ((t - vs) / span) * plotW;
   const rulerY = 18;
   ctx.strokeStyle = '#1C2B44';
   ctx.fillStyle = '#5B6B85';
   ctx.font = '9px ui-monospace, monospace';
-  const step = dur > 60 ? 10 : dur > 20 ? 5 : 2;
-  for (let t = 0; t <= dur; t += step) {
-    const x = padL + (t / dur) * plotW;
+  const step = span > 300 ? 60 : span > 120 ? 30 : span > 60 ? 10 : span > 20 ? 5 : span > 8 ? 2 : 1;
+  for (let t = Math.ceil(vs / step) * step; t <= ve + 1e-6; t += step) {
+    const x = tx(t);
     ctx.beginPath(); ctx.moveTo(x, rulerY); ctx.lineTo(x, h); ctx.stroke();
     ctx.fillText(fmtShort(t), x + 3, 12);
   }
+  // 窗口指示（相对整段的位置）
+  ctx.fillStyle = 'rgba(59,130,246,.25)';
+  ctx.fillRect(padL + (vs / dur) * plotW, h - 3, Math.max(2, (span / dur) * plotW), 3);
 
-  // 波形
+  // 波形（仅绘制视窗内峰值）
   const midY = 74;
   const amp = 40;
   if (wb.peaks && wb.peaks.length) {
     ctx.fillStyle = 'rgba(59,130,246,.55)';
-    const bars = Math.min(plotW, wb.peaks.length);
+    const p0 = Math.max(0, Math.floor((vs / dur) * wb.peaks.length));
+    const p1 = Math.min(wb.peaks.length, Math.ceil((ve / dur) * wb.peaks.length));
+    const n = Math.max(1, p1 - p0);
+    const bars = Math.min(plotW, n);
     for (let i = 0; i < bars; i++) {
-      const v = wb.peaks[Math.floor((i / bars) * wb.peaks.length)];
+      const v = wb.peaks[p0 + Math.floor((i / bars) * n)];
       const bh = Math.max(1, v * amp * 2);
       ctx.fillRect(padL + i, midY - bh / 2, 1.2, bh);
     }
@@ -1556,13 +1631,14 @@ function drawWave(wb, playheadOnly = false) {
     ctx.beginPath(); ctx.moveTo(padL, midY); ctx.lineTo(w - padR, midY); ctx.stroke();
   }
 
-  // 分段轨道
+  // 分段轨道（视窗内）
   const laneY = 132, laneH = 30;
   wb.segments.forEach((s, i) => {
     const speakers = speakerList(wb);
     const color = SPK_COLORS[Math.max(0, speakers.indexOf(s.spk)) % SPK_COLORS.length];
-    const x1 = padL + (Math.max(0, s.start) / dur) * plotW;
-    const x2 = padL + (Math.min(dur, Math.max(s.end, s.start + 0.05)) / dur) * plotW;
+    const s0 = Math.max(vs, s.start), s1 = Math.min(ve, Math.max(s.end, s.start + 0.05));
+    if (s1 <= vs || s0 >= ve) return;
+    const x1 = tx(s0), x2 = tx(s1);
     ctx.fillStyle = color + '33';
     ctx.strokeStyle = color;
     ctx.lineWidth = 1;
@@ -1575,7 +1651,7 @@ function drawWave(wb, playheadOnly = false) {
   ctx.fillRect(padL, laneY + 34, plotW, 1);
 
   // 播放指针
-  const ph = padL + (Math.min(dur, wb.currentTime || 0) / dur) * plotW;
+  const ph = tx(Math.min(ve, Math.max(vs, wb.currentTime || 0)));
   ctx.strokeStyle = playheadOnly ? '#F87171' : '#EF4444';
   ctx.lineWidth = 1.5;
   ctx.beginPath(); ctx.moveTo(ph, 20); ctx.lineTo(ph, h - 4); ctx.stroke();
@@ -2685,11 +2761,45 @@ function bindWorkbench(wb, mediaName) {
   $('#btn-fwd10').onclick = () => { if (audio) audio.currentTime = Math.min(wb.duration, audio.currentTime + 10); };
   $('#rate').onchange = (e) => { if (audio) audio.playbackRate = Number(e.target.value); };
 
+  // 波形缩放/平移：滚轮以光标为中心缩放，拖拽平移，点击定位播放
+  const zoomWave = (e) => {
+    const dur = wb.duration || 1;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left - 10) / (rect.width - 20)));
+    const vs = wb.viewStart || 0, ve = wb.viewEnd || dur;
+    const span = Math.max(0.5, ve - vs);
+    const tc = vs + ratio * span;
+    const factor = e.deltaY > 0 ? 1.3 : 1 / 1.3;
+    const newSpan = Math.max(1, Math.min(dur, span * factor));
+    wb.viewStart = Math.max(0, Math.min(dur - newSpan, tc - (tc - vs) * (newSpan / span)));
+    wb.viewEnd = wb.viewStart + newSpan;
+    drawWave(wb);
+  };
+  $('#wave').onwheel = (e) => { e.preventDefault(); if (wb.duration) zoomWave(e); };
+  let wDrag = null;
+  $('#wave').onmousedown = (e) => { wDrag = { x: e.clientX, moved: false }; };
+  window.addEventListener('mousemove', (e) => {
+    if (!wDrag || !wb.duration) return;
+    const dx = e.clientX - wDrag.x;
+    if (Math.abs(dx) > 3) wDrag.moved = true;
+    if (!wDrag.moved) return;
+    const dur = wb.duration;
+    const rect = $('#wave').getBoundingClientRect();
+    const span = Math.max(0.5, (wb.viewEnd || dur) - (wb.viewStart || 0));
+    const dsec = (dx / Math.max(1, rect.width - 20)) * span;
+    const ns = Math.max(0, Math.min(dur - span, (wb.viewStart || 0) - dsec));
+    wb.viewStart = ns; wb.viewEnd = ns + span;
+    wDrag.x = e.clientX;
+    drawWave(wb);
+  });
+  window.addEventListener('mouseup', () => { if (wDrag) setTimeout(() => { wDrag = null; }, 0); });
   $('#wave').onclick = (e) => {
-    if (!audio) return;
+    if (!audio || (wDrag && wDrag.moved)) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const ratio = (e.clientX - rect.left - 10) / (rect.width - 20);
-    audio.currentTime = Math.max(0, Math.min(wb.duration, ratio * wb.duration));
+    const dur = wb.duration || 1;
+    const vs = wb.viewStart || 0, span = Math.max(0.5, (wb.viewEnd || dur) - vs);
+    audio.currentTime = Math.max(0, Math.min(dur, vs + ratio * span));
     wb.currentTime = audio.currentTime;
     updateTimeLabel(wb); drawWave(wb, true);
   };
@@ -2916,6 +3026,40 @@ async function save(wb, silent = false) {
   }
 }
 
+/* 申诉 UI：横幅 + 申请仲裁按钮（标注页头部注入） */
+function mountAppealUI(task) {
+  const head = document.querySelector('.wb-head');
+  if (!head) return;
+  const me = state.user || {};
+  const isAssignee = task.assignee_id === me.id;
+  let existing = $('#appeal-banner');
+  if (existing) existing.remove();
+  if (task.status === 'appeal') {
+    head.insertAdjacentHTML('beforeend', `<div id="appeal-banner" style="flex-basis:100%;border:1px solid rgba(139,92,246,.5);background:rgba(139,92,246,.1);border-radius:8px;padding:8px 12px;font-size:12.5px;color:#C4B5FD">
+      该任务正在申诉仲裁中，标注已锁定。仲裁结论：维持驳回则返回返修，改判通过则直接完成。</div>`);
+    return;
+  }
+  if (!isAssignee || !['annotating', 'review'].includes(task.status)) return;
+  // 最近一次验收为驳回 → 允许申诉
+  fetch(`/api/acceptance`, { credentials: 'same-origin' }).then(() => {}).catch(() => {});
+  const btn = document.createElement('button');
+  btn.className = 'btn sm ghost';
+  btn.style.marginLeft = '8px';
+  btn.textContent = '申请仲裁';
+  btn.title = '对最近一次验收驳回结果申诉';
+  btn.onclick = async () => {
+    const reason = prompt('申诉理由（说明为何验收结论不当）：');
+    if (!reason || !reason.trim()) return;
+    try {
+      await api(`/api/tasks/${task.id}/appeal`, { method: 'POST', body: { reason: reason.trim() } });
+      toast('申诉已提交，任务进入仲裁队列', 'ok');
+      setTimeout(() => pageAnnotate(task.id), 400);
+    } catch (err) { toast(err.message, 'err'); }
+  };
+  const actions = head.querySelector('.wb-actions');
+  if (actions) actions.appendChild(btn);
+}
+
 /* ---------------- 质检中心 ---------------- */
 async function pageQC() {
   const data = await api('/api/qc');
@@ -2932,10 +3076,12 @@ async function pageQC() {
         <td><div class="name">${esc(t.name)}</div><div class="sub">#${t.id} · ${esc(t.modality_label)}</div></td>
         <td>${esc(t.project_name)}</td><td>${esc(t.assignee_name || '—')}</td><td class="mono">${esc(t.batch || '—')}</td>
         <td class="mono">${esc((t.updated_at || '').slice(5, 16))}</td>
-        <td class="right"><button class="btn sm primary" data-review="${t.id}">开始质检</button></td></tr>`).join('') || '<tr><td colspan="7" class="empty"><b>质检队列为空</b>所有提交任务均已完成复核</td></tr>'}</tbody></table>
+        <td class="right"><button class="btn sm ghost" data-seg-detail="${t.id}">明细</button>
+        <button class="btn sm primary" data-review="${t.id}">开始质检</button></td></tr>`).join('') || '<tr><td colspan="7" class="empty"><b>质检队列为空</b>所有提交任务均已完成复核</td></tr>'}</tbody></table>
     </div></div>`;
   mount('qc', '质检中心', content);
   $$('[data-review]').forEach((b) => (b.onclick = () => openReview(Number(b.dataset.review))));
+  $$('[data-seg-detail]').forEach((b) => (b.onclick = () => openSegDetail(Number(b.dataset.segDetail))));
   const all = $('#qc-ck-all');
   if (all) all.onchange = () => $$('.qc-ck').forEach((c) => { c.checked = all.checked; });
   $('#qc-batch-approve').onclick = () => runBatchReview(tasks, 'approved');
@@ -3049,6 +3195,8 @@ async function openReview(tid) {
       <div class="divider"></div>
       <div class="form-grid">
         <div class="field"><label>质检评分（0-100）</label><input class="input" type="number" id="qc-score" min="0" max="100" value="${resultCount ? 85 : 60}" /></div>
+        ${segs.length ? `<div class="field"><label>问题段定位（可选）</label><select class="select" id="qc-item">
+          <option value="-1">整单</option>${segs.map((s, i) => `<option value="${i}">段${i + 1} · ${Number(s.start).toFixed(1)}s ${esc((s.text || '').slice(0, 14))}</option>`).join('')}</select></div>` : ''}
         <div class="field"><label>业务分类</label><input class="input" value="${esc(payload.business || '未分类')}" disabled /></div>
         <div class="field full"><label>错误类型（驳回时勾选）</label><div class="filters" id="qc-errors">
           ${['漏标', '错标', '框选偏差', '标签错误', '属性错误', '其他'].map((x) => `<label class="toggle-wrap"><input type="checkbox" value="${x}"> ${x}</label>`).join('')}
@@ -3084,7 +3232,11 @@ async function openReview(tid) {
     try {
       await api(`/api/tasks/${tid}/review`, {
         method: 'POST',
-        body: { result, score: Number($('#qc-score').value) || 0, comment: $('#qc-comment').value.trim(), error_types: $$('#qc-errors input:checked').map((x) => x.value) },
+        body: {
+          result, score: Number($('#qc-score').value) || 0, comment: $('#qc-comment').value.trim(),
+          error_types: $$('#qc-errors input:checked').map((x) => x.value),
+          item_index: Number(($('#qc-item') || { value: -1 }).value),
+        },
       });
       closeModal(); toast(result === 'approved' ? '质检通过，已进入待验收' : '已驳回，任务回到标注中', 'ok');
       pageQC();
@@ -3095,6 +3247,100 @@ async function openReview(tid) {
     if (!$('#qc-comment').value.trim()) return toast('驳回时请填写返修意见', 'warn');
     submit('rejected');
   };
+}
+
+/* ---------------- 错题本 ---------------- */
+async function pageErrors() {
+  const isManager = ['platform_admin', 'tenant_admin', 'project_manager', 'reviewer'].includes(state.user.platform_role);
+  let userId = 0;
+  const data = await api('/api/my/errors');
+  const draw = async (d) => {
+    $('#errors-body').innerHTML = `
+      <div class="grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:14px">
+        <div class="kpi"><div class="kpi-label">累计驳回</div><div class="kpi-value">${d.total}</div></div>
+        ${(d.by_type || []).slice(0, 3).map((t) => `<div class="kpi"><div class="kpi-label">${esc(t.type)}</div><div class="kpi-value">${t.count}</div><div class="kpi-delta">次</div></div>`).join('')}
+      </div>
+      <div class="card"><div class="table-wrap"><table class="table">
+        <thead><tr><th>任务</th><th>错误类型</th><th>质检意见</th><th>质检员</th><th>时间</th><th class="right">操作</th></tr></thead>
+        <tbody>${(d.items || []).map((it) => `<tr>
+          <td><div class="name">${esc(it.task_name)}</div><div class="sub">#${it.task_id}${it.item_index >= 0 ? ` · 第 ${it.item_index + 1} 段` : ''}</div></td>
+          <td>${(it.error_types || []).map((t) => `<span class="chip danger">${esc(t)}</span>`).join(' ') || '—'}</td>
+          <td class="hint" style="max-width:280px">${esc(it.comment || '—')}</td>
+          <td>${esc(it.reviewer_name || '—')}</td>
+          <td class="mono">${esc((it.created_at || '').slice(5, 16))}</td>
+          <td class="right"><a class="btn sm ghost" href="#/annotate/${it.task_id}">查看任务</a></td></tr>`).join('') || '<tr><td colspan="6" class="empty">没有错题记录，保持！</td></tr>'}</tbody>
+      </table></div></div>`;
+  };
+  let members = [];
+  if (isManager) {
+    try { members = (await api('/api/members')).members || []; } catch (e) { members = []; }
+  }
+  const content = `
+    <div class="page-head"><div><h1 class="page-title">错题本</h1><p class="page-sub">质检驳回按错误类型聚合，把每次返修变成可复习的资产</p></div>
+      ${isManager && members.length ? `<div class="page-actions"><select class="select" id="err-user" style="width:180px"><option value="">全部成员</option>${members.map((m) => `<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select></div>` : ''}</div>
+    <div id="errors-body"></div>`;
+  mount('errors', '错题本', content);
+  try {
+    await draw(data);
+  } catch (e) {
+    $('#errors-body').innerHTML = `<div class="empty"><b>加载失败</b>${esc(e.message)}</div>`;
+  }
+  const sel = $('#err-user');
+  if (sel) sel.onchange = async () => draw(await api(`/api/my/errors?user_id=${sel.value || 0}`));
+}
+
+/* 段级工作明细（长音频标注和质检明细） */
+async function openSegDetail(tid) {
+  const d = await api(`/api/tasks/${tid}/segments-detail`);
+  const rows = (d.segments || []).map((s) => {
+    const rs = (d.reviews || {})[String(s.index)] || [];
+    const last = rs[rs.length - 1] || {};
+    return `<tr>
+      <td class="mono">段${s.index + 1}</td>
+      <td class="mono">${Number(s.start || 0).toFixed(2)} - ${Number(s.end || 0).toFixed(2)}</td>
+      <td>${esc(s.spk || '—')}</td>
+      <td class="hint" style="max-width:260px">${esc(s.text || '—')}</td>
+      <td>${last.result ? (last.result === 'approved' ? '<span class="chip done">通过</span>' : '<span class="chip danger">驳回</span>') : '<span class="hint">未质检</span>'}</td>
+      <td class="hint">${esc(last.comment || '—')}</td></tr>`;
+  }).join('') || '<tr><td colspan="6" class="empty">无分段数据（质检时选择"问题段定位"可生成逐段记录）</td></tr>';
+  openModal(`<div class="modal-head"><h3>段级工作明细 · 任务 #${tid}</h3><button class="x" data-close>×</button></div>
+    <div class="modal-body" style="max-height:60vh;overflow:auto"><table class="table">
+      <thead><tr><th>段</th><th>时间轴</th><th>说话人</th><th>文本</th><th>质检结论</th><th>质检意见</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>
+    <div class="modal-foot"><button class="btn ghost" data-close>关闭</button></div>`, 'wide');
+}
+
+/* ---------------- 仲裁队列 ---------------- */
+async function pageAppeals() {
+  const data = await api('/api/appeals?scope=queue');
+  const items = data.appeals || [];
+  const content = `
+    <div class="page-head"><div><h1 class="page-title">申诉仲裁</h1><p class="page-sub">标注员对验收驳回的申诉，仲裁结论全程留痕</p></div></div>
+    <div class="card"><div class="table-wrap"><table class="table">
+      <thead><tr><th>任务</th><th>申诉人</th><th>申诉理由</th><th>状态</th><th>时间</th><th class="right">操作</th></tr></thead>
+      <tbody>${items.map((a) => `<tr>
+        <td><div class="name">${esc(a.task_name)}</div><div class="sub">#${a.task_id}</div></td>
+        <td>${esc(a.applicant_name || '—')}</td>
+        <td class="hint" style="max-width:260px">${esc(a.reason)}</td>
+        <td>${a.status === 'pending' ? '<span class="chip pending">待仲裁</span>'
+          : a.status === 'overturned' ? '<span class="chip done">改判通过</span>' : '<span class="chip danger">维持驳回</span>'}</td>
+        <td class="mono">${esc((a.created_at || '').slice(5, 16))}</td>
+        <td class="right">${a.status === 'pending' ? `<button class="btn sm primary" data-arb="${a.id}">仲裁</button>` : `<span class="hint">${esc(a.comment || '')}</span>`}</td></tr>`).join('') || '<tr><td colspan="6" class="empty">暂无申诉</td></tr>'}</tbody>
+    </table></div></div>`;
+  mount('appeals', '申诉仲裁', content);
+  $$('[data-arb]').forEach((b) => {
+    b.onclick = () => {
+      openModal(`<div class="modal-head"><h3>仲裁</h3><button class="x" data-close>×</button></div>
+        <div class="modal-body"><div class="field"><label>仲裁结论</label><select class="select" id="arb-result">
+          <option value="upheld">维持驳回（返回返修）</option><option value="overturned">改判通过（任务完成）</option></select></div>
+        <div class="field"><label>仲裁意见</label><textarea class="input textarea" id="arb-comment"></textarea></div></div>
+        <div class="modal-foot"><button class="btn ghost" data-close>取消</button><button class="btn primary" id="arb-ok">提交仲裁</button></div>`);
+      $('#arb-ok').onclick = async () => {
+        await api(`/api/appeals/${b.dataset.arb}/arbitrate`, { method: 'POST', body: { result: $('#arb-result').value, comment: $('#arb-comment').value.trim() } });
+        closeModal(); toast('仲裁完成', 'ok'); pageAppeals();
+      };
+    };
+  });
 }
 
 /* ---------------- 验收中心 ---------------- */

@@ -76,9 +76,16 @@
         <select class="select" id="hall-proj" style="width:180px"><option value="0">全部项目</option>${projectOpts(pid)}</select>
         <button class="btn primary" id="hall-claim">领取选中任务</button>`)}
       <div class="grid three-col" id="pkg-list">
-        ${pkgs.packages.map((p) => `<div class="card"><div class="card-head"><h3 class="card-title">${esc(p.name)}</h3><span class="card-sub">${p.task_count} 个任务</span></div>
+        ${pkgs.packages.map((p) => {
+          const quota = Number(p.quota_minutes || 0);
+          const used = Number(p.used_minutes || 0);
+          return `<div class="card"><div class="card-head"><h3 class="card-title">${esc(p.name)}</h3><span class="card-sub">${p.task_count} 个任务${quota ? ` · ${quota}h 配额` : ''}</span></div>
           <div class="card-body"><div class="hint" style="margin-bottom:10px">${esc(p.project_name)} · ${esc(p.code)} · ${esc(p.description || '无描述')}</div>
-          <button class="btn" data-pkg="${p.id}">整包领取</button></div></div>`).join('') || '<div class="empty">暂无开放任务包</div>'}
+          ${quota ? `<div style="display:flex;gap:10px;margin-bottom:10px;font-size:12px">
+            <span>目标时长 <b>${quota}h</b></span><span>已分配 <b>${used.toFixed(2)}h</b></span>
+            <span style="color:${quota - used > 0 ? 'var(--success)' : 'var(--danger)'}">剩余 <b>${(quota - used).toFixed(2)}h</b></span></div>` : ''}
+          <button class="btn" data-pkg="${p.id}">整包领取</button></div></div>`;
+        }).join('') || '<div class="empty">暂无开放任务包</div>'}
       </div>
       <div class="card" style="margin-top:14px"><div class="card-head"><h3 class="card-title">待领取任务</h3><span class="card-sub">共 ${data.tasks.length} 个</span></div>
       ${table(['', '任务', '项目', '类型', '优先级', '批次', '创建时间'], data.tasks.map((x) => [
@@ -119,13 +126,42 @@
       `${j.status === 'done' && j.kind === 'dataset_export' ? `<a class="btn ghost" href="/api/jobs/${j.id}/download">下载</a> ` : ''}${['queued', 'running'].includes(j.status) ? `<button class="btn ghost" data-cancel="${j.id}">取消</button>` : ''}`,
     ]);
     mountPage('jobs', `
-      ${head('作业中心', '批量导入、分片上传、异步预处理与导出作业', tabs([['import', '批量导入'], ['chunk', '分片上传'], ['queue', '作业队列']], tab))}
+      ${head('作业中心', '批量导入、分片上传、长音频切分与异步作业', tabs([['import', '批量导入'], ['chunk', '分片上传'], ['split', '长音频切分'], ['queue', '作业队列']], tab))}
       <div id="job-panel"></div>
       <div class="card" style="margin-top:14px"><div class="card-head"><h3 class="card-title">作业记录</h3><span class="card-sub">近 60 条</span><button class="btn ghost" id="job-refresh" style="margin-left:auto">刷新</button></div>
       ${table(['作业', '类型', '进度', '状态', '创建时间', '操作'], jobRows, '暂无作业')}</div>`, '作业中心');
 
     const panel = $v('#job-panel');
-    if (tab === 'import') {
+    if (tab === 'split') {
+      panel.innerHTML = `<div class="card"><div class="card-head"><h3 class="card-title">长音频切分工序</h3></div><div class="card-body">
+        <div class="grid" style="grid-template-columns:repeat(3,1fr)">
+          <div class="field"><label>目标项目</label><select class="select" id="sp-proj">${projectOpts()}</select></div>
+          <div class="field"><label>每段时长（分钟）</label><input class="input" id="sp-min" type="number" value="5" min="1" max="30" /></div>
+          <div class="field"><label>批次名称</label><input class="input" id="sp-batch" placeholder="如 会议-11月第1轮" /></div>
+        </div>
+        <div class="field"><label>音频文件（支持多选；wav 原生支持，其余需本机安装 ffmpeg）</label>
+          <input class="input" type="file" id="sp-files" accept="audio/*" multiple /></div>
+        <button class="btn primary" id="sp-go">开始切分</button>
+        <span class="hint" id="sp-stat" style="margin-left:10px"></span>
+        <div class="hint" style="margin-top:8px;line-height:1.8">切分后每段生成一个待领取任务（自动携带 est_minutes 时长），可专人切分、多人分轮标注；若任务包设有时长配额，领取时按段时长扣减。</div>
+      </div></div>`;
+      $v('#sp-go').onclick = async () => {
+        const files = $v('#sp-files').files;
+        if (!files.length) return toast('请选择音频文件', 'warn');
+        const fd = new FormData();
+        fd.append('project_id', $v('#sp-proj').value);
+        fd.append('minutes', $v('#sp-min').value || 5);
+        fd.append('batch', $v('#sp-batch').value.trim());
+        for (const f of files) fd.append('files', f);
+        $v('#sp-stat').textContent = '上传中…';
+        try {
+          const r = await api('/api/jobs/audio-split', { method: 'POST', body: fd });
+          $v('#sp-stat').textContent = `已创建作业 #${r.job_id}`;
+          toast('切分作业已启动', 'ok');
+          setTimeout(() => route(), 600);
+        } catch (e) { $v('#sp-stat').textContent = ''; toast(e.message, 'err'); }
+      };
+    } else if (tab === 'import') {
       panel.innerHTML = `<div class="card"><div class="card-head"><h3 class="card-title">文件 / ZIP / URL 批量导入</h3></div><div class="card-body">
         <div class="grid" style="grid-template-columns:repeat(3,1fr)">
           <div class="field"><label>目标项目</label><select class="select" id="imp-proj">${projectOpts()}</select></div>
@@ -2883,7 +2919,7 @@
     };
     const kpi = (label, value, sub = '') => `<div class="kpi"><div class="kpi-label">${label}</div><div class="kpi-value">${value}</div><div class="kpi-delta">${sub}</div></div>`;
     const projBar = `<select class="select" id="svc-proj" style="width:200px">${projList.map((p) => `<option value="${p.id}" ${Number(p.id) === pid ? 'selected' : ''}>${esc(p.name)}</option>`).join('') || '<option value="0">暂无项目</option>'}</select>`;
-    const tabNav = tabs([['report', '运营月报'], ['tickets', '服务工单'], ['agreements', '保密协议'], ['training', '培训考核']], tab);
+    const tabNav = tabs([['report', '运营月报'], ['tickets', '服务工单'], ['agreements', '保密协议'], ['training', '培训考核'], ['exam', '上岗考试']], tab);
     const ticketChip = (s) => chip(TICKET_LABEL[s] || s, s === 'resolved' || s === 'closed' ? 'done' : s === 'processing' ? 'reviewing' : 'pending');
 
     if (!pid) {
@@ -3073,6 +3109,85 @@
       }; });
     }
 
+    if (tab === 'exam') {
+      const st = await api(`/api/projects/${pid}/exam-status`);
+      const papers = st.papers || [];
+      const latest = st.latest || {};
+      const isMgr = can('member.write') || (window.CK_STATE.user || {}).platform_role === 'project_manager';
+      $v('#svc-body').innerHTML = `
+        <div class="grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:14px">
+          <div class="kpi"><div class="kpi-label">考试门禁</div><div class="kpi-value" style="font-size:18px">${st.project.require_exam ? '已开启' : '未开启'}</div>
+            <div class="kpi-delta">${isMgr ? `<label class="toggle-wrap"><input type="checkbox" id="ex-toggle" ${st.project.require_exam ? 'checked' : ''}/> 开启后未通过考试不能领取任务</label>` : '由项目经理控制'}</div></div>
+          <div class="kpi"><div class="kpi-label">试卷数</div><div class="kpi-value">${papers.length}</div></div>
+          <div class="kpi"><div class="kpi-label">我的最近成绩</div><div class="kpi-value" style="font-size:18px">${latest.score != null ? `${latest.score} 分 · ${latest.passed ? '通过' : '未通过'}` : '未考试'}</div>
+            <div class="kpi-delta">${latest.paper_title || ''}</div></div>
+        </div>
+        <div class="card"><div class="card-head"><h3 class="card-title">试卷</h3>
+          ${isMgr ? '<button class="btn sm primary" id="ex-new" style="margin-left:auto">新建试卷</button>' : ''}</div>
+          <div class="card-body">${papers.length ? papers.map((pp) => `
+            <div class="filters" style="border-bottom:1px solid rgba(30,42,63,.4);padding:8px 0;align-items:center">
+              <b style="font-size:12.5px">${esc(pp.title)}</b>
+              <span class="chip plain">${pp.questions.length} 题 · ${pp.pass_score} 分通过</span>
+              <span class="spacer"></span>
+              <button class="btn sm primary" data-take="${pp.id}">${latest.passed ? '重新考试' : '参加考试'}</button>
+              ${isMgr ? `<button class="btn sm ghost danger" data-del-paper="${pp.id}">删除</button>` : ''}
+            </div>`).join('') : '<div class="empty">暂无试卷</div>'}</div></div>`;
+      const tg = $v('#ex-toggle');
+      if (tg) tg.onchange = async () => {
+        await api(`/api/projects/${pid}/exam-toggle`, { method: 'POST', body: { on: tg.checked } });
+        toast(tg.checked ? '考试门禁已开启' : '考试门禁已关闭', 'ok');
+      };
+      const nw = $v('#ex-new');
+      if (nw) nw.onclick = () => {
+        serviceForm('新建试卷（题目每行：题干|选项1|选项2|选项3|正确序号）', `
+          <div class="field"><label>试卷标题</label><input class="input" id="ep-title" placeholder="如 语音标注上岗考试" /></div>
+          <div class="grid" style="grid-template-columns:1fr 2fr">
+            <div class="field"><label>及格分</label><input class="input" type="number" id="ep-pass" value="60" min="1" max="100" /></div>
+          </div>
+          <div class="field"><label>题目（竖线分隔，正确项从 0 计）</label><textarea class="input" id="ep-qs" rows="8" placeholder="切分偏差指什么|分段越界|文本错误|时长不足|1"></textarea></div>`, async () => {
+          const questions = $v('#ep-qs').value.split('\n').map((x) => x.trim()).filter(Boolean).map((line) => {
+            const parts = line.split('|').map((s) => s.trim());
+            return { q: parts[0] || '', options: parts.slice(1, -1), answer: parseInt(parts[parts.length - 1] || '0', 10) || 0 };
+          }).filter((q) => q.q && q.options.length >= 2);
+          if (!questions.length) throw new Error('请至少填写一道有效题目');
+          await api('/api/exam-papers', { method: 'POST', body: { project_id: pid, title: $v('#ep-title').value.trim(), pass_score: Number($v('#ep-pass').value) || 60, questions } });
+          toast('试卷已创建', 'ok'); reload();
+        });
+      };
+      $$v('[data-take]').forEach((b) => {
+        b.onclick = () => {
+          const paper = papers.find((x) => String(x.id) === String(b.dataset.take));
+          const answers = new Array(paper.questions.length).fill(-1);
+          openModal(`<div class="modal-head"><h3>${esc(paper.title)}</h3><button class="x" data-close>×</button></div>
+            <div class="modal-body" style="max-height:60vh;overflow:auto">
+              ${paper.questions.map((q, i) => `<div style="margin-bottom:12px"><b style="font-size:13px">${i + 1}. ${esc(q.q)}</b>
+                <div style="display:flex;flex-direction:column;gap:4px;margin-top:6px">
+                ${(q.options || []).map((o, k) => `<label class="toggle-wrap"><input type="radio" name="ex-q${i}" value="${k}" /> ${esc(o)}</label>`).join('')}</div></div>`).join('')}
+            </div>
+            <div class="modal-foot"><span class="hint" id="ex-stat">${paper.pass_score} 分通过</span>
+              <button class="btn ghost" data-close>取消</button><button class="btn primary" id="ex-submit">交卷</button></div>`, 'wide');
+          $v('#ex-submit').onclick = async () => {
+            paper.questions.forEach((q, i) => {
+              const c = document.querySelector(`input[name="ex-q${i}"]:checked`);
+              answers[i] = c ? Number(c.value) : -1;
+            });
+            if (answers.includes(-1)) return toast('还有未作答的题目', 'warn');
+            const r = await api('/api/exams/submit', { method: 'POST', body: { paper_id: paper.id, answers } });
+            $v('#ex-stat').textContent = `${r.score} 分 · ${r.passed ? '通过，可以领取任务了' : '未通过，可重新考试'}`;
+            toast(r.passed ? `考试通过（${r.score} 分）` : `未通过（${r.score} 分）`, r.passed ? 'ok' : 'warn');
+            if (r.passed) setTimeout(() => reload(), 1200);
+          };
+        };
+      });
+      $$v('[data-del-paper]').forEach((b) => {
+        b.onclick = async () => {
+          if (!await confirmModal('删除试卷？', '相关考试记录保留。', '删除')) return;
+          await api(`/api/exam-papers/${b.dataset.delPaper}`, { method: 'DELETE' });
+          toast('已删除', 'ok'); reload();
+        };
+      });
+    }
+
     if (tab === 'training') {
       let memberOpts = '';
       try {
@@ -3150,6 +3265,7 @@
     ['quality', '规则质检', 'shield', 'task.review'],
     ['governance', '治理中心', 'database', 'org.read'],
     ['issues', '问题清单', 'qc', 'task.read'],
+    ['appeals', '申诉仲裁', 'shield', 'task.accept'],
     ['ops', '运维中心', 'settings', 'settings.write'],
     ['service', '运营服务', 'shield', 'member.read'],
     ['help', '帮助中心', 'search', ''],
