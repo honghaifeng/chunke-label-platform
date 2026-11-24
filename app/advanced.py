@@ -1041,18 +1041,14 @@ def qa_compare(body: dict, user: dict = Depends(me)):
     if not text.strip():
         raise HTTPException(400, "请提供文档文本或先保存文本标注")
     question = str(body.get("question") or "").strip()
-    algos = [a for a in (body.get("algos") or ["extractive", "template"])
-             if a in ("extractive", "template")]
+    # 仅保留真实算法：抽取式检索（答案来自原文并带出处）；模板伪造分支已移除
+    algos = [a for a in (body.get("algos") or ["extractive"])
+             if a in ("extractive",)]
     results = []
     if "extractive" in algos:
         results.append({"name": "内置抽取式", "algo": "extractive", "provider": "builtin",
                         "model": "builtin-sentence-ranking", "answers": _qa_extractive(text, question)})
-    if "template" in algos:
-        sents = [s["text"] for s in _qa_sentences(text) if len(s["text"]) >= 6][:10]
-        results.append({"name": "内置模板生成", "algo": "template", "provider": "builtin",
-                        "model": "builtin-template", "answers": [
-                            {"answer": s, "evidence": s[:60], "start": None, "end": None, "score": 0.5}
-                            for s in sents]})
+
     url = ops.get_setting("operator.qa.url")
     if body.get("use_external", True) and url:
         try:
@@ -1082,6 +1078,9 @@ def _builtin_operator(key: str, task: dict, data: dict) -> dict:
     payload = _json((db.row("SELECT payload,prelabel FROM annotations WHERE task_id=? ORDER BY id DESC LIMIT 1",
                             (task["id"],)) or {}).get("payload"), {})
     if key in ("sam", "segment"):
+        raise HTTPException(400, "SAM 分割算子未配置：请在 系统设置 填写 operator.sam.url 外部推理服务后使用；"
+                                 "提示框转多边形请使用图片工具栏的「几何工具」")
+    if key == "__sam_disabled__":
         label = data.get("label") or "目标"
         boxes = [b for b in (data.get("boxes") or []) if isinstance(b, dict)]
         if isinstance(data.get("box"), dict):
@@ -1127,6 +1126,9 @@ def _builtin_operator(key: str, task: dict, data: dict) -> dict:
                 "polygons": polygons, "masks": masks, "instances": len(polygons),
                 "note": "未配置 SAM 服务，已按提示框/点生成可编辑多边形与掩码框；每个目标可独立编辑顶点与孔洞。"}
     if key == "ocr":
+        raise HTTPException(400, "OCR 识别算子未配置：请在 系统设置 填写 operator.ocr.url 外部推理服务后使用；"
+                                 "手工区域录入请使用图片工具栏的「区域录入」")
+    if key == "__ocr_disabled__":
         regions: list[dict] = []
         for r in (data.get("regions") or [])[:80]:
             if not isinstance(r, dict):
@@ -1241,6 +1243,8 @@ def _builtin_operator(key: str, task: dict, data: dict) -> dict:
                 "note": f"已按关键帧{dir_label}传播逐帧框，"
                         f"间隔超过 {max_gap}s 自动断轨；合并轨迹已合并关键帧，可继续人工修正。"}
     if key == "llm":
+        raise HTTPException(400, "大模型算子未配置：请在 系统设置 填写 operator.llm.url 外部推理服务后使用")
+    if key == "__llm_disabled__":
         text = str(data.get("text") or "").strip()
         if not text:
             raise HTTPException(400, "请提供待润色文本")
@@ -1261,6 +1265,8 @@ def _builtin_operator(key: str, task: dict, data: dict) -> dict:
                 "original": text, "polished": out, "changed": out != text,
                 "note": f"已按“{style}”风格完成规则润色；配置 operator.llm.url 可切换大模型润色与生成。"}
     if key == "qa":
+        raise HTTPException(400, "文档问答算子未配置：请在 系统设置 填写 operator.qa.url 外部推理服务后使用")
+    if key == "__qa_disabled__":
         text = str(data.get("text") or "").strip()
         if not text:
             raise HTTPException(400, "请提供文档文本")

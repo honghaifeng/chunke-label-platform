@@ -830,7 +830,7 @@ async function pageDashboard() {
               <a class="quick-link" href="${hrefFor('qc')}">${icon('qc')}<div class="q-text"><b>质检队列</b><span class="sub">${qcQueue} 个待质检</span></div></a>
               <a class="quick-link" href="${hrefFor('projects')}">${icon('projects')}<div class="q-text"><b>项目管理</b><span class="sub">${stats.projects.length} 个项目</span></div></a>
               <a class="quick-link" href="${esc(lsEngine.url || 'http://127.0.0.1:8080/')}" target="_blank" rel="noreferrer">${icon('audio')}<div class="q-text"><b>Label Studio</b><span class="sub">${engineOnline(lsEngine) ? '在线' : '未启动'}</span></div><span class="chip ${engineOnline(lsEngine) ? 'done' : 'plain'}">${engineOnline(lsEngine) ? '在线' : '离线'}</span></a>
-              <a class="quick-link" href="${esc(cvatEngine.url || 'http://127.0.0.1:8090/')}" target="_blank" rel="noreferrer">${icon('cloud')}<div class="q-text"><b>CVAT</b><span class="sub">点云 / 视频</span></div><span class="chip ${engineOnline(cvatEngine) ? 'done' : 'plain'}">${engineOnline(cvatEngine) ? '在线' : '离线'}</span></a>
+              <a class="quick-link" href="${esc(cvatEngine.url || 'http://127.0.0.1:8090/')}" target="_blank" rel="noreferrer" ${engineOnline(cvatEngine) ? '' : 'style="opacity:.45;pointer-events:none"'}>${icon('cloud')}<div class="q-text"><b>CVAT</b><span class="sub">点云 / 视频</span></div><span class="chip ${engineOnline(cvatEngine) ? 'done' : 'plain'}">${engineOnline(cvatEngine) ? '在线' : '离线'}</span></a>
               <a class="quick-link" href="${hrefFor('stats')}">${icon('stats')}<div class="q-text"><b>数据统计</b><span class="sub">产能与质量</span></div></a>
             </div>
           </div>

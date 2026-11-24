@@ -768,7 +768,8 @@
           <label class="toggle-wrap"><input type="checkbox" id="sam-pos" checked> 正样本</label>
           <input class="input" id="sam-batch" placeholder="多框批量：x,y,w,h; x,y,w,h" style="flex:1">
           <button class="btn ghost sm" id="sam-batch-run">批量</button></div>
-        <div class="hint" id="sam-note">未配置 SAM 服务时按提示框/点生成可编辑多边形与掩码框；配置 operator.sam.url 后返回真实掩码。</div>
+        <div class="hint" id="sam-note">真实分割需配置 operator.sam.url 外部服务；未配置时可使用下方「几何工具」将提示框转换为可编辑多边形（几何转换，非 AI 分割）。</div>
+        <div class="filters" style="margin-top:6px"><button class="btn ghost sm" id="sam-geo">几何工具：提示框转矩形多边形</button></div>
         <div class="panel-label" style="margin-top:12px">掩码 / 多边形（顶点与孔洞可编辑）</div>
         <div id="poly-list"></div>
         <div class="panel-label" style="margin-top:12px">关键点</div>
@@ -782,7 +783,7 @@
           <button class="btn ghost sm" id="ocr-map">添加映射</button><button class="btn primary sm" id="ocr-run">运行 OCR</button></div>
         <div class="panel-label" style="margin-top:8px">区域列表（可改文本/置信度/字段）</div><div id="ocr-regions"></div>
         <div class="panel-label" style="margin-top:8px">字段映射与校对</div><div id="ocr-fields"></div>
-        <div class="hint" id="ocr-note"></div>
+        <div class="hint" id="ocr-note">「运行 OCR」需配置 operator.ocr.url 外部识别服务；上方区域/映射为手工录入，可直接保存。</div>
         <div class="panel-label" style="margin-top:12px">开放词检测</div>
         <div class="filters"><input class="input" id="ov-prompt" placeholder="提示词，逗号分隔，如 安全帽,反光衣" style="flex:1"><input class="input" id="ov-conf" value="0.3" style="width:70px"><button class="btn primary sm" id="ov-run">检测</button></div>
         <div id="ov-out" class="hint"></div>
@@ -831,6 +832,17 @@
       if (mode !== 'point') input.box = { x: +$('#sam-x').value || 0.2, y: +$('#sam-y').value || 0.2, w: +$('#sam-w').value || 0.3, h: +$('#sam-h').value || 0.3 };
       if (mode !== 'box') input.points = [{ x: +$('#sam-px').value || 0.5, y: +$('#sam-py').value || 0.5, positive: $('#sam-pos').checked ? 1 : 0, label }];
       runSam(input);
+    };
+    $('#sam-geo').onclick = async () => {
+      const x = +$('#sam-x').value || 0.2, y = +$('#sam-y').value || 0.2, w = +$('#sam-w').value || 0.3, h = +$('#sam-h').value || 0.3;
+      if (w <= 0 || h <= 0) return toast('请填写有效的提示框宽高', 'warn');
+      const ex = await readExtras();
+      const polys = ex.polygons || [];
+      const label = $('#sam-label').value || '区域';
+      polys.push({ label, points: [[x, y], [x + w, y], [x + w, y + h], [x, y + h]], holes: [] });
+      await saveExtras({ polygons: polys });
+      drawPoly();
+      toast('已按提示框生成矩形多边形（几何工具，非 AI 分割）', 'ok');
     };
     $('#sam-batch-run').onclick = () => {
       const boxes = $('#sam-batch').value.split(';').map((s) => s.split(/[,，\s]+/).map(Number))
