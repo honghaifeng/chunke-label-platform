@@ -608,3 +608,17 @@ table.table{width:100%;border-collapse:collapse;font-size:12.5px}
 .table tbody tr:hover{background:rgba(59,130,246,.05)}
 .card{border-radius:12px}
 .kpi{border-radius:12px}
+
+/* ---------- 拉框式语音标注 ---------- */
+.aw-transport{display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap}
+.aw-spk-chip{display:inline-flex;align-items:center;gap:5px;padding:3px 8px;border:1px solid var(--border);border-radius:14px;font-size:11.5px;background:rgba(13,21,36,.5)}
+.aw-card{border:1px solid var(--border);border-radius:8px;padding:7px 9px;margin-bottom:6px;cursor:pointer;background:rgba(13,21,36,.4)}
+.aw-card:hover{border-color:rgba(59,130,246,.4)}
+.aw-card.on{border-color:rgba(59,130,246,.85);background:rgba(59,130,246,.1)}
+.aw-card-head{display:flex;gap:6px;align-items:center;font-size:11px}
+.aw-card-body{display:flex;gap:6px;align-items:center;margin-top:5px}
+.aw-card-text{flex:1;min-width:0;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.aw-card-text.empty{color:var(--muted)}
+.aw-task-card{display:flex;align-items:center;gap:12px;border:1px solid var(--border);border-radius:10px;background:var(--panel);padding:12px 16px}
+.fchip{height:22px;padding:0 9px;border-radius:11px;border:1px solid var(--border);background:rgba(13,21,36,.6);color:var(--muted);font-size:11px;cursor:pointer}
+.fchip.on{border-color:rgba(59,130,246,.7);color:#BFDBFE;background:rgba(59,130,246,.15)}

@@ -1467,6 +1467,74 @@ def arbitrate(aid: int, body: dict, user: dict = Depends(me)):
     return {"ok": True, "result": result}
 
 
+@app.get("/api/audio-bench")
+def audio_bench(user: dict = Depends(me)):
+    """语音工作台：我标注中的任务（含段进度）+ 待领取任务池。"""
+    ids = auth.visible_project_ids(user)
+    if not ids:
+        return {"mine": [], "pool": []}
+    marks = ",".join("?" * len(ids))
+
+    def _seg_stats(tid: int) -> dict:
+        ann = db.row("SELECT payload FROM annotations WHERE task_id=? ORDER BY id DESC LIMIT 1", (tid,))
+        segs = []
+        if ann and ann.get("payload"):
+            try:
+                segs = (json.loads(ann["payload"]).get("segments")) or []
+            except (TypeError, ValueError):
+                segs = []
+        labeled = sum(1 for s in segs if s.get("status") == "labeled")
+        draft = sum(1 for s in segs if s.get("status") == "draft")
+        return {"frames": len(segs), "labeled": labeled, "draft": draft,
+                "pending": max(0, len(segs) - labeled - draft)}
+
+    mine = []
+    if user["platform_role"] in ("annotator",) or auth.is_admin(user) or user["platform_role"] == "project_manager":
+        rows_ = db.rows(
+            f"SELECT t.*, p.name project_name FROM tasks t JOIN projects p ON p.id=t.project_id"
+            f" WHERE t.deleted=0 AND t.media_type='audio' AND t.status IN ('annotating','pending')"
+            f" AND t.assignee_id=? AND t.project_id IN ({marks}) ORDER BY t.updated_at DESC LIMIT 50",
+            (user["id"],) + tuple(ids))
+        for t in rows_:
+            t.update(_seg_stats(t["id"]))
+            t["modality_label"] = "语音"
+            mine.append(t)
+    pool = []
+    rows2 = db.rows(
+        f"SELECT t.*, p.name project_name FROM tasks t JOIN projects p ON p.id=t.project_id"
+        f" WHERE t.deleted=0 AND t.media_type='audio' AND t.status='pending'"
+        f" AND (t.assignee_id IS NULL OR t.assignee_id=0) AND t.project_id IN ({marks})"
+        f" ORDER BY t.id DESC LIMIT 30", tuple(ids))
+    for t in rows2:
+        if auth.is_admin(user) or auth.project_role(user, t["project_id"]) in ("annotator", "manager"):
+            t.update(_seg_stats(t["id"]))
+            t["modality_label"] = "语音"
+            pool.append(t)
+    return {"mine": mine, "pool": pool}
+
+
+@app.get("/api/projects/{pid}/glossary")
+def get_glossary(pid: int, user: dict = Depends(me)):
+    row_ = db.row("SELECT value FROM settings WHERE key=?", (f"glossary.{pid}",))
+    try:
+        items = json.loads(row_["value"]) if row_ else []
+    except (TypeError, ValueError):
+        items = []
+    return {"items": items if isinstance(items, list) else []}
+
+
+@app.put("/api/projects/{pid}/glossary")
+def put_glossary(pid: int, body: dict, user: dict = Depends(me)):
+    if not (auth.is_admin(user) or auth.project_role(user, pid) == "manager"):
+        raise HTTPException(403, "仅项目经理可维护方言辞典")
+    items = [x for x in (body.get("items") or []) if isinstance(x, dict) and str(x.get("term") or "").strip()]
+    db.execute(
+        "INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (f"glossary.{pid}", json.dumps(items[:500], ensure_ascii=False)))
+    db.log(user["id"], "glossary", f"project:{pid}", f"{len(items)} 条")
+    return {"ok": True, "count": len(items)}
+
+
 @app.get("/api/stats")
 def stats(user: dict = Depends(me)):
     # 统计口径与任务列表一致：标注员仅统计本人任务，质检员仅统计本人质检任务，

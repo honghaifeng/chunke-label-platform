@@ -1177,90 +1177,820 @@ function renderAudioWorkbench(wb, labels, qc, mediaName) {
   const content = `
   <div class="wb" id="wb">
     <div class="wb-head">
-      <a class="btn ghost sm" href="#/tasks">← 返回</a>
-      <div><h1>${esc(task.name)}</h1>
-        <div class="wb-meta">${esc(project.name)} · <span class="tag">音频</span> ${statusChip(task.status)}
+      <a class="btn ghost sm" href="#/bench?m=audio">← 返回</a>
+      <div><h1>${esc(task.name)} <span class="hint">(${fmtShort(wb.duration || task.duration || 0)})</span></h1>
+        <div class="wb-meta">${esc(project.name)} · <span class="tag">语音</span> ${statusChip(task.status)}
         ${task.priority === 'high' ? '<span class="chip danger">高优</span>' : ''}</div></div>
       <div class="wb-actions">
+        <button class="btn sm ghost" id="aw-undo" title="撤销上一步">↩ 撤销</button>
+        <button class="btn sm ghost" id="aw-reset" title="重置为上次保存的内容">重置重做</button>
+        <button class="btn sm ghost" id="aw-glossary" title="方言词条与规范读法">方言辞典</button>
+        <button class="btn sm ghost" id="aw-rules" title="查看作业规则">作业规则</button>
         <span class="hint" id="save-ind">${T('common.unsaved')}</span>
         <button class="btn" id="btn-save" ${canEdit ? '' : 'disabled'}>${T('btn.save')}</button>
         <button class="btn primary" id="btn-submit" ${canEdit ? '' : 'disabled'}>${T('btn.submit')}</button>
       </div>
     </div>
-    <div class="wb-grid">
-      <div class="col">
-        <div class="wave-panel">
-          <div class="wave-toolbar">
+    <div style="display:grid;grid-template-columns:1fr 400px;gap:12px;align-items:start">
+      <div style="min-width:0">
+        <div class="wave-panel" style="padding:10px 12px">
+          <canvas id="wave-mini" style="width:100%;height:34px;display:block;cursor:pointer"></canvas>
+          <canvas id="wave" style="width:100%;height:170px;display:block;cursor:crosshair;margin-top:6px"></canvas>
+          <div class="aw-transport">
+            <span class="mono" id="aw-cur">0:00</span><span class="hint">/</span><span class="mono" id="total-t">${fmt(wb.duration)}</span>
+            <button class="icon-btn" id="aw-undo2" title="撤销">↩</button>
+            <button class="icon-btn" id="btn-prevseg" title="上一段 [">⏮</button>
             <button class="play-btn" id="btn-play">${icon('play')}</button>
-            <span class="time" id="time-label">00:00.00 / ${fmt(wb.duration)}</span>
+            <button class="icon-btn" id="btn-nextseg" title="下一段 ]">⏭</button>
+            <button class="icon-btn" id="aw-loop" title="循环播放当前段">🔁</button>
+            <select class="select" id="rate" style="width:74px;height:28px;padding:2px 6px"><option value="0.5">0.5x</option><option value="1" selected>1x</option><option value="1.5">1.5x</option><option value="2">2x</option></select>
             <span class="spacer"></span>
-            <button class="btn sm ghost" id="btn-back10">-10s</button>
-            <button class="btn sm ghost" id="btn-fwd10">+10s</button>
-            <select class="select" id="rate" style="width:82px;height:28px;padding:2px 6px"><option value="0.5">0.5x</option><option value="1" selected>1.0x</option><option value="1.5">1.5x</option><option value="2">2.0x</option></select>
+            <button class="icon-btn" id="aw-zoom-out" title="缩小">−</button>
+            <input type="range" id="aw-zoom" min="20" max="600" value="0" title="缩放" style="width:110px">
+            <button class="icon-btn" id="aw-zoom-in" title="放大">＋</button>
+            <button class="btn sm ghost" id="aw-zoom100">100%</button>
+            <button class="btn sm ghost" id="aw-fit">全长</button>
           </div>
-          <canvas class="wave-canvas" id="wave"></canvas>
-          <div class="transport">
-            <span class="mono" id="cur-t">00:00.00</span>
-            <div class="seek" id="seek"><i id="seek-bar"></i></div>
-            <span class="mono" id="total-t">${fmt(wb.duration)}</span>
+          <div id="aw-spk-row" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px"></div>
+          <div class="hint" style="margin-top:6px;text-align:center">在下方拉框轨道上拖拽新建拉框，或点击选中一个拉框开始编辑</div>
+          <div id="aw-fulltext-card" style="margin-top:8px"></div>
+          <div class="filters" style="margin-top:8px;gap:6px">
+            <button class="btn sm" id="btn-prelabel" ${canEdit ? '' : 'disabled'}>开始预识别</button>
+            <button class="btn sm ghost" id="btn-prelabel-emo" ${canEdit ? '' : 'disabled'}>含情绪</button>
+            <button class="btn sm ghost" id="btn-upload">${icon('upload')} ${mediaName ? '更换音频' : '上传音频'}</button>
+            <input type="file" id="file-input" accept="audio/*" hidden />
+            <span class="hint" id="aw-preinfo">${pre && pre.engine ? `上次 ${pre.engine} · ${(pre.segments || []).length} 段` : ''}</span>
           </div>
-        </div>
-        <div class="card" style="flex:1;min-height:0;display:flex;flex-direction:column">
-          <div class="card-head"><h3 class="card-title">转写与标注结果</h3>
-            <span class="card-sub">${wb.segments.length} 段 · 空格播放/暂停</span>
-            <button class="btn sm" id="btn-add-seg" ${canEdit ? '' : 'disabled'}>${icon('plus')} 新增段</button>
-          </div>
-          <div class="seg-list" id="seg-list">${segRows(wb)}</div>
         </div>
       </div>
-      <div class="col" style="min-height:0">
-        <div class="side-panel" style="flex:1">
-          <div class="panel-head">${icon('spark')} AI 预识别</div>
-          <div class="panel-body">
-            <div class="ai-card">
-              <b>${icon('audio')} FunASR 本地引擎</b>
-              <p>Paraformer 转写 + FSMN-VAD 切分 + CAM++ 说话人聚类${pre.elapsed_ms ? ` · 上次 ${(pre.elapsed_ms / 1000).toFixed(1)}s` : ''}</p>
-              <div class="ai-actions">
-                <button class="btn sm primary" id="btn-prelabel" ${canEdit ? '' : 'disabled'}>开始预识别</button>
-                <button class="btn sm" id="btn-prelabel-emo" ${canEdit ? '' : 'disabled'}>含情绪</button>
-              </div>
-            </div>
-            <button class="btn sm" id="btn-upload" style="margin-top:10px" ${canEdit ? '' : 'disabled'}>${icon('upload')} ${mediaName ? '更换音频' : '上传音频'}</button>
-            <input type="file" id="file-input" accept="audio/*" hidden />
-            ${mediaName ? '' : '<div class="hint" style="margin-top:6px">该任务暂无音频，请先上传。</div>'}
-            <div class="panel-section" style="margin-top:16px">
-              <div class="panel-label">说话人管理</div>
-              <div class="spk-editor" id="spk-editor">${spkEditor(wb)}</div>
-            </div>
-            <div class="panel-section">
-              <div class="panel-label">业务分类</div>
-              <select class="select" id="business">${(labels['业务分类'] || []).map((x) => `<option ${x === wb.business ? 'selected' : ''}>${esc(x)}</option>`).join('')}<option value="">未分类</option></select>
-            </div>
-            <div class="panel-section">
-              <div class="panel-label">质检结论</div>
-              ${qc ? `<div class="chip ${qc.result === 'approved' ? 'done' : 'danger'}">${qc.result === 'approved' ? '已通过' : '已驳回'} · ${qc.score} 分</div>
-                <div class="hint" style="margin-top:6px">${esc(qc.comment || '无备注')}</div>` : '<div class="hint">尚未质检</div>'}
-            </div>
-            <div class="panel-section">
-              <div class="panel-label">任务信息</div>
-              <div class="kv"><span>项目</span><b>${esc(project.name)}</b></div>
-              <div class="kv"><span>批次</span><b>${esc(task.batch || '—')}</b></div>
-              <div class="kv"><span>标注员</span><b>${esc(task.assignee_name || '未分配')}</b></div>
-              <div class="kv"><span>质检员</span><b>${esc(task.reviewer_name || '—')}</b></div>
-            </div>
-            <div class="panel-section">
-              <div class="panel-label">标注规范</div>
-              <div id="spec-panel"></div>
-            </div>
+      <div style="min-width:0;display:flex;flex-direction:column;gap:10px">
+        <div class="card" style="margin:0">
+          <div class="seg-tabs" id="aw-tabs" style="width:100%">
+            <button class="active" data-awtab="list" style="flex:1">段列表</button>
+            <button data-awtab="rules" style="flex:1">标注规则</button>
           </div>
+          <div id="aw-tab-list">
+            <div id="aw-stats" style="padding:10px 12px 0"></div>
+            <div style="display:flex;gap:6px;padding:8px 12px 0">
+              <button class="btn sm" id="aw-next-pending">下一个待标注</button>
+              <button class="btn sm ghost" id="aw-next-draft">下一个草稿</button>
+            </div>
+            <div class="filters" style="padding:8px 12px 0;gap:6px" id="aw-filters"></div>
+            <div id="aw-list" style="max-height:340px;overflow:auto;padding:8px 12px 12px"></div>
+            <div id="aw-editor" style="padding:0 12px 12px"></div>
+          </div>
+          <div id="aw-tab-rules" style="display:none;padding:12px"></div>
         </div>
+        <div class="card" style="margin:0"><div class="card-head"><h3 class="card-title" style="font-size:12px">任务信息</h3></div>
+          <div class="card-body" style="font-size:12px">
+            <div class="kv"><span>项目</span><b>${esc(project.name)}</b></div>
+            <div class="kv"><span>批次</span><b>${esc(task.batch || '—')}</b></div>
+            <div class="kv"><span>标注员</span><b>${esc(task.assignee_name || '未分配')}</b></div>
+            <div class="kv"><span>业务分类</span><b><select class="select" id="business" style="width:100%">${(labels['业务分类'] || []).map((x) => `<option ${x === wb.business ? 'selected' : ''}>${esc(x)}</option>`).join('')}<option value="">未分类</option></select></b></div>
+            <div id="aw-qc">${qc ? `<div class="chip ${qc.result === 'approved' ? 'done' : 'danger'}" style="margin-top:6px">${qc.result === 'approved' ? '已通过' : '已驳回'} · ${qc.score} 分</div><div class="hint" style="margin-top:4px">${esc(qc.comment || '')}</div>` : ''}</div>
+          </div></div>
       </div>
     </div>
   </div>`;
   mount('tasks', '标注工作台', content);
+  bindAudioWB(wb, mediaName, labels, qc);
+}
+
+/* ---------------- 拉框式语音工作台逻辑 ---------------- */
+function awSpeakers(wb) {
+  const set = new Set(wb.segments.map((s) => s.spk).filter(Boolean));
+  (wb.labels['说话人'] || []).forEach((x) => set.add(x));
+  ['说话人1', '说话人2'].forEach((x) => set.add(x));
+  (wb.customSpk || []).forEach((x) => set.add(x));
+  return Array.from(set);
+}
+
+function awStatusOf(s) {
+  return s.status === 'labeled' ? 'labeled' : s.status === 'draft' ? 'draft' : 'pending';
+}
+
+async function bindAudioWB(wb, mediaName, labels, qc) {
+  const audio = wb.audio;
   if (mediaName) loadAudio(`/media/${encodeURIComponent(mediaName)}`, wb);
-  bindWorkbench(wb, mediaName);
-  mountSpecPanel(task, project, $('#spec-panel'));
+  const $id = (s) => document.getElementById(s);
+  const saveInd = () => $id('save-ind');
+
+  /* ---------- 视图状态 ---------- */
+  wb.pxPerSec = 0;   // 0 = 全长自适应
+  wb.loopSeg = false;
+  wb._undo = [];
+  wb._focus = wb._focus != null && wb.segments[wb._focus] ? wb._focus : (wb.segments.length ? 0 : -1);
+  wb._flt = { st: 'all', spk: '', ai: false };
+  wb.customSpk = wb.customSpk || [];
+  const view = () => {
+    const dur = wb.duration || 1;
+    const cvs = $id('wave');
+    const pxs = wb.pxPerSec || Math.max(8, (cvs.clientWidth - 20) / dur);
+    const span = (cvs.clientWidth - 20) / pxs;
+    const vs = Math.max(0, Math.min((wb.viewStart || 0), dur - span));
+    return { dur, pxs, vs, ve: vs + span, span };
+  };
+  const tAt = (clientX) => {
+    const r = $id('wave').getBoundingClientRect();
+    const { vs, span } = view();
+    return Math.max(0, Math.min(view().dur, vs + ((clientX - r.left - 10) / (r.width - 20)) * span));
+  };
+
+  /* ---------- 波形渲染 ---------- */
+  const HATCH = document.createElement('canvas');
+  HATCH.width = HATCH.height = 8;
+  const hx = HATCH.getContext('2d');
+  hx.strokeStyle = 'rgba(255,255,255,.35)'; hx.beginPath(); hx.moveTo(0, 8); hx.lineTo(8, 0); hx.stroke();
+  const hatchPattern = () => { const c = $id('wave'); return c.getContext('2d').createPattern(HATCH, 'repeat'); };
+
+  function drawWave() {
+    const cvs = $id('wave');
+    if (!cvs) return;
+    const dpr = devicePixelRatio || 1;
+    const W = cvs.clientWidth || 800, H = 170;
+    if (cvs.width !== Math.round(W * dpr)) { cvs.width = Math.round(W * dpr); cvs.height = Math.round(H * dpr); }
+    const ctx = cvs.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = '#0B1424'; ctx.fillRect(0, 0, W, H);
+    const { dur, vs, ve, span } = view();
+    const padL = 10, plotW = W - 20;
+    const tx = (t) => padL + ((t - vs) / span) * plotW;
+    // 刻度尺
+    const rulerH = 16, waveH = 62, laneY = 84, laneH = 70;
+    ctx.strokeStyle = '#1C2B44'; ctx.fillStyle = '#5B6B85'; ctx.font = '9px ui-monospace,monospace';
+    const step = span > 300 ? 60 : span > 120 ? 30 : span > 60 ? 10 : span > 20 ? 5 : span > 8 ? 2 : 1;
+    for (let t = Math.ceil(vs / step) * step; t <= ve + 1e-6; t += step) {
+      const x = tx(t);
+      ctx.beginPath(); ctx.moveTo(x, rulerH - 6); ctx.lineTo(x, H - 8); ctx.stroke();
+      ctx.fillText(fmtShort(t), x + 2, 10);
+    }
+    // 波形
+    const midY = rulerH + waveH / 2;
+    if (wb.peaks && wb.peaks.length) {
+      ctx.fillStyle = 'rgba(96,165,250,.6)';
+      const p0 = Math.max(0, Math.floor((vs / dur) * wb.peaks.length));
+      const p1 = Math.min(wb.peaks.length, Math.ceil((ve / dur) * wb.peaks.length));
+      const n = Math.max(1, p1 - p0), bars = Math.min(plotW, n);
+      for (let i = 0; i < bars; i++) {
+        const v = wb.peaks[p0 + Math.floor((i / bars) * n)];
+        const bh = Math.max(1, v * waveH * 0.92);
+        ctx.fillRect(padL + i, midY - bh / 2, 1.1, bh);
+      }
+    }
+    // 拉框轨道
+    const spks = awSpeakers(wb);
+    wb.segments.forEach((s, i) => {
+      const color = SPK_COLORS[Math.max(0, spks.indexOf(s.spk)) % SPK_COLORS.length];
+      const s0 = Math.max(vs, Number(s.start)), s1 = Math.min(ve, Math.max(Number(s.end), Number(s.start) + 0.05));
+      if (s1 <= vs || s0 >= ve) return;
+      const x1 = tx(s0), x2 = tx(Math.max(s1, s0 + 0.06));
+      const st = awStatusOf(s);
+      const focused = wb._focus === i;
+      ctx.save();
+      ctx.beginPath(); ctx.roundRect(x1, laneY, Math.max(4, x2 - x1), laneH, 3); ctx.clip();
+      ctx.fillStyle = st === 'labeled' ? color + 'CC' : st === 'draft' ? color + '66' : color + '3D';
+      ctx.fillRect(x1, laneY, x2 - x1, laneH);
+      if (st === 'pending') { ctx.fillStyle = hatchPattern(); ctx.fillRect(x1, laneY, x2 - x1, laneH); }
+      ctx.restore();
+      ctx.strokeStyle = focused ? '#fff' : color;
+      ctx.lineWidth = focused ? 1.8 : 1;
+      if (st === 'draft' && !focused) ctx.setLineDash([4, 3]);
+      ctx.beginPath(); ctx.roundRect(x1, laneY, Math.max(4, x2 - x1), laneH, 3); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#fff';
+      ctx.font = '600 10px ui-monospace,monospace';
+      ctx.fillText(String(i + 1).padStart(2, '0'), x1 + 3, laneY + 12);
+      if (x2 - x1 > 46) {
+        ctx.fillStyle = 'rgba(255,255,255,.9)'; ctx.font = '10px ui-sans-serif,system-ui';
+        ctx.fillText((s.text || '').slice(0, Math.floor((x2 - x1) / 10)), x1 + 3, laneY + laneH - 6);
+      }
+      if (focused) {
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(x1 - 2.5, laneY + laneH / 2 - 6, 5, 12);
+        ctx.fillRect(x2 - 2.5, laneY + laneH / 2 - 6, 5, 12);
+      }
+    });
+    // 拖拽新建预览
+    if (wb._create && wb._create.length === 2) {
+      const [a, b] = wb._create;
+      ctx.fillStyle = 'rgba(252,211,77,.3)'; ctx.strokeStyle = '#FCD34D'; ctx.setLineDash([5, 3]);
+      const x1 = tx(Math.min(a, b)), x2 = tx(Math.max(a, b));
+      ctx.fillRect(x1, laneY, Math.max(2, x2 - x1), laneH);
+      ctx.strokeRect(x1, laneY, Math.max(2, x2 - x1), laneH);
+      ctx.setLineDash([]);
+    }
+    // 播放指针
+    const ph = tx(Math.min(ve, Math.max(vs, wb.currentTime || 0)));
+    ctx.strokeStyle = '#EF4444'; ctx.lineWidth = 1.4;
+    ctx.beginPath(); ctx.moveTo(ph, 0); ctx.lineTo(ph, H - 8); ctx.stroke();
+    ctx.fillStyle = '#EF4444';
+    ctx.beginPath(); ctx.moveTo(ph - 4, 0); ctx.lineTo(ph + 4, 0); ctx.lineTo(ph, 7); ctx.closePath(); ctx.fill();
+    drawMini();
+    const indY = H - 6;
+    ctx.fillStyle = 'rgba(148,163,184,.25)';
+    ctx.fillRect(padL + (vs / dur) * plotW, indY, Math.max(3, (span / dur) * plotW), 4);
+  }
+
+  function drawMini() {
+    const cvs = $id('wave-mini');
+    if (!cvs) return;
+    const dpr = devicePixelRatio || 1;
+    const W = cvs.clientWidth || 800, H = 34;
+    if (cvs.width !== Math.round(W * dpr)) { cvs.width = Math.round(W * dpr); cvs.height = Math.round(H * dpr); }
+    const ctx = cvs.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = '#0D1626'; ctx.fillRect(0, 0, W, H);
+    const dur = wb.duration || 1;
+    if (wb.peaks && wb.peaks.length) {
+      ctx.fillStyle = 'rgba(96,165,250,.5)';
+      const bars = Math.min(W, 400);
+      for (let i = 0; i < bars; i++) {
+        const v = wb.peaks[Math.floor((i / bars) * wb.peaks.length)];
+        const bh = Math.max(1, v * (H - 8));
+        ctx.fillRect(i, (H - 4 - bh) / 2, 1, bh);
+      }
+    }
+    const spks = awSpeakers(wb);
+    wb.segments.forEach((s, i) => {
+      const color = SPK_COLORS[Math.max(0, spks.indexOf(s.spk)) % SPK_COLORS.length];
+      ctx.fillStyle = color + (awStatusOf(s) === 'labeled' ? 'DD' : '88');
+      ctx.fillRect((Number(s.start) / dur) * W, H - 6, Math.max(2, ((Number(s.end) - Number(s.start)) / dur) * W), 4);
+    });
+    const { vs, ve } = view();
+    ctx.fillStyle = 'rgba(59,130,246,.18)';
+    ctx.strokeStyle = 'rgba(59,130,246,.8)';
+    const wx = (vs / dur) * W, ww = Math.max(6, ((ve - vs) / dur) * W);
+    ctx.fillRect(wx, 0, ww, H); ctx.strokeRect(wx + .5, .5, ww - 1, H - 1);
+  }
+
+  /* ---------- 右侧段列表 ---------- */
+  function filteredSegs() {
+    const f = wb._flt;
+    return wb.segments.map((s, i) => ({ s, i })).filter(({ s }) => {
+      if (f.st !== 'all' && awStatusOf(s) !== f.st) return false;
+      if (f.spk && s.spk !== f.spk) return false;
+      if (f.ai && s.source !== 'ai') return false;
+      return true;
+    });
+  }
+
+  function renderList() {
+    const spks = awSpeakers(wb);
+    const stCnt = { labeled: 0, draft: 0, pending: 0 };
+    wb.segments.forEach((s) => stCnt[awStatusOf(s)]++);
+    $id('aw-stats').innerHTML = `
+      <div style="display:flex;gap:16px;font-size:12px;align-items:center">
+        <span><i style="width:8px;height:8px;border-radius:50%;background:#22C55E;display:inline-block;margin-right:4px"></i>已标注 <b>${stCnt.labeled}</b></span>
+        <span><i style="width:8px;height:8px;border-radius:50%;background:#3B82F6;display:inline-block;margin-right:4px"></i>草稿 <b>${stCnt.draft}</b></span>
+        <span><i style="width:8px;height:8px;border-radius:50%;background:#F59E0B;display:inline-block;margin-right:4px"></i>待标注 <b>${stCnt.pending}</b></span>
+        <span class="hint" style="margin-left:auto">共 ${wb.segments.length} 段</span>
+      </div>`;
+    const f = wb._flt;
+    $id('aw-filters').innerHTML = `
+      ${[['all', '全部'], ['pending', '待标注'], ['draft', '草稿'], ['labeled', '已标注']].map(([k, l]) => `<button class="fchip ${f.st === k ? 'on' : ''}" data-flt-st="${k}">${l}</button>`).join('')}
+      <select class="select" id="aw-flt-spk" style="width:96px;height:24px;font-size:11px">
+        <option value="">全部说话人</option>${spks.map((x) => `<option ${f.spk === x ? 'selected' : ''}>${esc(x)}</option>`).join('')}
+      </select>
+      <label class="toggle-wrap" style="font-size:11px"><input type="checkbox" id="aw-flt-ai" ${f.ai ? 'checked' : ''}/> 仅看 AI</label>
+      <span class="hint" style="margin-left:auto;font-size:11px">匹配 ${filteredSegs().length} 段</span>`;
+    const list = filteredSegs();
+    $id('aw-list').innerHTML = list.map(({ s, i }) => {
+      const color = SPK_COLORS[Math.max(0, spks.indexOf(s.spk)) % SPK_COLORS.length];
+      const st = awStatusOf(s);
+      return `<div class="aw-card ${wb._focus === i ? 'on' : ''}" data-i="${i}">
+        <div class="aw-card-head">
+          <span class="mono">#${i + 1} ${fmtShort(s.start)}–${fmtShort(s.end)}</span>
+          ${s.source === 'ai' ? '<span class="chip info">AI</span>' : ''}
+          <span class="chip ${st === 'labeled' ? 'done' : st === 'draft' ? 'annotating' : 'pending'}">${st === 'labeled' ? '已标注' : st === 'draft' ? '草稿' : '待标注'}</span>
+          <span class="spacer"></span>
+          <button class="btn sm ghost" data-confirm="${i}" title="完成标注">✓</button>
+          <button class="btn sm ghost danger" data-del="${i}">×</button>
+        </div>
+        <div class="aw-card-body">
+          <span class="spk-dot" style="background:${color}"></span>
+          <select class="select aw-card-spk" data-card-spk="${i}" style="height:22px;font-size:11px;width:88px">${spks.map((x) => `<option ${x === s.spk ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>
+          <span class="aw-card-text ${s.text ? '' : 'empty'}" data-card-text="${i}">${esc(s.text || '（点击录入转写）')}</span>
+        </div>
+      </div>`;
+    }).join('') || '<div class="empty" style="padding:16px">没有匹配的段</div>';
+    renderEditor();
+    renderSpkRow();
+    renderFulltext();
+  }
+
+  function renderEditor() {
+    const box = $id('aw-editor');
+    if (wb._focus == null || !wb.segments[wb._focus]) { box.innerHTML = ''; return; }
+    const i = wb._focus, s = wb.segments[i];
+    const spks = awSpeakers(wb);
+    const emotions = wb.labels['情绪'] || ['中性', '满意', '不满', '愤怒'];
+    const events = wb.labels['事件'] || [];
+    const evs = s.events || [];
+    const color = SPK_COLORS[Math.max(0, spks.indexOf(s.spk)) % SPK_COLORS.length];
+    box.innerHTML = `<div class="seg-row" data-i="${i}" style="border-left-color:${color}">
+      <div class="seg-head">
+        <span class="seg-no">${String(i + 1).padStart(2, '0')}</span>
+        <span class="seg-spk"><span class="spk-dot" style="background:${color}"></span>
+          <select data-f="spk">${spks.map((x) => `<option ${x === s.spk ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></span>
+        <span class="seg-time"><input value="${Number(s.start).toFixed(2)}" data-f="start"/><em>→</em><input value="${Number(s.end).toFixed(2)}" data-f="end"/></span>
+        <span class="seg-dur">${Math.max(0, Number(s.end) - Number(s.start)).toFixed(2)}s</span>
+        <span class="spacer"></span>
+        <button class="btn sm primary" data-confirm="${i}">完成标注 ✓</button>
+      </div>
+      <textarea class="seg-text" data-f="text" rows="2" placeholder="转写文本…">${esc(s.text)}</textarea>
+      <div class="seg-pron-row">
+        <select data-f="emotion" title="情绪">${emotions.map((x) => `<option ${x === s.emotion ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>
+        <input data-f="emo_intensity" type="number" min="1" max="5" value="${Number(s.emo_intensity) || 3}" title="情绪强度" style="width:52px"/>
+        <select data-f="lang" title="语种">${['中文', '英文', '日语', '粤语', '混合', '其他'].map((x) => `<option ${(s.lang || '中文') === x ? 'selected' : ''}>${x}</option>`).join('')}</select>
+        <select data-f="pron_type" title="发音校对">${['无', '错读', '漏读', '多读', '声调错误'].map((x) => `<option ${(s.pron_type || '无') === x ? 'selected' : ''}>${x}</option>`).join('')}</select>
+        ${events.length ? `<select data-f="event" title="事件"><option value="">+事件</option>${events.filter((x) => !evs.includes(x)).map((x) => `<option>${esc(x)}</option>`).join('')}</select>` : ''}
+      </div>
+      ${evs.length ? `<div class="seg-tags">${evs.map((x) => `<span class="seg-tag">${esc(x)}<button type="button" data-del-event="${esc(x)}" data-seg="${i}">×</button></span>`).join('')}</div>` : ''}
+      <div id="aw-gloss-hint"></div>
+    </div>`;
+    glossHint(s);
+  }
+
+  function renderSpkRow() {
+    const spks = awSpeakers(wb);
+    $id('aw-spk-row').innerHTML = `<span class="hint" style="font-size:11px">说话人</span>` + spks.map((sp, k) => {
+      const c = SPK_COLORS[k % SPK_COLORS.length];
+      const n = wb.segments.filter((s) => s.spk === sp).length;
+      return `<span class="aw-spk-chip"><i class="spk-dot" style="background:${c}"></i>${esc(sp)} <b>${n}</b>
+        <button class="icon-btn" data-spk-play="${esc(sp)}" title="连播该说话人" style="width:20px;height:20px">▶</button></span>`;
+    }).join('') + (wb.canEdit ? `<button class="btn sm ghost" id="aw-spk-new">+ 新建说话人</button>` : '');
+  }
+
+  function renderFulltext() {
+    const el = $id('aw-fulltext-card');
+    if (!wb.segments.length) { el.innerHTML = ''; return; }
+    el.innerHTML = `<div class="card" style="margin:0"><div class="card-head" style="padding:8px 12px;cursor:pointer" id="aw-ft-toggle">
+      <h3 class="card-title" style="font-size:12px">全部转写框（共 ${wb.segments.length} 框）</h3><span class="card-sub" id="aw-ft-arrow">▾</span></div>
+      <div class="card-body" id="aw-ft-body" style="font-size:13px;line-height:2">${wb.segments.map((s, i) =>
+        `<span data-jump="${i}" style="color:#93C5FD;cursor:pointer;margin-right:6px" title="${fmtShort(s.start)} 跳转">${esc(s.text || '（空）')}</span>`).join('')}</div></div>`;
+    $id('aw-ft-toggle').onclick = () => {
+      const b = $id('aw-ft-body');
+      const hidden = b.style.display === 'none';
+      b.style.display = hidden ? '' : 'none';
+      $id('aw-ft-arrow').textContent = hidden ? '▾' : '▸';
+    };
+  }
+
+  /* ---------- 方言辞典 ---------- */
+  let glossary = [];
+  try { glossary = (await api(`/api/projects/${wb.task.project_id}/glossary`)).items || []; } catch (e) { glossary = []; }
+  function glossHint(s) {
+    const box = $id('aw-gloss-hint');
+    if (!box) return;
+    const hits = glossary.filter((g) => g.term && (s.text || '').includes(g.term));
+    box.innerHTML = hits.length ? `<div class="hint" style="margin-top:6px">方言命中：${hits.map((g) =>
+      `<button class="btn sm ghost" data-gloss-apply="${esc(g.term)}|${esc(g.reading || '')}" title="替换为规范读法">${esc(g.term)}→${esc(g.reading || '?')}</button>`).join(' ')}</div>` : '';
+  }
+  const openGlossary = () => {
+    openModal(`<div class="modal-head"><h3>方言辞典</h3><button class="x" data-close>×</button></div>
+      <div class="modal-body"><div id="gl-list">${glossary.map((g, i) => `<div class="filters" style="margin-bottom:6px">
+        <input class="input" value="${esc(g.term || '')}" data-gl-term="${i}" placeholder="方言词" style="width:150px"/>
+        <input class="input" value="${esc(g.reading || '')}" data-gl-read="${i}" placeholder="规范读法/说明" style="flex:1"/>
+        <button class="btn sm ghost danger" data-gl-del="${i}">×</button></div>`).join('') || '<div class="hint">暂无词条，点击下方添加</div>'}</div>
+      <button class="btn sm" id="gl-add">+ 添加词条</button></div>
+      <div class="modal-foot"><span class="hint" style="margin-right:auto">在段文本中命中词条时会提示规范读法</span>
+      <button class="btn ghost" data-close>取消</button><button class="btn primary" id="gl-save">保存辞典</button></div>`);
+    $('#gl-add').onclick = () => {
+      $('#gl-list').insertAdjacentHTML('beforeend', `<div class="filters" style="margin-bottom:6px">
+        <input class="input" data-gl-term="-1" placeholder="方言词" style="width:150px"/>
+        <input class="input" data-gl-read="-1" placeholder="规范读法/说明" style="flex:1"/>
+        <button class="btn sm ghost danger" data-gl-del="-1">×</button></div>`);
+    };
+    document.querySelectorAll('[data-gl-del]').forEach((b) => b.onclick = () => b.parentElement.remove());
+    $('#gl-save').onclick = async () => {
+      const items = [];
+      document.querySelectorAll('#gl-list .filters').forEach((row) => {
+        const t = row.querySelector('[data-gl-term]').value.trim();
+        const r = row.querySelector('[data-gl-read]').value.trim();
+        if (t) items.push({ term: t, reading: r });
+      });
+      await api(`/api/projects/${wb.task.project_id}/glossary`, { method: 'PUT', body: { items } });
+      glossary = items;
+      closeModal(); toast('辞典已保存', 'ok');
+      if (wb._focus != null && wb.segments[wb._focus]) glossHint(wb.segments[wb._focus]);
+    };
+  };
+  $id('aw-glossary').onclick = openGlossary;
+
+  /* ---------- 规则 ---------- */
+  const renderRules = async () => {
+    const box = $id('aw-tab-rules');
+    const spec = await fetchSpecForTask(wb.task, wb.project);
+    box.innerHTML = spec ? `
+      <b style="font-size:12.5px">${esc(spec.title)}</b> <span class="tag">${esc(spec.source)}</span>
+      <ul style="margin:8px 0 0 16px;padding:0;font-size:12px;line-height:1.9">${spec.lines.map((l) => `<li>${esc(l)}</li>`).join('') || '<li class="hint">暂无规范条文</li>'}</ul>
+      ${(spec.samples || []).length ? `<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">${spec.samples.map((sm) => `<img src="${esc(sm.url)}" style="width:80px;height:56px;object-fit:cover;border-radius:6px;border:1px solid var(--border)"/>`).join('')}</div>` : ''}`
+      : '<div class="hint">该项目未绑定规范模板</div>';
+  };
+  $id('aw-rules').onclick = () => openModal(`<div class="modal-head"><h3>作业规则</h3><button class="x" data-close>×</button></div>
+    <div class="modal-body" id="aw-rules-body"><span class="hint">加载规则…</span></div>
+    <div class="modal-foot"><button class="btn ghost" data-close>关闭</button></div>`);
+  document.addEventListener('click', async (e) => {
+    if (e.target.id === 'aw-rules') {
+      const spec = await fetchSpecForTask(wb.task, wb.project);
+      $('#aw-rules-body').innerHTML = spec ? `<b>${esc(spec.title)}</b><ul style="margin:8px 0 0 16px;line-height:1.9;font-size:12.5px">${spec.lines.map((l) => `<li>${esc(l)}</li>`).join('')}</ul>` : '未绑定规范模板';
+    }
+  });
+
+  /* ---------- 段交互 ---------- */
+  const panel = $id('aw-list');
+  panel.onclick = (e) => {
+    const del = e.target.closest('[data-del]');
+    if (del) { pushUndo(); wb.segments.splice(Number(del.dataset.del), 1); if (wb._focus >= wb.segments.length) wb._focus = wb.segments.length - 1; afterSegChange(); return; }
+    const confirm_ = e.target.closest('[data-confirm]');
+    if (confirm_) { const i = Number(confirm_.dataset.confirm); wb.segments[i].status = 'labeled'; markDirty(wb); renderList(); drawWave(); return; }
+    const jump = e.target.closest('[data-card-text]');
+    if (jump) { const i = Number(jump.dataset.cardText); selectSeg(i, true); return; }
+    const card = e.target.closest('.aw-card');
+    if (card) selectSeg(Number(card.dataset.i), false);
+  };
+  panel.onchange = (e) => {
+    const spkSel = e.target.closest('[data-card-spk]');
+    if (spkSel) {
+      const i = Number(spkSel.dataset.cardSpk);
+      wb.segments[i].spk = spkSel.value;
+      if (awStatusOf(wb.segments[i]) === 'pending') wb.segments[i].status = 'draft';
+      markDirty(wb); renderList(); drawWave();
+    }
+  };
+  const editorBox = $id('aw-editor');
+  editorBox.oninput = (e) => {
+    const row = e.target.closest('.seg-row'); if (!row) return;
+    const i = Number(row.dataset.i); const f = e.target.dataset.f; if (!f) return;
+    const s = wb.segments[i];
+    if (f === 'start' || f === 'end') s[f] = Number(e.target.value) || 0;
+    else s[f] = e.target.value;
+    if (awStatusOf(s) === 'pending') s.status = 'draft';
+    markDirty(wb); drawWave();
+    const durEl = row.querySelector('.seg-dur');
+    if (durEl) durEl.textContent = Math.max(0, Number(s.end) - Number(s.start)).toFixed(2) + 's';
+  };
+  editorBox.onchange = (e) => {
+    const row = e.target.closest('.seg-row'); if (!row) return;
+    const i = Number(row.dataset.i); const f = e.target.dataset.f;
+    if (f === 'event' && e.target.value) {
+      wb.segments[i].events = Array.from(new Set([...(wb.segments[i].events || []), e.target.value]));
+      markDirty(wb); renderList(); drawWave();
+    }
+  };
+  editorBox.onclick = (e) => {
+    const confirm_ = e.target.closest('[data-confirm]');
+    if (confirm_) { wb.segments[Number(confirm_.dataset.confirm)].status = 'labeled'; markDirty(wb); renderList(); drawWave(); return; }
+    const gl = e.target.closest('[data-gloss-apply]');
+    if (gl && wb._focus != null) {
+      const [term, reading] = gl.dataset.glossApply.split('|');
+      const s = wb.segments[wb._focus];
+      s.text = (s.text || '').split(term).join(reading || term);
+      markDirty(wb); renderList(); drawWave();
+    }
+    const de = e.target.closest('[data-del-event]');
+    if (de) {
+      const i = Number(de.dataset.seg);
+      wb.segments[i].events = (wb.segments[i].events || []).filter((x) => x !== de.dataset.delEvent);
+      markDirty(wb); renderList();
+    }
+  };
+
+  function selectSeg(i, seek) {
+    wb._focus = i;
+    renderList(); drawWave();
+    if (seek && audio && wb.segments[i]) {
+      audio.currentTime = Number(wb.segments[i].start);
+      wb.currentTime = audio.currentTime;
+      updateTimeLabel(wb);
+    }
+    const el = document.querySelector(`.aw-card[data-i="${i}"]`);
+    if (el) el.scrollIntoView({ block: 'nearest' });
+  }
+  function afterSegChange() { markDirty(wb); renderList(); drawWave(); }
+  function pushUndo() {
+    wb._undo.push(JSON.stringify(wb.segments));
+    if (wb._undo.length > 30) wb._undo.shift();
+  }
+
+  const nextOf = (st) => {
+    const idx = wb.segments.findIndex((s, i) => awStatusOf(s) === st && i !== wb._focus);
+    if (idx >= 0) selectSeg(idx, true);
+    else toast(st === 'pending' ? '没有待标注的段了' : '没有草稿段', 'ok');
+  };
+  $id('aw-next-pending').onclick = () => nextOf('pending');
+  $id('aw-next-draft').onclick = () => nextOf('draft');
+
+  /* ---------- 说话人 ---------- */
+  document.body.addEventListener('click', (e) => {
+    const playBtn = e.target.closest('[data-spk-play]');
+    if (playBtn) {
+      const sp = playBtn.dataset.spkPlay;
+      const list = wb.segments.map((s, i) => ({ s, i })).filter((x) => x.s.spk === sp);
+      if (!list.length || !audio) return toast('该说话人没有段', 'warn');
+      wb._playlist = list.map((x) => x.i);
+      wb._plIdx = 0;
+      audio.currentTime = Number(list[0].s.start);
+      audio.play(); wb.playing = true; $id('btn-play').innerHTML = icon('pause');
+      selectSeg(list[0].i, false);
+    }
+    if (e.target.id === 'aw-spk-new') {
+      const name = prompt('新说话人名称（如 S3 / 客户B）：');
+      if (name && name.trim()) { wb.customSpk.push(name.trim()); markDirty(wb); renderList(); }
+    }
+  });
+
+  /* ---------- 波形交互 ---------- */
+  const waveEl = $id('wave');
+  const LANE_Y = 84, LANE_H = 70;
+  waveEl.onwheel = (e) => {
+    e.preventDefault();
+    if (!wb.duration) return;
+    const { span } = view();
+    const tc = tAt(e.clientX);
+    const factor = e.deltaY > 0 ? 1.25 : 0.8;
+    const pxEl = $id('aw-zoom');
+    const newPxs = Math.max(20, Math.min(600, (view().pxs || 20) * (e.deltaY > 0 ? 1 / 1.25 : 1.25)));
+    wb.pxPerSec = newPxs;
+    pxEl.value = String(Math.round(newPxs));
+    const newSpan = (waveEl.clientWidth - 20) / newPxs;
+    wb.viewStart = Math.max(0, Math.min(wb.duration - newSpan, tc - (tc - (wb.viewStart || 0)) * (newSpan / span)));
+    drawWave();
+  };
+  let wDrag = null;
+  const segAt = (t) => {
+    for (let i = wb.segments.length - 1; i >= 0; i--) {
+      const s = wb.segments[i];
+      const dxs = Math.abs(t - Number(s.start)), dxe = Math.abs(t - Number(s.end));
+      const thr = Math.max(3 / view().pxs, 0.05);
+      if (dxs < thr) return { i, mode: 'l' };
+      if (dxe < thr) return { i, mode: 'r' };
+      if (t > Number(s.start) && t < Number(s.end)) return { i, mode: 'move' };
+    }
+    return null;
+  };
+  waveEl.onmousedown = (e) => {
+    const r = waveEl.getBoundingClientRect();
+    const inLane = e.clientY - r.top >= LANE_Y && e.clientY - r.top <= LANE_Y + LANE_H;
+    const hit = segAt(tAt(e.clientX));
+    wDrag = { x: e.clientX, moved: false, hit, inLane, t0: tAt(e.clientX) };
+    if (hit) { wb._focus = hit.i; wb._create = null; renderList(); drawWave(); }
+    else if (inLane && wb.canEdit) { wb._create = [wDrag.t0, wDrag.t0]; drawWave(); }
+  };
+  window.addEventListener('mousemove', (e) => {
+    if (!wDrag || !wb.duration) return;
+    const dx = e.clientX - wDrag.x;
+    if (Math.abs(dx) > 2) wDrag.moved = true;
+    if (!wDrag.moved) return;
+    const t = tAt(e.clientX);
+    if (wb._create) { wb._create[1] = t; drawWave(); return; }
+    if (wDrag.hit) {
+      const s = wb.segments[wDrag.hit.i];
+      const dt = t - wDrag.t0;
+      if (wDrag.hit.mode === 'move') {
+        const len = Number(s.end) - Number(s.start);
+        let ns = Math.max(0, Number(s.start) + dt);
+        if (ns + len > wb.duration) ns = Math.max(0, wb.duration - len);
+        s.start = Math.round(ns * 100) / 100;
+        s.end = Math.round((ns + len) * 100) / 100;
+      } else if (wDrag.hit.mode === 'l') {
+        s.start = Math.round(Math.max(0, Math.min(Number(s.end) - 0.05, Number(s.start) + dt)) * 100) / 100;
+      } else {
+        s.end = Math.round(Math.min(wb.duration, Math.max(Number(s.start) + 0.05, Number(s.end) + dt)) * 100) / 100;
+      }
+      wDrag.t0 = t;
+      if (awStatusOf(s) === 'labeled') s.status = 'draft';
+      markDirty(wb); drawWave();
+      const si = document.querySelector('#aw-editor input[data-f="start"]');
+      const ei = document.querySelector('#aw-editor input[data-f="end"]');
+      if (si && wb._focus === wDrag.hit.i) si.value = Number(s.start).toFixed(2);
+      if (ei && wb._focus === wDrag.hit.i) ei.value = Number(s.end).toFixed(2);
+      return;
+    }
+    const { span } = view();
+    const dsec = (dx / Math.max(1, waveEl.clientWidth - 20)) * span;
+    wb.viewStart = Math.max(0, Math.min(wb.duration - span, (wb.viewStart || 0) - dsec));
+    wDrag.x = e.clientX;
+    drawWave();
+  });
+  window.addEventListener('mouseup', () => {
+    if (!wDrag) return;
+    if (wb._create) {
+      const [a, b] = wb._create;
+      wb._create = null;
+      const s0 = Math.max(0, Math.min(a, b)), s1 = Math.min(wb.duration || 60, Math.max(a, b));
+      if (s1 - s0 >= 0.08 && wb.canEdit) {
+        pushUndo();
+        wb.segments.push({ start: Math.round(s0 * 100) / 100, end: Math.round(s1 * 100) / 100, text: '',
+          spk: awSpeakers(wb)[0] || '说话人1', emotion: (wb.labels['情绪'] || ['中性'])[0], emo_intensity: 3,
+          lang: '中文', pron_type: '无', pron_note: '', events: [], status: 'pending' });
+        wb._focus = wb.segments.length - 1;
+        afterSegChange();
+      } else drawWave();
+    } else if (wDrag.hit && wDrag.moved) {
+      renderList(); drawWave();
+    } else if (!wDrag.hit && !wDrag.moved && audio) {
+      audio.currentTime = wDrag.t0;
+      wb.currentTime = audio.currentTime;
+      updateTimeLabel(wb); drawWave();
+    }
+    setTimeout(() => { wDrag = null; }, 0);
+  });
+
+  /* ---------- 缩略图 ---------- */
+  const mini = $id('wave-mini');
+  let mDrag = null;
+  mini.onmousedown = (e) => {
+    const r = mini.getBoundingClientRect();
+    const dur = wb.duration || 1;
+    const frac = (e.clientX - r.left) / r.width;
+    const { span } = view();
+    mDrag = { mode: Math.abs(frac - (wb.viewStart || 0) / dur) < span / dur ? 'win' : 'seek', x: e.clientX };
+    if (audio) { audio.currentTime = frac * dur; wb.currentTime = audio.currentTime; updateTimeLabel(wb); }
+    drawWave();
+  };
+  window.addEventListener('mousemove', (e) => {
+    if (!mDrag || !wb.duration) return;
+    if (mDrag.mode === 'win') {
+      const r = mini.getBoundingClientRect();
+      const { span } = view();
+      const frac = (e.clientX - mDrag.x) / r.width;
+      wb.viewStart = Math.max(0, Math.min(wb.duration - span, (wb.viewStart || 0) + frac * wb.duration));
+      mDrag.x = e.clientX;
+      drawWave();
+    }
+  });
+  window.addEventListener('mouseup', () => { mDrag = null; });
+
+  /* ---------- 缩放控件 ---------- */
+  const zoomEl = $id('aw-zoom');
+  const setZoom = (pxs) => {
+    wb.pxPerSec = pxs;
+    zoomEl.value = String(Math.round(pxs));
+    const cvs = $id('wave');
+    const newSpan = (cvs.clientWidth - 20) / pxs;
+    wb.viewStart = Math.max(0, Math.min(wb.duration - newSpan, (wb.currentTime || 0) - newSpan / 2));
+    drawWave();
+  };
+  zoomEl.oninput = () => setZoom(Number(zoomEl.value));
+  $id('aw-zoom-out').onclick = () => setZoom(Math.max(20, (wb.pxPerSec || 100) / 1.4));
+  $id('aw-zoom-in').onclick = () => setZoom(Math.min(600, (wb.pxPerSec || 100) * 1.4));
+  $id('aw-zoom100').onclick = () => setZoom(120);
+  $id('aw-fit').onclick = () => { wb.pxPerSec = 0; zoomEl.value = '0'; wb.viewStart = 0; drawWave(); };
+
+  /* ---------- 播放 ---------- */
+  const playBtn = $id('btn-play');
+  const toggle = () => {
+    if (!audio) return toast('该任务还没有音频文件', 'warn');
+    if (audio.paused) { audio.play(); wb.playing = true; playBtn.innerHTML = icon('pause'); }
+    else { audio.pause(); wb.playing = false; playBtn.innerHTML = icon('play'); }
+  };
+  playBtn.onclick = toggle;
+  $id('rate').onchange = (e) => { if (audio) audio.playbackRate = Number(e.target.value); };
+  $id('aw-loop').onclick = () => {
+    wb.loopSeg = !wb.loopSeg;
+    $id('aw-loop').style.color = wb.loopSeg ? '#60A5FA' : '';
+    toast(wb.loopSeg ? '循环播放当前段' : '关闭循环', 'ok');
+  };
+  const stepSeg = (d) => {
+    if (!wb.segments.length) return;
+    const n = Math.max(0, Math.min(wb.segments.length - 1, (wb._focus < 0 ? 0 : wb._focus + d)));
+    selectSeg(n, true);
+  };
+  $id('btn-prevseg').onclick = () => stepSeg(-1);
+  $id('btn-nextseg').onclick = () => stepSeg(1);
+  const doUndo = () => {
+    if (!wb._undo.length) return toast('没有可撤销的操作', 'warn');
+    wb.segments = JSON.parse(wb._undo.pop());
+    if (wb._focus >= wb.segments.length) wb._focus = wb.segments.length - 1;
+    markDirty(wb); renderList(); drawWave();
+  };
+  $id('aw-undo').onclick = doUndo;
+  $id('aw-undo2').onclick = doUndo;
+  $id('aw-reset').onclick = async () => {
+    if (!await confirmModal('重置重做？', '将放弃未保存的修改，恢复为上次保存的草稿。', '重置')) return;
+    const d = await api(`/api/tasks/${wb.task.id}`);
+    const ann = d.annotation || {};
+    const payload = ann.payload || {};
+    wb.segments = (payload.segments || []).map((s) => ({ ...s, events: s.events || [] }));
+    wb._focus = wb.segments.length ? 0 : -1;
+    wb._undo = [];
+    markDirty(wb); renderList(); drawWave();
+    toast('已重置为上次保存的内容', 'ok');
+  };
+
+  /* ---------- 过滤 ---------- */
+  $id('aw-filters').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-flt-st]');
+    if (b) { wb._flt.st = b.dataset.fltSt; renderList(); }
+  });
+  document.body.addEventListener('change', (e) => {
+    if (e.target.id === 'aw-flt-spk') { wb._flt.spk = e.target.value; renderList(); }
+    if (e.target.id === 'aw-flt-ai') { wb._flt.ai = e.target.checked; renderList(); }
+    if (e.target.id === 'business') { wb.business = e.target.value; markDirty(wb); }
+  });
+
+  /* ---------- 全文跳转 ---------- */
+  document.body.addEventListener('click', (e) => {
+    const j = e.target.closest('[data-jump]');
+    if (j) selectSeg(Number(j.dataset.jump), true);
+  });
+
+  /* ---------- 页签 ---------- */
+  $id('aw-tabs').onclick = (e) => {
+    const b = e.target.closest('[data-awtab]');
+    if (!b) return;
+    $$('#aw-tabs button').forEach((x) => x.classList.toggle('active', x === b));
+    $id('aw-tab-list').style.display = b.dataset.awtab === 'list' ? '' : 'none';
+    $id('aw-tab-rules').style.display = b.dataset.awtab === 'rules' ? '' : 'none';
+    if (b.dataset.awtab === 'rules') renderRules();
+  };
+
+  /* ---------- 预识别 / 上传 / 保存提交 ---------- */
+  $id('btn-prelabel').onclick = async (e) => runPrelabel(e.currentTarget, false);
+  $id('btn-prelabel-emo').onclick = async (e) => runPrelabel(e.currentTarget, true);
+  async function runPrelabel(btn, withEmo) {
+    btn.disabled = true;
+    try {
+      const resp = await api(`/api/tasks/${wb.task.id}/prelabel`, { method: 'POST', body: { emotion: withEmo } });
+      const pre = resp.prelabel || {};
+      const detected = pre.segments || [];
+      pushUndo();
+      const manual = wb.segments.filter((s) => s.source !== 'ai');
+      wb.segments = manual.concat(detected.map((s) => ({ ...s, events: s.events || [], source: 'ai', status: s.status || 'pending' })));
+      wb._focus = manual.length;
+      $id('aw-preinfo').textContent = `上次 ${pre.engine || 'ASR'} · ${detected.length} 段 · ${((pre.elapsed_ms || 0) / 1000).toFixed(1)}s`;
+      markDirty(wb); renderList(); drawWave();
+      toast(`预识别完成：${detected.length} 段`, 'ok');
+    } catch (err) { toast(err.message, 'err'); }
+    btn.disabled = false;
+  }
+  $id('btn-upload').onclick = () => $id('file-input').click();
+  $id('file-input').onchange = async () => {
+    const f = $id('file-input').files[0]; if (!f) return;
+    const fd = new FormData(); fd.append('file', f);
+    try {
+      await api(`/api/tasks/${wb.task.id}/media`, { method: 'POST', body: fd });
+      toast('音频已上传', 'ok');
+      setTimeout(() => pageAnnotate(wb.task.id), 400);
+    } catch (err) { toast(err.message, 'err'); }
+  };
+  $id('btn-save').onclick = () => save(wb);
+  $id('btn-submit').onclick = async () => {
+    if (!wb.segments.length) return toast('至少需要一个标注结果', 'warn');
+    const unlabeled = wb.segments.filter((s) => awStatusOf(s) !== 'labeled').length;
+    const ok = await confirmModal('提交质检？', `共 ${wb.segments.length} 段（已标注 ${wb.segments.length - unlabeled} / 未确认 ${unlabeled}）。提交后进入质检队列。`, '提交质检');
+    if (!ok) return;
+    try {
+      await submitWithRuleGuard(`/api/tasks/${wb.task.id}/submit`, payloadOf(wb));
+      toast('已提交质检', 'ok');
+      setTimeout(() => (location.hash = '#/bench?m=audio'), 500);
+    } catch (err) { toast(err.message, 'err'); }
+  };
+
+  /* ---------- 播放跟随 ---------- */
+  if (audio) {
+    audio.addEventListener('timeupdate', () => {
+      wb.currentTime = audio.currentTime;
+      const cur = $id('aw-cur'); if (cur) cur.textContent = fmt(audio.currentTime);
+      const seg = wb.segments[wb._focus];
+      if (wb.loopSeg && seg && audio.currentTime >= Number(seg.end)) {
+        audio.currentTime = Number(seg.start);
+      }
+      drawWave();
+    });
+    audio.addEventListener('ended', () => {
+      if (wb._playlist && wb._plIdx < wb._playlist.length - 1) {
+        wb._plIdx += 1;
+        const i = wb._playlist[wb._plIdx];
+        audio.currentTime = Number(wb.segments[i].start);
+        audio.play();
+        selectSeg(i, false);
+        return;
+      }
+      wb._playlist = null;
+      wb.playing = false;
+      playBtn.innerHTML = icon('play');
+      drawWave();
+    });
+  }
+  document.onkeydown = (e) => {
+    if (!document.body.contains($id('wb'))) return;
+    if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return;
+    if (e.code === 'Space') { e.preventDefault(); toggle(); }
+    const step = (e.ctrlKey || e.metaKey) ? 5 : 0.5;
+    if (e.key === 'ArrowLeft' && audio) audio.currentTime = Math.max(0, audio.currentTime - step);
+    if (e.key === 'ArrowRight' && audio) audio.currentTime = Math.min(wb.duration, audio.currentTime + step);
+    if (e.key === '[') stepSeg(-1);
+    if (e.key === ']') stepSeg(1);
+    if (e.key.toLowerCase() === 'z' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); doUndo(); }
+  };
+  window.addEventListener('resize', drawWave);
+
+  renderList();
+  drawWave();
 }
 
 function renderImageWorkbench(wb, classes, qc) {
@@ -1613,75 +2343,6 @@ function selectBox(wb, i) {
 }
 
 
-function segRows(wb) {
-  if (!wb.segments.length) return '<div class="empty"><b>还没有标注内容</b>点击「开始预识别」自动生成，或手动新增段</div>';
-  const speakers = speakerList(wb);
-  const emotions = wb.labels['情绪'] || ['中性', '满意', '不满', '愤怒'];
-  const events = wb.labels['事件'] || [];
-  if (wb._focus == null || !wb.segments[wb._focus]) wb._focus = wb.segments.length - 1;
-  const i = wb._focus;
-  const s = wb.segments[i];
-  const color = SPK_COLORS[Math.max(0, speakers.indexOf(s.spk)) % SPK_COLORS.length];
-  const dur = Math.max(0, Number(s.end) - Number(s.start));
-  const evs = s.events || [];
-  const chips = wb.segments.map((x, k) => {
-    const c = SPK_COLORS[Math.max(0, speakers.indexOf(x.spk)) % SPK_COLORS.length];
-    return `<button class="seg-chip ${k === i ? 'on' : ''}" data-focus="${k}" title="${Number(x.start).toFixed(2)}s → ${Number(x.end).toFixed(2)}s">
-      <span class="seg-no">${String(k + 1).padStart(2, '0')}</span>
-      <i class="spk-dot" style="background:${c}"></i>
-      <span class="chip-txt">${esc((x.text || '（空）').slice(0, 14))}</span>
-      ${x.source === 'ai' ? '<span class="chip info">AI</span>' : ''}
-    </button>`;
-  }).join('');
-  const editor = `<div class="seg-row" data-i="${i}" style="border-left-color:${color}">
-      <div class="seg-head">
-        <span class="seg-no">${String(i + 1).padStart(2, '0')}</span>
-        <span class="seg-spk"><span class="spk-dot" style="background:${color}"></span>
-          <select data-f="spk" title="说话人">${speakers.map((x) => `<option ${x === s.spk ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>
-        </span>
-        <span class="seg-time">
-          <input value="${Number(s.start).toFixed(2)}" data-f="start" title="开始（秒）" />
-          <em>→</em>
-          <input value="${Number(s.end).toFixed(2)}" data-f="end" title="结束（秒）" />
-        </span>
-        <span class="seg-dur">${dur.toFixed(2)}s</span>
-        <span class="spacer"></span>
-        <button class="btn sm ghost" data-navseg="-1" title="上一段">↑</button>
-        <button class="btn sm ghost" data-navseg="1" title="下一段">↓</button>
-        <select class="seg-lang" data-f="lang" title="语种">${['中文', '英文', '日语', '粤语', '混合', '其他'].map((x) => `<option ${(s.lang || '中文') === x ? 'selected' : ''}>${x}</option>`).join('')}</select>
-        <select class="seg-emo" data-f="emotion" title="情绪">${emotions.map((x) => `<option ${x === s.emotion ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>
-        <input class="seg-int" data-f="emo_intensity" type="number" min="1" max="5" value="${Number(s.emo_intensity) || 3}" title="情绪强度 1-5" />
-        ${events.length ? `<select class="seg-evt" data-f="event" title="添加事件"><option value="">+ 事件</option>${events.filter((x) => !evs.includes(x)).map((x) => `<option>${esc(x)}</option>`).join('')}</select>` : ''}
-        <button class="seg-del" data-del="${i}" title="删除该段">${icon('x')}</button>
-      </div>
-      <textarea class="seg-text" data-f="text" rows="3" placeholder="转写文本…">${esc(s.text)}</textarea>
-      <div class="seg-pron-row">
-        <select data-f="pron_type" title="发音问题类型">${['无', '错读', '漏读', '多读', '声调错误'].map((x) => `<option ${(s.pron_type || '无') === x ? 'selected' : ''}>${x}</option>`).join('')}</select>
-        <input data-f="pron_note" value="${esc(s.pron_note || '')}" placeholder="发音校对说明，如：声调应读二声" />
-      </div>
-      ${evs.length ? `<div class="seg-tags">${evs.map((x) => `<span class="seg-tag">${esc(x)}<button type="button" data-del-event="${esc(x)}" data-seg="${i}" title="移除">${icon('x')}</button></span>`).join('')}</div>` : ''}
-    </div>`;
-  return `<div class="seg-chips">${chips}</div>${editor}`;
-}
-
-function renderSegs(wb) {
-  const list = $('#seg-list');
-  if (!list) return;
-  list.innerHTML = segRows(wb);
-  wb._activeIdx = -2;
-  markActiveSegment(wb);
-}
-
-function markActiveSegment(wb) {
-  const list = $('#seg-list');
-  if (!list || !list.querySelector('.seg-chip')) return;
-  const t = wb.currentTime || 0;
-  const idx = wb.segments.findIndex((s) => t >= Number(s.start) && t < Number(s.end));
-  if (idx === wb._activeIdx) return;
-  wb._activeIdx = idx;
-  list.querySelectorAll('.seg-chip').forEach((el) => el.classList.toggle('playing', Number(el.dataset.focus) === idx));
-}
-
 function speakerList(wb) {
   const set = new Set(wb.segments.map((s) => s.spk).filter(Boolean));
   (wb.labels['说话人'] || []).forEach((x) => set.add(x));
@@ -1746,108 +2407,6 @@ function calcPeaks(buffer, n) {
     out[i] = max;
   }
   return out;
-}
-
-function drawWave(wb, playheadOnly = false) {
-  const cvs = $('#wave');
-  if (!cvs) return;
-  const dpr = window.devicePixelRatio || 1;
-  const w = cvs.clientWidth || 800;
-  const h = 188;
-  if (cvs.width !== Math.round(w * dpr)) { cvs.width = Math.round(w * dpr); cvs.height = Math.round(h * dpr); }
-  const ctx = cvs.getContext('2d');
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, w, h);
-  ctx.fillStyle = '#0B1424';
-  ctx.fillRect(0, 0, w, h);
-
-  const dur = wb.duration || 1;
-  const vs = Math.max(0, wb.viewStart || 0);
-  const ve = Math.min(dur, wb.viewEnd || dur);
-  const span = Math.max(0.5, ve - vs);
-  const padL = 10, padR = 10;
-  const plotW = w - padL - padR;
-  const tx = (t) => padL + ((t - vs) / span) * plotW;
-  const rulerY = 18;
-  ctx.strokeStyle = '#1C2B44';
-  ctx.fillStyle = '#5B6B85';
-  ctx.font = '9px ui-monospace, monospace';
-  const step = span > 300 ? 60 : span > 120 ? 30 : span > 60 ? 10 : span > 20 ? 5 : span > 8 ? 2 : 1;
-  for (let t = Math.ceil(vs / step) * step; t <= ve + 1e-6; t += step) {
-    const x = tx(t);
-    ctx.beginPath(); ctx.moveTo(x, rulerY); ctx.lineTo(x, h); ctx.stroke();
-    ctx.fillText(fmtShort(t), x + 3, 12);
-  }
-  // 窗口指示（相对整段的位置）
-  ctx.fillStyle = 'rgba(59,130,246,.25)';
-  ctx.fillRect(padL + (vs / dur) * plotW, h - 3, Math.max(2, (span / dur) * plotW), 3);
-
-  // 波形（仅绘制视窗内峰值）
-  const midY = 74;
-  const amp = 40;
-  if (wb.peaks && wb.peaks.length) {
-    ctx.fillStyle = 'rgba(59,130,246,.55)';
-    const p0 = Math.max(0, Math.floor((vs / dur) * wb.peaks.length));
-    const p1 = Math.min(wb.peaks.length, Math.ceil((ve / dur) * wb.peaks.length));
-    const n = Math.max(1, p1 - p0);
-    const bars = Math.min(plotW, n);
-    for (let i = 0; i < bars; i++) {
-      const v = wb.peaks[p0 + Math.floor((i / bars) * n)];
-      const bh = Math.max(1, v * amp * 2);
-      ctx.fillRect(padL + i, midY - bh / 2, 1.2, bh);
-    }
-  } else {
-    ctx.strokeStyle = '#334155';
-    ctx.beginPath(); ctx.moveTo(padL, midY); ctx.lineTo(w - padR, midY); ctx.stroke();
-  }
-
-  // 分段轨道：区域块 + 编号 + 聚焦把手（可在波形上直接拖动/拉伸）
-  const laneY = 126, laneH = 34;
-  const speakers0 = speakerList(wb);
-  wb.segments.forEach((s, i) => {
-    const color = SPK_COLORS[Math.max(0, speakers0.indexOf(s.spk)) % SPK_COLORS.length];
-    const s0 = Math.max(vs, Number(s.start)), s1 = Math.min(ve, Math.max(Number(s.end), Number(s.start) + 0.05));
-    if (s1 <= vs || s0 >= ve) return;
-    const x1 = tx(s0), x2 = tx(Math.max(s1, s0 + 0.08));
-    const focused = wb._focus === i;
-    ctx.fillStyle = color + (focused ? '55' : '2E');
-    ctx.strokeStyle = focused ? '#fff' : color;
-    ctx.lineWidth = focused ? 1.6 : 1;
-    ctx.beginPath();
-    ctx.roundRect(x1, laneY, Math.max(4, x2 - x1), laneH, 4);
-    ctx.fill(); ctx.stroke();
-    ctx.fillStyle = color;
-    ctx.font = '600 10px ui-monospace, monospace';
-    ctx.fillText(String(i + 1).padStart(2, '0'), x1 + 4, laneY + 13);
-    if (x2 - x1 > 60) {
-      ctx.fillStyle = 'rgba(226,232,240,.85)';
-      ctx.font = '10px ui-sans-serif, system-ui';
-      ctx.fillText((s.text || '').slice(0, Math.floor((x2 - x1) / 11)), x1 + 4, laneY + 27);
-    }
-    if (focused) {
-      ctx.fillStyle = '#fff';
-      ctx.fillRect(x1 - 2.5, laneY + laneH / 2 - 5, 5, 10);
-      ctx.fillRect(x2 - 2.5, laneY + laneH / 2 - 5, 5, 10);
-    }
-  });
-
-  ctx.fillStyle = '#334155';
-  ctx.fillRect(padL, laneY + 34, plotW, 1);
-
-  // 播放指针
-  const ph = tx(Math.min(ve, Math.max(vs, wb.currentTime || 0)));
-  ctx.strokeStyle = playheadOnly ? '#F87171' : '#EF4444';
-  ctx.lineWidth = 1.5;
-  ctx.beginPath(); ctx.moveTo(ph, 20); ctx.lineTo(ph, h - 4); ctx.stroke();
-  ctx.fillStyle = '#EF4444';
-  ctx.beginPath(); ctx.moveTo(ph - 4, 20); ctx.lineTo(ph + 4, 20); ctx.lineTo(ph, 26); ctx.closePath(); ctx.fill();
-}
-
-function updateTimeLabel(wb) {
-  const t = wb.currentTime || 0;
-  const a = $('#time-label'); if (a) a.textContent = `${fmt(t)} / ${fmt(wb.duration)}`;
-  const b = $('#cur-t'); if (b) b.textContent = fmt(t);
-  markActiveSegment(wb);
 }
 
 /* ------------ 图片标注 ------------ */
@@ -2932,384 +3491,6 @@ function refreshBoxUI(wb) {
   }
 }
 
-function bindWorkbench(wb, mediaName) {
-  const audio = wb.audio;
-  const playBtn = $('#btn-play');
-  const toggle = () => {
-    if (!audio) return toast('该任务还没有音频文件', 'warn');
-    if (audio.paused) { audio.play(); wb.playing = true; playBtn.innerHTML = icon('pause'); }
-    else { audio.pause(); wb.playing = false; playBtn.innerHTML = icon('play'); }
-  };
-  playBtn.onclick = toggle;
-  $('#btn-back10').onclick = () => { if (audio) audio.currentTime = Math.max(0, audio.currentTime - 10); };
-  $('#btn-fwd10').onclick = () => { if (audio) audio.currentTime = Math.min(wb.duration, audio.currentTime + 10); };
-  $('#rate').onchange = (e) => { if (audio) audio.playbackRate = Number(e.target.value); };
-
-  // 波形缩放/平移：滚轮以光标为中心缩放，拖拽平移，点击定位播放
-  const zoomWave = (e) => {
-    const dur = wb.duration || 1;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left - 10) / (rect.width - 20)));
-    const vs = wb.viewStart || 0, ve = wb.viewEnd || dur;
-    const span = Math.max(0.5, ve - vs);
-    const tc = vs + ratio * span;
-    const factor = e.deltaY > 0 ? 1.3 : 1 / 1.3;
-    const newSpan = Math.max(1, Math.min(dur, span * factor));
-    wb.viewStart = Math.max(0, Math.min(dur - newSpan, tc - (tc - vs) * (newSpan / span)));
-    wb.viewEnd = wb.viewStart + newSpan;
-    drawWave(wb);
-  };
-  $('#wave').onwheel = (e) => { e.preventDefault(); if (wb.duration) zoomWave(e); };
-  let wDrag = null;
-  // 命中检测：分段区域边缘=拉伸，区域内=移动，否则=视图平移
-  const hitSeg = (e) => {
-    if (!wb.segments.length) return null;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const dur = wb.duration || 1;
-    const vs = wb.viewStart || 0, span = Math.max(0.5, (wb.viewEnd || dur) - vs);
-    const t = vs + ((e.clientX - rect.left - 10) / Math.max(1, rect.width - 20)) * span;
-    const px = span / Math.max(1, rect.width - 20); // 秒/像素
-    for (let i = wb.segments.length - 1; i >= 0; i--) {
-      const s = wb.segments[i];
-      if (Math.abs(t - Number(s.start)) < Math.max(6 * px, 0.08)) return { i, mode: 'resize-l' };
-      if (Math.abs(t - Number(s.end)) < Math.max(6 * px, 0.08)) return { i, mode: 'resize-r' };
-      if (t > Number(s.start) && t < Number(s.end)) return { i, mode: 'move' };
-    }
-    return null;
-  };
-  $('#wave').onmousedown = (e) => {
-    const hit = hitSeg(e);
-    wDrag = { x: e.clientX, moved: false, seg: hit };
-    if (hit) { wb._focus = hit.i; renderSegs(wb); drawWave(wb); }
-  };
-  window.addEventListener('mousemove', (e) => {
-    if (!wDrag || !wb.duration) return;
-    const dx = e.clientX - wDrag.x;
-    if (Math.abs(dx) > 3) wDrag.moved = true;
-    if (!wDrag.moved) return;
-    const dur = wb.duration;
-    const rect = $('#wave').getBoundingClientRect();
-    const span = Math.max(0.5, (wb.viewEnd || dur) - (wb.viewStart || 0));
-    const dsec = (dx / Math.max(1, rect.width - 20)) * span;
-    if (wDrag.seg) {
-      const s = wb.segments[wDrag.seg.i];
-      if (!s) return;
-      if (wDrag.seg.mode === 'move') {
-        const len = Number(s.end) - Number(s.start);
-        let ns = Math.max(0, Number(s.start) + dsec);
-        if (ns + len > dur) ns = Math.max(0, dur - len);
-        s.start = Math.round(ns * 100) / 100;
-        s.end = Math.round((ns + len) * 100) / 100;
-      } else if (wDrag.seg.mode === 'resize-l') {
-        s.start = Math.round(Math.max(0, Math.min(Number(s.end) - 0.05, Number(s.start) + dsec)) * 100) / 100;
-      } else {
-        s.end = Math.round(Math.min(dur, Math.max(Number(s.start) + 0.05, Number(s.end) + dsec)) * 100) / 100;
-      }
-      wDrag.x = e.clientX;
-      markDirty(wb); drawWave(wb);
-      const si = $('#seg-list .seg-row input[data-f="start"]');
-      const ei = $('#seg-list .seg-row input[data-f="end"]');
-      if (si) si.value = Number(s.start).toFixed(2);
-      if (ei) ei.value = Number(s.end).toFixed(2);
-      return;
-    }
-    const ns = Math.max(0, Math.min(dur - span, (wb.viewStart || 0) - dsec));
-    wb.viewStart = ns; wb.viewEnd = ns + span;
-    wDrag.x = e.clientX;
-    drawWave(wb);
-  });
-  window.addEventListener('mouseup', () => {
-    if (wDrag && wDrag.seg && wDrag.moved) { renderSegs(wb); drawWave(wb); }
-    if (wDrag) setTimeout(() => { wDrag = null; }, 0);
-  });
-  $('#wave').onclick = (e) => {
-    if (!audio || (wDrag && wDrag.moved)) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const ratio = (e.clientX - rect.left - 10) / (rect.width - 20);
-    const dur = wb.duration || 1;
-    const vs = wb.viewStart || 0, span = Math.max(0.5, (wb.viewEnd || dur) - vs);
-    audio.currentTime = Math.max(0, Math.min(dur, vs + ratio * span));
-    wb.currentTime = audio.currentTime;
-    updateTimeLabel(wb); drawWave(wb, true);
-  };
-  $('#seek').onclick = (e) => {
-    if (!audio) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    audio.currentTime = ((e.clientX - rect.left) / rect.width) * wb.duration;
-  };
-
-  document.onkeydown = (e) => {
-    if (!document.body.contains($('#wb'))) return;
-    if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return;
-    if (e.code === 'Space') { e.preventDefault(); toggle(); }
-    const step = (e.ctrlKey || e.metaKey) ? 5 : 0.5;
-    if (e.key === 'ArrowLeft' && audio) audio.currentTime = Math.max(0, audio.currentTime - step);
-    if (e.key === 'ArrowRight' && audio) audio.currentTime = Math.min(wb.duration, audio.currentTime + step);
-  };
-
-  const list = $('#seg-list');
-  list.onclick = (e) => {
-    const del = e.target.closest('[data-del]');
-    if (del) {
-      const i = Number(del.dataset.del);
-      wb.segments.splice(i, 1);
-      if (wb._focus >= wb.segments.length) wb._focus = wb.segments.length - 1;
-      markDirty(wb);
-      renderSegs(wb);
-      drawWave(wb); return;
-    }
-    const tag = e.target.closest('[data-del-event]');
-    if (tag) {
-      const i = Number(tag.dataset.seg);
-      wb.segments[i].events = (wb.segments[i].events || []).filter((x) => x !== tag.dataset.delEvent);
-      markDirty(wb);
-      renderSegs(wb); return;
-    }
-    const chip = e.target.closest('.seg-chip');
-    if (chip) {
-      wb._focus = Number(chip.dataset.focus);
-      renderSegs(wb); drawWave(wb);
-      if (audio && wb.segments[wb._focus]) {
-        audio.currentTime = wb.segments[wb._focus].start;
-        wb.currentTime = audio.currentTime;
-        updateTimeLabel(wb);
-      }
-      return;
-    }
-    const nav = e.target.closest('[data-navseg]');
-    if (nav) {
-      const d = Number(nav.dataset.navseg);
-      const n = Math.max(0, Math.min(wb.segments.length - 1, (wb._focus || 0) + d));
-      wb._focus = n; renderSegs(wb); drawWave(wb);
-      return;
-    }
-    const row = e.target.closest('.seg-row');
-    if (row && !e.target.closest('input,textarea,select') && audio) {
-      const i = Number(row.dataset.i);
-      audio.currentTime = wb.segments[i].start;
-      wb.currentTime = audio.currentTime;
-      updateTimeLabel(wb); drawWave(wb, true);
-    }
-  };
-  list.oninput = (e) => {
-    const row = e.target.closest('.seg-row'); if (!row) return;
-    const i = Number(row.dataset.i); const f = e.target.dataset.f; if (!f) return;
-    if (f === 'start' || f === 'end') {
-      wb.segments[i][f] = Number(e.target.value) || 0;
-      const durEl = row.querySelector('.seg-dur');
-      if (durEl) durEl.textContent = Math.max(0, Number(wb.segments[i].end) - Number(wb.segments[i].start)).toFixed(2) + 's';
-    } else wb.segments[i][f] = e.target.value;
-    markDirty(wb); drawWave(wb);
-  };
-  list.onchange = (e) => {
-    const row = e.target.closest('.seg-row'); if (!row) return;
-    const i = Number(row.dataset.i); const f = e.target.dataset.f;
-    if (f === 'event' && e.target.value) {
-      wb.segments[i].events = Array.from(new Set([...(wb.segments[i].events || []), e.target.value]));
-      markDirty(wb);
-      renderSegs(wb);
-      $('#spk-editor').innerHTML = spkEditor(wb);
-    }
-  };
-
-  $('#btn-add-seg').onclick = () => {
-    const start = Math.round((audio ? audio.currentTime : 0) * 100) / 100;
-    wb.segments.push({ start, end: Math.min(wb.duration || start + 3, start + 3), text: '', spk: speakerList(wb)[0] || '说话人1', emotion: (wb.labels['情绪'] || ['中性'])[0], emo_intensity: 3, lang: '中文', pron_type: '无', pron_note: '', events: [] });
-    wb._focus = wb.segments.length - 1;
-    markDirty(wb);
-    renderSegs(wb); drawWave(wb);
-  };
-
-  const spkEl = $('#spk-editor');
-  spkEl.onchange = (e) => {
-    const i = Number(e.target.dataset.spk);
-    const oldName = speakerList(wb)[i];
-    const newName = e.target.value.trim();
-    if (!oldName || !newName || oldName === newName) return;
-    wb.segments.forEach((s) => { if (s.spk === oldName) s.spk = newName; });
-    markDirty(wb);
-    spkEl.innerHTML = spkEditor(wb); renderSegs(wb); drawWave(wb);
-  };
-
-  $('#business').onchange = (e) => { wb.business = e.target.value; markDirty(wb); };
-
-  const doPrelabel = async (withEmotion) => {
-    if (!mediaName) return toast('请先上传音频', 'warn');
-    if (wb.segments.length) {
-      const ok = await confirmModal('覆盖现有标注？', '预识别结果将替换当前 ' + wb.segments.length + ' 个分段，未保存的修改会丢失。', '开始预识别');
-      if (!ok) return;
-    }
-    const page = $('#wb');
-    page.style.position = 'relative';
-    const ov = document.createElement('div');
-    ov.className = 'loading-overlay';
-    ov.innerHTML = `<div style="text-align:center"><div class="spinner" style="margin:0 auto 10px"></div><div class="hint">本地 FunASR 正在转写与说话人聚类…<br/>首次加载模型约需 10-20 秒</div></div>`;
-    page.appendChild(ov);
-    try {
-      const r = await api(`/api/tasks/${wb.task.id}/prelabel`, { method: 'POST', body: { emotion: withEmotion } });
-      const pre = r.prelabel;
-      wb.segments = (pre.segments || []).map((s) => ({ ...s, events: s.events || [], source: 'ai' }));
-      wb._focus = 0;
-      wb.duration = pre.duration || wb.duration;
-      if (wb.audio) { /* 保持当前媒体 */ }
-      wb.prelabel = pre;
-      renderSegs(wb);
-      $('#spk-editor').innerHTML = spkEditor(wb);
-      drawWave(wb);
-      toast(`预识别完成：${wb.segments.length} 段，耗时 ${(pre.elapsed_ms / 1000).toFixed(1)}s`, 'ok');
-      await save(wb, true);
-    } catch (err) {
-      toast(err.message, 'err');
-    } finally {
-      ov.remove();
-    }
-  };
-  $('#btn-prelabel').onclick = () => doPrelabel(false);
-  $('#btn-prelabel-emo').onclick = () => doPrelabel(true);
-
-  $('#btn-save').onclick = () => save(wb);
-  $('#btn-submit').onclick = async () => {
-    if (!wb.segments.length) return toast('至少需要一段标注结果', 'warn');
-    const ok = await confirmModal('提交质检？', `共 ${wb.segments.length} 段标注，提交后将进入质检队列，标注内容暂不可修改。`, '提交质检');
-    if (!ok) return;
-    try {
-      await submitWithRuleGuard(`/api/tasks/${wb.task.id}/submit`, payloadOf(wb));
-      toast('已提交质检', 'ok');
-      setTimeout(() => (location.hash = '#/tasks'), 500);
-    } catch (err) { toast(err.message, 'err'); }
-  };
-
-  const uploadBtn = $('#btn-upload');
-  if (uploadBtn) {
-    const input = $('#file-input');
-    uploadBtn.onclick = () => input.click();
-    input.onchange = async () => {
-      const f = input.files[0]; if (!f) return;
-      const fd = new FormData(); fd.append('file', f);
-      toast('正在上传并转码为 16k 单声道…');
-      try {
-        const r = await api(`/api/tasks/${wb.task.id}/media`, { method: 'POST', body: fd });
-        toast(`上传成功，时长 ${fmt(r.duration)}`, 'ok');
-        setTimeout(() => pageAnnotate(wb.task.id), 400);
-      } catch (err) { toast(err.message, 'err'); }
-    };
-  }
-
-  setTimeout(() => drawWave(wb), 30);
-}
-
-function payloadOf(wb) {
-  if (typeof wb.customPayload === 'function') return wb.customPayload();
-  if (wb.mediaType === 'image') {
-    return {
-      media_type: 'image',
-      img_size: { w: wb.imgW || 0, h: wb.imgH || 0 },
-      boxes: wb.boxes.map((b) => ({
-        cls: b.cls || '商品主体',
-        name: b.name || '',
-        source: b.source || 'manual',
-        x: Number(b.x) || 0, y: Number(b.y) || 0,
-        w: Number(b.w) || 0, h: Number(b.h) || 0,
-        ...(typeof b.conf === 'number' ? { conf: b.conf } : {}),
-        ...(b.auto_cls ? { auto_cls: b.auto_cls } : {}),
-      })),
-      polygons: (wb.polygons || []).map((p) => ({
-        label: p.label, points: p.points,
-        ...(p.shape === 'circle' ? { shape: 'circle', cx: p.cx, cy: p.cy, r: p.r } : {}),
-      })),
-      keypoints: (wb.keypoints || []).map((k) => ({
-        label: k.label, x: Number(k.x) || 0, y: Number(k.y) || 0,
-        visibility: k.visibility ?? 2,
-      })),
-      masks: (wb.masks || []).map((m) => ({ label: m.label, w: m.w || 0, h: m.h || 0, png: m.png || '' })),
-      category: wb.imageClass || '',
-      attrs: wb.imgAttrs || {},
-      transcription: wb.transcription || '',
-      summary: wb.summary || '',
-      quality_score: wb.quality || 0,
-    };
-  }
-  return {
-    media_type: 'audio',
-    segments: wb.segments.map((s) => ({
-      start: Number(s.start) || 0,
-      end: Number(s.end) || 0,
-      text: s.text || '',
-      spk: s.spk || '说话人1',
-      emotion: s.emotion || '中性',
-      emo_intensity: Number(s.emo_intensity) || 3,
-      lang: s.lang || '中文',
-      pron_type: s.pron_type && s.pron_type !== '无' ? s.pron_type : '',
-      pron_note: s.pron_note || '',
-      events: s.events || [],
-    })),
-    summary: wb.summary || '',
-    business: wb.business || '',
-    quality_score: wb.quality || 0,
-  };
-}
-
-let saveTimer = null;
-function markDirty(wb) {
-  wb.dirty = true;
-  const ind = $('#save-ind');
-  if (ind) ind.textContent = '未保存';
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => save(wb, true), 4000);
-}
-
-async function save(wb, silent = false) {
-  if (wb.saving) return;
-  wb.saving = true;
-  try {
-    const r = await api(`/api/tasks/${wb.task.id}/annotation`, { method: 'POST', body: { payload: payloadOf(wb) } });
-    wb.dirty = false;
-    renderViolations(r.violations);
-    const ind = $('#save-ind');
-    if (ind) ind.textContent = '已保存 ' + r.saved_at.slice(11, 16);
-    if (typeof wb.onSaved === 'function') wb.onSaved(r);
-    if (!silent) toast('草稿已保存', 'ok');
-  } catch (err) {
-    if (!silent) toast(err.message, 'err');
-  } finally {
-    wb.saving = false;
-  }
-}
-
-/* 申诉 UI：横幅 + 申请仲裁按钮（标注页头部注入） */
-function mountAppealUI(task) {
-  const head = document.querySelector('.wb-head');
-  if (!head) return;
-  const me = state.user || {};
-  const isAssignee = task.assignee_id === me.id;
-  let existing = $('#appeal-banner');
-  if (existing) existing.remove();
-  if (task.status === 'appeal') {
-    head.insertAdjacentHTML('beforeend', `<div id="appeal-banner" style="flex-basis:100%;border:1px solid rgba(139,92,246,.5);background:rgba(139,92,246,.1);border-radius:8px;padding:8px 12px;font-size:12.5px;color:#C4B5FD">
-      该任务正在申诉仲裁中，标注已锁定。仲裁结论：维持驳回则返回返修，改判通过则直接完成。</div>`);
-    return;
-  }
-  if (!isAssignee || !['annotating', 'review'].includes(task.status)) return;
-  // 最近一次验收为驳回 → 允许申诉
-  fetch(`/api/acceptance`, { credentials: 'same-origin' }).then(() => {}).catch(() => {});
-  const btn = document.createElement('button');
-  btn.className = 'btn sm ghost';
-  btn.style.marginLeft = '8px';
-  btn.textContent = '申请仲裁';
-  btn.title = '对最近一次验收驳回结果申诉';
-  btn.onclick = async () => {
-    const reason = prompt('申诉理由（说明为何验收结论不当）：');
-    if (!reason || !reason.trim()) return;
-    try {
-      await api(`/api/tasks/${task.id}/appeal`, { method: 'POST', body: { reason: reason.trim() } });
-      toast('申诉已提交，任务进入仲裁队列', 'ok');
-      setTimeout(() => pageAnnotate(task.id), 400);
-    } catch (err) { toast(err.message, 'err'); }
-  };
-  const actions = head.querySelector('.wb-actions');
-  if (actions) actions.appendChild(btn);
-}
-
 /* ---------------- 质检中心 ---------------- */
 async function pageQC() {
   const data = await api('/api/qc');
@@ -3594,9 +3775,58 @@ async function pageAppeals() {
 }
 
 
+/* ---------------- 语音工作台（拉框标注：我标注中的任务 / 待领取任务池） ---------------- */
+async function pageAudioBench() {
+  const draw = async () => {
+    const data = await api('/api/audio-bench');
+    const mine = data.mine || [];
+    const pool = data.pool || [];
+    const fmtDur = (s) => fmtShort(s || 0);
+    const card = (t, action) => `
+      <div class="aw-task-card">
+        <div style="flex:1;min-width:0">
+          <b style="font-size:13.5px">任务 #${t.id}</b>
+          <div class="sub" style="margin-top:3px">${fmtDur(t.duration || 0)} · 共 ${t.frames} 框 ·
+            <span style="color:#22C55E">已标注 ${t.labeled}</span> ·
+            <span style="color:#F59E0B">待标注 ${t.pending}</span>${t.draft ? ` · <span style="color:#3B82F6">草稿 ${t.draft}</span>` : ''}
+            <span class="hint"> · ${esc(t.project_name || '')}</span></div>
+        </div>
+        ${action}
+      </div>`;
+    $('#ab-body').innerHTML = `
+      <div class="page-head"><div><h1 class="page-title">语音拉框标注</h1>
+        <p class="page-sub">任务领取后归属于你，关闭页面不会释放；草稿实时保存，下次进入可继续</p></div>
+        <div class="page-actions">
+          <button class="btn" id="ab-refresh">${icon('refresh')} 刷新</button>
+          <a class="btn" href="${hrefFor('hall')}">任务大厅领取</a>
+        </div></div>
+      <h3 style="font-size:13px;margin:4px 0 10px">我标注中的任务</h3>
+      <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:18px">
+        ${mine.map((t) => card(t, `<a class="btn" href="#/annotate/${t.id}">继续标注</a>`)).join('')
+          || '<div class="empty">暂无进行中的任务，去下方任务池领取</div>'}
+      </div>
+      <h3 style="font-size:13px;margin:0 0 10px">待领取任务池 <span class="hint">${pool.length}</span></h3>
+      <div class="grid two-col">
+        ${pool.map((t) => card(t, `<button class="btn primary" data-claim-open="${t.id}">开始标注</button>`)).join('')
+          || '<div class="empty">任务池为空</div>'}
+      </div>`;
+    $('#ab-refresh').onclick = draw;
+    $$('[data-claim-open]').forEach((b) => b.onclick = async () => {
+      try {
+        const r = await api('/api/task-hall/claim', { method: 'POST', body: { task_ids: [Number(b.dataset.claimOpen)] } });
+        if (r.count > 0) location.hash = `#/annotate/${b.dataset.claimOpen}`;
+        else toast(r.skipped && r.skipped[0] ? r.skipped[0].reason : '领取失败', 'warn');
+      } catch (e) { toast(e.message, 'err'); }
+    });
+  };
+  mount('bench', '语音工作台', '<div id="ab-body"><span class="hint">加载中…</span></div>');
+  try { await draw(); } catch (e) { $('#ab-body').innerHTML = `<div class="empty">加载失败：${esc(e.message)}</div>`; }
+}
+
 /* ---------------- 模态工作台（生产台：继续生产 + 我的队列 + 返修） ---------------- */
 async function pageBench(query) {
   const mod = query.get('m') || 'audio';
+  if (mod === 'audio') return pageAudioBench();
   const modLabel = { audio: T('mod.audio'), image: T('mod.image'), video: T('mod.video'), text: T('mod.text'), pointcloud: T('mod.pointcloud') }[mod] || mod;
   const [tasksData, projects] = await Promise.all([
     api(`/api/tasks?modality=${mod}&limit=200`),
