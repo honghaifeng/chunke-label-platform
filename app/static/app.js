@@ -1150,7 +1150,11 @@ async function pageAnnotate(id) {
     media: data.media || [],
     edit: (payload.edit && typeof payload.edit === 'object') ? payload.edit : {},
     // 音频
-    segments: (payload.segments && payload.segments.length ? payload.segments : pre.segments || []).map((s) => ({ ...s, events: s.events || [] })),
+    segments: (payload.segments && payload.segments.length ? payload.segments : pre.segments || []).map((s) => {
+      const start = Math.max(0, Number(s.start) || 0);
+      const end = Math.max(start, Number(s.end) || start);
+      return { ...s, start, end, events: s.events || [] };
+    }),
     // 图片
     boxes: Array.isArray(payload.boxes) && payload.boxes.length
       ? payload.boxes.map((b) => ({
@@ -2052,7 +2056,11 @@ async function bindAudioWB(wb, mediaName, labels, qc) {
     const d = await api(`/api/tasks/${wb.task.id}`);
     const ann = d.annotation || {};
     const payload = ann.payload || {};
-    wb.segments = (payload.segments || []).map((s) => ({ ...s, events: s.events || [] }));
+    wb.segments = (payload.segments || []).map((s) => {
+      const start = Math.max(0, Number(s.start) || 0);
+      const end = Math.max(start, Number(s.end) || start);
+      return { ...s, start, end, events: s.events || [] };
+    });
     wb._focus = wb.segments.length ? 0 : -1;
     wb._undo = [];
     markDirty(wb); renderList(); drawWave();
