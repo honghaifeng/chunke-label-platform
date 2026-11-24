@@ -99,6 +99,12 @@ const I18N = {
     'mod.llm': '大模型', 'mod.pdf': 'PDF', 'mod.multimodal': '多模态', 'mod.editing': '图像编辑',
     'common.unsaved': '未保存', 'common.saved': '已保存', 'common.loading': '加载中…', 'common.empty': '暂无数据',
     'common.yes': '是', 'common.no': '否', 'lang.label': '界面语言',
+    'prefs.title': '个人偏好', 'prefs.sub': '界面语言、工作台默认值与账号安全', 'prefs.work': '工作偏好',
+    'prefs.lang': '界面语言', 'prefs.size': '列表每页条数', 'prefs.defproj': '默认项目', 'prefs.none': '不指定',
+    'prefs.keys': '快捷键', 'prefs.keysOn': '启用（空格播放 / A、D 微调 / Delete 删除）', 'prefs.keysOff': '关闭',
+    'prefs.save': '保存偏好', 'prefs.mfa': '账号安全 · 双因子认证', 'prefs.mfaOn': '已启用', 'prefs.mfaOff': '未启用',
+    'prefs.mfaReq': '管理员强制', 'prefs.mfaHint': '启用 TOTP 后，登录需要输入身份验证器 App 中的 6 位动态口令。',
+    'prefs.genKey': '生成密钥',
   },
   en: {
     'brand.tag': 'Chunke Label', 'brand.full': 'Chunke Data Labeling Platform', 'brand.space': 'Project Space',
@@ -127,6 +133,12 @@ const I18N = {
     'mod.llm': 'LLM', 'mod.pdf': 'PDF', 'mod.multimodal': 'Multimodal', 'mod.editing': 'Image Editing',
     'common.unsaved': 'Unsaved', 'common.saved': 'Saved', 'common.loading': 'Loading…', 'common.empty': 'No data',
     'common.yes': 'Yes', 'common.no': 'No', 'lang.label': 'Language',
+    'prefs.title': 'Preferences', 'prefs.sub': 'Language, workbench defaults and account security', 'prefs.work': 'Work preferences',
+    'prefs.lang': 'Language', 'prefs.size': 'Page size', 'prefs.defproj': 'Default project', 'prefs.none': 'None',
+    'prefs.keys': 'Shortcuts', 'prefs.keysOn': 'On (Space play / A,D nudge / Delete)', 'prefs.keysOff': 'Off',
+    'prefs.save': 'Save preferences', 'prefs.mfa': 'Security · Two-factor auth', 'prefs.mfaOn': 'Enabled', 'prefs.mfaOff': 'Disabled',
+    'prefs.mfaReq': 'Enforced by admin', 'prefs.mfaHint': 'Once TOTP is enabled, sign-in requires the 6-digit code from your authenticator app.',
+    'prefs.genKey': 'Generate secret',
   },
   vi: {
     'brand.tag': 'Chunke Label', 'brand.full': 'Nền tảng gán nhãn dữ liệu Chunke', 'brand.space': 'Không gian dự án',
@@ -155,6 +167,12 @@ const I18N = {
     'mod.llm': 'LLM', 'mod.pdf': 'PDF', 'mod.multimodal': 'Đa phương thức', 'mod.editing': 'Chỉnh sửa ảnh',
     'common.unsaved': 'Chưa lưu', 'common.saved': 'Đã lưu', 'common.loading': 'Đang tải…', 'common.empty': 'Không có dữ liệu',
     'common.yes': 'Có', 'common.no': 'Không', 'lang.label': 'Ngôn ngữ',
+    'prefs.title': 'Tùy chọn', 'prefs.sub': 'Ngôn ngữ, giá trị mặc định và bảo mật tài khoản', 'prefs.work': 'Tùy chọn làm việc',
+    'prefs.lang': 'Ngôn ngữ', 'prefs.size': 'Số mục/trang', 'prefs.defproj': 'Dự án mặc định', 'prefs.none': 'Không chỉ định',
+    'prefs.keys': 'Phím tắt', 'prefs.keysOn': 'Bật (Space phát / A,D chỉnh / Delete xóa)', 'prefs.keysOff': 'Tắt',
+    'prefs.save': 'Lưu tùy chọn', 'prefs.mfa': 'Bảo mật · Xác thực 2 yếu tố', 'prefs.mfaOn': 'Đã bật', 'prefs.mfaOff': 'Chưa bật',
+    'prefs.mfaReq': 'Bắt buộc bởi quản trị', 'prefs.mfaHint': 'Khi bật TOTP, đăng nhập cần mã 6 số từ ứng dụng xác thực.',
+    'prefs.genKey': 'Tạo khóa',
   },
 };
 function lang() {

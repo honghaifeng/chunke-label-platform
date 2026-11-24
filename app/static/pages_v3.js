@@ -43,6 +43,8 @@
     if (uc) uc.onclick = () => userMenu();
     const ts = document.getElementById('top-search');
     if (ts) ts.onkeydown = (e) => { if (e.key === 'Enter') location.hash = `#/tasks?q=${encodeURIComponent(e.target.value.trim())}`; };
+    const ls = document.getElementById('lang-switch');
+    if (ls) ls.onchange = () => setLang(ls.value);
   }
 
   function wbShell(wb, title, meta, mainHtml, sideHtml) {
@@ -687,24 +689,27 @@
     const [pref, mfa] = await Promise.all([api('/api/preferences'), api('/api/auth/mfa/status')]);
     const p = pref.preferences || {};
     mountPage('preferences', `
-      ${head('个人偏好', '界面语言、工作台默认值与账号安全')}
+      ${head(T('prefs.title'), T('prefs.sub'))}
       <div class="grid" style="grid-template-columns:1fr 1fr">
-        <div class="card"><div class="card-head"><h3 class="card-title">工作偏好</h3></div><div class="card-body">
-          <div class="field"><label>界面语言</label><select class="select" id="p-lang"><option value="zh" ${p.language !== 'en' ? 'selected' : ''}>简体中文</option><option value="en" ${p.language === 'en' ? 'selected' : ''}>English</option></select></div>
-          <div class="field"><label>列表每页条数</label><input class="input" id="p-size" value="${esc(p.page_size || 20)}"></div>
-          <div class="field"><label>默认项目</label><select class="select" id="p-proj"><option value="0">不指定</option>${projectOpts(p.default_project || 0)}</select></div>
-          <div class="field"><label>快捷键</label><select class="select" id="p-keys"><option value="on" ${p.shortcuts !== 'off' ? 'selected' : ''}>启用（空格播放 / A、D 微调 / Delete 删除）</option><option value="off" ${p.shortcuts === 'off' ? 'selected' : ''}>关闭</option></select></div>
-          <button class="btn primary" id="p-save">保存偏好</button>
+        <div class="card"><div class="card-head"><h3 class="card-title">${T('prefs.work')}</h3></div><div class="card-body">
+          <div class="field"><label>${T('prefs.lang')}</label><select class="select" id="p-lang">
+            <option value="zh" ${lang() === 'zh' ? 'selected' : ''}>简体中文</option>
+            <option value="en" ${lang() === 'en' ? 'selected' : ''}>English</option>
+            <option value="vi" ${lang() === 'vi' ? 'selected' : ''}>Tiếng Việt</option></select></div>
+          <div class="field"><label>${T('prefs.size')}</label><input class="input" id="p-size" value="${esc(p.page_size || 20)}"></div>
+          <div class="field"><label>${T('prefs.defproj')}</label><select class="select" id="p-proj"><option value="0">${T('prefs.none')}</option>${projectOpts(p.default_project || 0)}</select></div>
+          <div class="field"><label>${T('prefs.keys')}</label><select class="select" id="p-keys"><option value="on" ${p.shortcuts !== 'off' ? 'selected' : ''}>${T('prefs.keysOn')}</option><option value="off" ${p.shortcuts === 'off' ? 'selected' : ''}>${T('prefs.keysOff')}</option></select></div>
+          <button class="btn primary" id="p-save">${T('prefs.save')}</button>
         </div></div>
-        <div class="card"><div class="card-head"><h3 class="card-title">账号安全 · 双因子认证</h3><span class="card-sub">${mfa.enabled ? '已启用' : mfa.required_globally ? '管理员强制' : '未启用'}</span></div><div class="card-body">
-          <div class="hint" style="margin-bottom:12px">启用 TOTP 后，登录需要输入身份验证器 App 中的 6 位动态口令。</div>
-          <button class="btn" id="mfa-setup">${mfa.enabled ? '重置密钥' : '生成密钥'}</button>
+        <div class="card"><div class="card-head"><h3 class="card-title">${T('prefs.mfa')}</h3><span class="card-sub">${mfa.enabled ? T('prefs.mfaOn') : mfa.required_globally ? T('prefs.mfaReq') : T('prefs.mfaOff')}</span></div><div class="card-body">
+          <div class="hint" style="margin-bottom:12px">${T('prefs.mfaHint')}</div>
+          <button class="btn" id="mfa-setup">${mfa.enabled ? (lang() === 'zh' ? '重置密钥' : 'Reset') : T('prefs.genKey')}</button>
           <div id="mfa-box" style="margin-top:12px"></div>
         </div></div>
       </div>`, '个人偏好');
     $v('#p-save').onclick = async () => {
       await api('/api/preferences', { method: 'PUT', body: { preferences: { language: $v('#p-lang').value, page_size: Number($v('#p-size').value) || 20, default_project: Number($v('#p-proj').value) || 0, shortcuts: $v('#p-keys').value } } });
-      document.documentElement.dataset.lang = $v('#p-lang').value;
+      setLang($v('#p-lang').value);
       toast('偏好已保存', 'ok');
     };
     $v('#mfa-setup').onclick = async () => {
