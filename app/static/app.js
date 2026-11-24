@@ -1048,6 +1048,40 @@ function markDirty(wb) {
   if (el) { el.textContent = T('common.unsaved'); el.style.color = '#F59E0B'; }
 }
 
+function updateTimeLabel(wb) {
+  const cur = document.getElementById('aw-cur');
+  if (cur) cur.textContent = fmt(wb.currentTime || 0);
+}
+
+/* 申诉横幅与入口：验收驳回后可申请仲裁（对接 /api/tasks/{id}/appeal） */
+function mountAppealUI(task) {
+  const wb = document.getElementById('wb');
+  if (!wb || !task) return;
+  const old = document.getElementById('appeal-banner');
+  if (old) old.remove();
+  if (task.status === 'appeal') {
+    wb.insertAdjacentHTML('afterbegin', `<div id="appeal-banner" class="card" style="margin:0 0 10px;border-color:rgba(139,92,246,.45)">
+      <div class="card-body" style="padding:9px 14px;font-size:12.5px;display:flex;gap:8px;align-items:center">
+        <span class="chip purple">${T('status.appeal')}</span>
+        <span class="hint">${T('status.appeal')} · 仲裁期间任务只读，结果将在通知中告知。</span>
+      </div></div>`);
+    return;
+  }
+  const mine = (state.user || {}).id != null && (state.user || {}).id === task.assignee_id;
+  if (!mine || task.status !== 'annotating') return;
+  wb.insertAdjacentHTML('afterbegin', `<div id="appeal-banner" style="margin:0 0 10px;text-align:right">
+    <button class="btn sm ghost" id="btn-appeal">申请仲裁</button></div>`);
+  document.getElementById('btn-appeal').onclick = async () => {
+    const reason = prompt('申诉理由（验收驳回后可申请仲裁）：');
+    if (!reason || !reason.trim()) return;
+    try {
+      await api(`/api/tasks/${task.id}/appeal`, { method: 'POST', body: { reason: reason.trim() } });
+      toast('已提交申诉，任务进入仲裁流程', 'ok');
+      setTimeout(() => pageAnnotate(task.id), 600);
+    } catch (err) { toast(err.message, 'err'); }
+  };
+}
+
 function payloadOf(wb) {
   const base = {};
   if (typeof wb.customPayload === 'function') {
@@ -1256,15 +1290,14 @@ function renderAudioWorkbench(wb, labels, qc, mediaName) {
           <canvas id="wave" style="width:100%;height:170px;display:block;cursor:crosshair;margin-top:6px"></canvas>
           <div class="aw-transport">
             <span class="mono" id="aw-cur">0:00</span><span class="hint">/</span><span class="mono" id="total-t">${fmt(wb.duration)}</span>
-            <button class="icon-btn" id="aw-undo2" title="撤销">↩</button>
             <button class="icon-btn" id="btn-prevseg" title="上一段 [">⏮</button>
             <button class="play-btn" id="btn-play">${icon('play')}</button>
             <button class="icon-btn" id="btn-nextseg" title="下一段 ]">⏭</button>
             <button class="icon-btn" id="aw-loop" title="循环播放当前段">🔁</button>
-            <select class="select" id="rate" style="width:74px;height:28px;padding:2px 6px"><option value="0.5">0.5x</option><option value="1" selected>1x</option><option value="1.5">1.5x</option><option value="2">2x</option></select>
+            <select class="select" id="rate" style="width:64px;height:28px;padding:2px 6px"><option value="0.5">0.5x</option><option value="1" selected>1x</option><option value="1.5">1.5x</option><option value="2">2x</option></select>
             <span class="spacer"></span>
             <button class="icon-btn" id="aw-zoom-out" title="缩小">−</button>
-            <input type="range" id="aw-zoom" min="20" max="600" value="0" title="缩放" style="width:110px">
+            <input type="range" id="aw-zoom" min="20" max="600" value="20" title="缩放" style="width:58px">
             <button class="icon-btn" id="aw-zoom-in" title="放大">＋</button>
             <button class="btn sm ghost" id="aw-zoom100">100%</button>
             <button class="btn sm ghost" id="aw-fit">全长</button>
@@ -1332,8 +1365,8 @@ function onCleanup(fn) {
 }
 
 async function bindAudioWB(wb, mediaName, labels, qc) {
-  const audio = wb.audio;
   if (mediaName) loadAudio(`/media/${encodeURIComponent(mediaName)}`, wb);
+  const audio = wb.audio;   // 必须在 loadAudio 之后取，否则恒为 undefined
   wb._redraw = () => drawWave();
   const $id = (s) => document.getElementById(s);
   const saveInd = () => $id('save-ind');
@@ -1843,6 +1876,7 @@ async function bindAudioWB(wb, mediaName, labels, qc) {
     pxEl.value = String(Math.round(newPxs));
     const newSpan = (waveEl.clientWidth - 20) / newPxs;
     wb.viewStart = Math.max(0, Math.min(wb.duration - newSpan, tc - (tc - (wb.viewStart || 0)) * (newSpan / span)));
+    syncZoomBtns(newPxs);
     drawWave();
   };
   let wDrag = null;
@@ -1964,19 +1998,26 @@ async function bindAudioWB(wb, mediaName, labels, qc) {
 
   /* ---------- 缩放控件 ---------- */
   const zoomEl = $id('aw-zoom');
+  const fitBtn = $id('aw-fit'), z100Btn = $id('aw-zoom100');
+  const syncZoomBtns = (pxs) => {
+    fitBtn.classList.toggle('on', !pxs);
+    z100Btn.classList.toggle('on', !!pxs && Math.abs(pxs - 120) < 1);
+  };
   const setZoom = (pxs) => {
     wb.pxPerSec = pxs;
     zoomEl.value = String(Math.round(pxs));
     const cvs = $id('wave');
     const newSpan = (cvs.clientWidth - 20) / pxs;
     wb.viewStart = Math.max(0, Math.min(wb.duration - newSpan, (wb.currentTime || 0) - newSpan / 2));
+    syncZoomBtns(pxs);
     drawWave();
   };
   zoomEl.oninput = () => setZoom(Number(zoomEl.value));
   $id('aw-zoom-out').onclick = () => setZoom(Math.max(20, (wb.pxPerSec || 100) / 1.4));
   $id('aw-zoom-in').onclick = () => setZoom(Math.min(600, (wb.pxPerSec || 100) * 1.4));
   $id('aw-zoom100').onclick = () => setZoom(120);
-  $id('aw-fit').onclick = () => { wb.pxPerSec = 0; zoomEl.value = '0'; wb.viewStart = 0; drawWave(); };
+  $id('aw-fit').onclick = () => { wb.pxPerSec = 0; zoomEl.value = '20'; wb.viewStart = 0; syncZoomBtns(0); drawWave(); };
+  syncZoomBtns(0);
 
   /* ---------- 播放 ---------- */
   const playBtn = $id('btn-play');
@@ -2006,7 +2047,6 @@ async function bindAudioWB(wb, mediaName, labels, qc) {
     markDirty(wb); renderList(); drawWave();
   };
   $id('aw-undo').onclick = doUndo;
-  $id('aw-undo2').onclick = doUndo;
   $id('aw-reset').onclick = async () => {
     if (!await confirmModal('重置重做？', '将放弃未保存的修改，恢复为上次保存的草稿。', '重置')) return;
     const d = await api(`/api/tasks/${wb.task.id}`);
