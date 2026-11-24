@@ -68,7 +68,7 @@ const statusChip = (s) => {
   return `<span class="chip ${cls}"><i class="dot"></i>${T('status.' + s)}</span>`;
 };
 const MODALITY_ICON = { audio: 'audio', image: 'image', video: 'video', pointcloud: 'cloud', editing: 'spark' };
-const SPK_COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#8B5CF6', '#06B6D4', '#EF4444'];
+const SPK_COLORS = ['#3B82F6', '#16A34A', '#F59E0B', '#8B5CF6', '#06B6D4', '#EF4444'];
 
 /* ================= i18n 中/英/越 ================= */
 const I18N = {
@@ -201,8 +201,8 @@ function setLang(l) {
 
 /* 目标类别配色：画布、列表、结果面板统一取色 */
 const BOX_COLORS = {
-  '商品主体': '#3B82F6', '价签': '#10B981', '货架': '#F59E0B', '遮挡': '#EF4444',
-  '清晰': '#22C55E', '模糊': '#F97316', '过曝': '#E879F9',
+  '商品主体': '#3B82F6', '价签': '#16A34A', '货架': '#F59E0B', '遮挡': '#EF4444',
+  '清晰': '#16A34A', '模糊': '#F97316', '过曝': '#E879F9',
   '行人': '#A855F7', '骑行者': '#06B6D4', '轿车': '#22D3EE', '货车': '#F59E0B',
   '卡车': '#EC4899', '公交车': '#8B5CF6',
 };
@@ -593,7 +593,7 @@ function bindAssistant() {
     try {
       const r = await api('/api/assistant/ask', { method: 'POST', body: { question: q, task_id: tid() } });
       $('#ai-thinking').remove();
-      box.insertAdjacentHTML('beforeend', `<div style="margin:6px 0"><span style="display:inline-block;background:rgba(148,163,184,.1);padding:6px 10px;border-radius:9px;max-width:95%;white-space:pre-wrap">${esc(r.answer)}</span><div class="hint" style="font-size:10.5px;margin-top:2px">${r.provider === 'external' ? '外部模型' : '内置检索'}</div></div>`);
+      box.insertAdjacentHTML('beforeend', `<div style="margin:6px 0"><span style="display:inline-block;background:rgba(100,116,139,.1);padding:6px 10px;border-radius:9px;max-width:95%;white-space:pre-wrap">${esc(r.answer)}</span><div class="hint" style="font-size:10.5px;margin-top:2px">${r.provider === 'external' ? '外部模型' : '内置检索'}</div></div>`);
     } catch (err) {
       const th = $('#ai-thinking'); if (th) th.textContent = err.message;
     }
@@ -756,12 +756,12 @@ async function pageDashboard() {
     const h2 = Math.round((d.done / maxTrend) * CHART_H);
     return `<g><title>${esc(d.day)}：新建 ${d.created} · 完成 ${d.done}</title>
       <rect x="${x}" y="${BASE - h1}" width="11" height="${Math.max(h1, 2)}" rx="2" fill="#3B82F6" opacity=".9"/>
-      <rect x="${x + 14}" y="${BASE - h2}" width="11" height="${Math.max(h2, 2)}" rx="2" fill="#10B981" opacity=".9"/>
+      <rect x="${x + 14}" y="${BASE - h2}" width="11" height="${Math.max(h2, 2)}" rx="2" fill="#16A34A" opacity=".9"/>
       <text x="${x + 12}" y="136" text-anchor="middle" fill="#64748B" font-size="9.5">${esc(d.day)}</text></g>`;
   }).join('');
   const grid = [0, 1, 2, 3].map((n) => {
     const y = Math.round(BASE - (CHART_H / 3) * n);
-    return `<line x1="8" y1="${y}" x2="372" y2="${y}" stroke="#1E2A3F" stroke-dasharray="${n ? '3 5' : '0'}" opacity="${n ? '.7' : '1'}"/>`;
+    return `<line x1="8" y1="${y}" x2="372" y2="${y}" stroke="#E5E6EB" stroke-dasharray="${n ? '3 5' : '0'}" opacity="${n ? '.7' : '1'}"/>`;
   }).join('');
   const qcQueue = (s.submitted || 0) + (s.reviewing || 0);
   const engineOnline = (e) => !!(e && e.online);
@@ -791,7 +791,7 @@ async function pageDashboard() {
         <div class="card-head"><h3 class="card-title">${T('dash.trend')}</h3><span class="card-sub">${T('task.new')} / ${T('dash.done')}</span></div>
         <div class="card-body">
           ${chartHtml}
-          <div class="legend"><span><i style="background:#3B82F6"></i>${T('task.new')}</span><span><i style="background:#10B981"></i>${T('dash.done')}</span></div>
+          <div class="legend"><span><i style="background:#3B82F6"></i>${T('task.new')}</span><span><i style="background:#16A34A"></i>${T('dash.done')}</span></div>
         </div>
       </div>
       <div class="card">
@@ -800,7 +800,7 @@ async function pageDashboard() {
           ${stats.by_status.map((x) => {
             const pct = s.total ? Math.round((x.value / s.total) * 100) : 0;
             const stKey = ({ reviewing: 'review', accepting: 'review_done' })[x.key] || x.key;
-            return `<div class="bar-row"><span>${T('status.' + stKey)}</span><div class="bar"><i style="width:${pct}%;background:${x.key === 'done' ? '#10B981' : x.key === 'pending' ? '#64748B' : x.key === 'annotating' ? '#3B82F6' : '#F59E0B'}"></i></div><b>${x.value}</b></div>`;
+            return `<div class="bar-row"><span>${T('status.' + stKey)}</span><div class="bar"><i style="width:${pct}%;background:${x.key === 'done' ? '#16A34A' : x.key === 'pending' ? '#64748B' : x.key === 'annotating' ? '#3B82F6' : '#F59E0B'}"></i></div><b>${x.value}</b></div>`;
           }).join('')}
           <div class="divider"></div>
           <div class="kv"><span>${T('dash.dist').indexOf('分布') >= 0 ? '多模态覆盖' : 'Coverage'}</span><b>${stats.by_modality.map((m) => `${T('mod.' + m.modality) !== 'mod.' + m.modality ? T('mod.' + m.modality) : esc(m.name)} ${m.value}`).join(' · ') || '—'}</b></div>
@@ -1118,7 +1118,7 @@ async function save(wb) {
     const el = document.getElementById('save-ind');
     if (el) {
       el.textContent = `${T('common.saved')}${r.saved_at ? ' · ' + String(r.saved_at).slice(11, 19) : ''}`;
-      el.style.color = '#22C55E';
+      el.style.color = '#16A34A';
     }
     toast(T('common.saved'), 'ok');
     return r;
@@ -1292,6 +1292,7 @@ function renderAudioWorkbench(wb, labels, qc, mediaName) {
         <div class="wave-panel" style="padding:10px 12px">
           <canvas id="wave-mini" style="width:100%;height:34px;display:block;cursor:pointer"></canvas>
           <canvas id="wave" style="width:100%;height:170px;display:block;cursor:crosshair;margin-top:6px"></canvas>
+          <div class="aw-times" id="aw-times"></div>
           <div class="aw-transport">
             <span class="mono" id="aw-cur">0:00</span><span class="hint">/</span><span class="mono" id="total-t">${fmt(wb.duration)}</span>
             <button class="icon-btn" id="btn-prevseg" title="上一段 [">⏮</button>
@@ -1308,8 +1309,11 @@ function renderAudioWorkbench(wb, labels, qc, mediaName) {
           </div>
           <div id="aw-spk-row" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px"></div>
           <div class="hint" style="margin-top:6px;text-align:center">在下方拉框轨道上拖拽新建拉框，或点击选中一个拉框开始编辑</div>
-          <div id="aw-fulltext-card" style="margin-top:8px"></div>
-          <div class="filters" style="margin-top:8px;gap:6px">
+        </div>
+        <div id="aw-editor" style="margin-top:10px"></div>
+        <div id="aw-fulltext-card" style="margin-top:10px"></div>
+        <div class="wave-panel" style="margin-top:10px;padding:8px 12px">
+          <div class="filters" style="gap:6px">
             <button class="btn sm" id="btn-prelabel" ${canEdit ? '' : 'disabled'}>开始预识别</button>
             <button class="btn sm ghost" id="btn-prelabel-emo" ${canEdit ? '' : 'disabled'}>含情绪</button>
             <button class="btn sm ghost" id="btn-upload">${icon('upload')} ${mediaName ? '更换音频' : '上传音频'}</button>
@@ -1327,12 +1331,11 @@ function renderAudioWorkbench(wb, labels, qc, mediaName) {
           <div id="aw-tab-list">
             <div id="aw-stats" style="padding:10px 12px 0"></div>
             <div style="display:flex;gap:6px;padding:8px 12px 0">
-              <button class="btn sm" id="aw-next-pending">下一个待标注</button>
-              <button class="btn sm ghost" id="aw-next-draft">下一个草稿</button>
+              <button class="btn sm" id="aw-next-pending" style="flex:1">下一个待标注</button>
+              <button class="btn sm ghost" id="aw-next-draft" style="flex:1">下一个草稿</button>
             </div>
             <div class="filters" style="padding:8px 12px 0;gap:6px" id="aw-filters"></div>
             <div id="aw-list" style="max-height:340px;overflow:auto;padding:8px 12px 12px"></div>
-            <div id="aw-editor" style="padding:0 12px 12px"></div>
           </div>
           <div id="aw-tab-rules" style="display:none;padding:12px"></div>
         </div>
@@ -1468,23 +1471,30 @@ async function bindAudioWB(wb, mediaName, labels, qc) {
       ctx.fillRect(x1, laneY, x2 - x1, laneH);
       if (st === 'pending') { ctx.fillStyle = hatchPattern('rgba(255,255,255,.55)'); ctx.fillRect(x1, laneY, x2 - x1, laneH); }
       ctx.restore();
-      ctx.strokeStyle = focused ? color : color + '99';
-      ctx.lineWidth = focused ? 2 : 1.2;
+      ctx.strokeStyle = focused ? '#F54A45' : color + '99';
+      ctx.lineWidth = focused ? 2.2 : 1.2;
       if (st === 'draft' && !focused) ctx.setLineDash([4, 3]);
       ctx.beginPath(); ctx.roundRect(x1, laneY, Math.max(4, x2 - x1), laneH, 3); ctx.stroke();
       ctx.setLineDash([]);
-      // 块标签：段号 + 说话人（说话人着色），窄块不画避免重叠
+      if (focused) {
+        ctx.fillStyle = '#F97316';
+        ctx.beginPath(); ctx.arc(x1 + 4, laneY + 4, 4, 0, Math.PI * 2); ctx.fill();
+      }
+      // 块标签：段号 + 说话人（说话人着色），裁剪到块内防溢出
       if (x2 - x1 > 30) {
+        ctx.save();
+        ctx.beginPath(); ctx.rect(x1, laneY, x2 - x1, laneH); ctx.clip();
         ctx.font = '600 10px ui-sans-serif,system-ui';
         ctx.fillStyle = PAL.segNum;
         ctx.fillText('#' + (i + 1), x1 + 3, laneY + 12);
         const nw = ctx.measureText('#' + (i + 1)).width;
         ctx.fillStyle = color;
         ctx.fillText(s.spk || '', x1 + 3 + nw + 4, laneY + 12);
-      }
-      if (x2 - x1 > 46) {
-        ctx.fillStyle = PAL.blockText; ctx.font = '10px ui-sans-serif,system-ui';
-        ctx.fillText((s.text || '').slice(0, Math.floor((x2 - x1) / 10)), x1 + 3, laneY + laneH - 6);
+        if (x2 - x1 > 46) {
+          ctx.fillStyle = PAL.blockText; ctx.font = '10px ui-sans-serif,system-ui';
+          ctx.fillText((s.text || '').slice(0, Math.floor((x2 - x1) / 10)), x1 + 3, laneY + laneH - 6);
+        }
+        ctx.restore();
       }
       if (focused) {
         ctx.fillStyle = color;
@@ -1546,6 +1556,10 @@ async function bindAudioWB(wb, mediaName, labels, qc) {
       const color = SPK_COLORS[Math.max(0, spks.indexOf(s.spk)) % SPK_COLORS.length];
       ctx.fillStyle = color + (awStatusOf(s) === 'labeled' ? 'DD' : '88');
       ctx.fillRect((Number(s.start) / dur) * W, H - 6, Math.max(2, ((Number(s.end) - Number(s.start)) / dur) * W), 4);
+      // 段起点▼标记（选中段橙色）
+      const mx = (Number(s.start) / dur) * W;
+      ctx.fillStyle = wb._focus === i ? '#F97316' : '#8F959E';
+      ctx.beginPath(); ctx.moveTo(mx - 4, H - 12); ctx.lineTo(mx + 4, H - 12); ctx.lineTo(mx, H - 7); ctx.closePath(); ctx.fill();
     });
     const { vs, ve } = view();
     ctx.fillStyle = PAL.viewFill;
@@ -1571,7 +1585,7 @@ async function bindAudioWB(wb, mediaName, labels, qc) {
     const el = $id('aw-stats'); if (!el) return;
     el.innerHTML = `
       <div style="display:flex;gap:16px;font-size:12px;align-items:center">
-        <span><i style="width:8px;height:8px;border-radius:50%;background:#22C55E;display:inline-block;margin-right:4px"></i>已标注 <b>${stCnt.labeled}</b></span>
+        <span><i style="width:8px;height:8px;border-radius:50%;background:#16A34A;display:inline-block;margin-right:4px"></i>已标注 <b>${stCnt.labeled}</b></span>
         <span><i style="width:8px;height:8px;border-radius:50%;background:#3B82F6;display:inline-block;margin-right:4px"></i>草稿 <b>${stCnt.draft}</b></span>
         <span><i style="width:8px;height:8px;border-radius:50%;background:#F59E0B;display:inline-block;margin-right:4px"></i>待标注 <b>${stCnt.pending}</b></span>
         <span class="hint" style="margin-left:auto">共 ${wb.segments.length} 段</span>
@@ -1614,9 +1628,11 @@ async function bindAudioWB(wb, mediaName, labels, qc) {
           <button class="btn sm ghost danger" data-del="${i}">×</button>
         </div>
         <div class="aw-card-body">
-          <span class="spk-dot" style="background:${color}"></span>
-          <select class="select aw-card-spk" data-card-spk="${i}" style="height:22px;font-size:11px;width:88px;color:${color};font-weight:600">${spks.map((x) => `<option ${x === s.spk ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>
-          <span class="aw-card-text ${s.text ? '' : 'empty'}" data-card-text="${i}">${esc(s.text || '（点击录入转写）')}</span>
+          <div class="aw-card-spkline">
+            <span class="spk-dot" style="background:${color}"></span>
+            <select class="select aw-card-spk" data-card-spk="${i}" style="height:20px;font-size:11px;width:88px;color:${color};font-weight:600;padding:0 2px;border:none;background:none">${spks.map((x) => `<option ${x === s.spk ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>
+          </div>
+          <div class="aw-card-text ${s.text ? '' : 'empty'}" data-card-text="${i}" style="color:${color}">${esc(s.text || '（点击录入转写）')}</div>
         </div>
       </div>`;
     }).join('') || '<div class="empty" style="padding:16px">没有匹配的段</div>';
@@ -1627,34 +1643,65 @@ async function bindAudioWB(wb, mediaName, labels, qc) {
 
   function renderEditor() {
     const box = $id('aw-editor');
-    if (wb._focus == null || !wb.segments[wb._focus]) { box.innerHTML = ''; return; }
+    const timesEl = $id('aw-times');
+    if (wb._focus == null || !wb.segments[wb._focus]) { box.innerHTML = ''; if (timesEl) timesEl.textContent = ''; return; }
     const i = wb._focus, s = wb.segments[i];
     const spks = awSpeakers(wb);
     const emotions = wb.labels['情绪'] || ['中性', '满意', '不满', '愤怒'];
     const events = wb.labels['事件'] || [];
     const evs = s.events || [];
     const color = SPK_COLORS[Math.max(0, spks.indexOf(s.spk)) % SPK_COLORS.length];
-    box.innerHTML = `<div class="seg-row" data-i="${i}" style="border-left-color:${color}">
-      <div class="seg-head">
-        <span class="seg-no">${String(i + 1).padStart(2, '0')}</span>
-        <span class="seg-spk"><span class="spk-dot" style="background:${color}"></span>
-          <select data-f="spk" style="color:${color};font-weight:600">${spks.map((x) => `<option ${x === s.spk ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></span>
-        <span class="seg-time"><input value="${Number(s.start).toFixed(2)}" data-f="start"/><em>→</em><input value="${Number(s.end).toFixed(2)}" data-f="end"/></span>
-        <span class="seg-dur">${Math.max(0, Number(s.end) - Number(s.start)).toFixed(2)}s</span>
-        <span class="spacer"></span>
-        <button class="btn sm primary" data-confirm="${i}">完成标注 ✓</button>
+    const st = awStatusOf(s);
+    const fmtMs = (t) => {
+      const n = Math.max(0, Number(t) || 0);
+      const m = Math.floor(n / 60), sec = Math.floor(n % 60), ms = Math.round((n - Math.floor(n)) * 1000);
+      return `${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}.${String(ms).padStart(3, '0')}`;
+    };
+    if (timesEl) timesEl.innerHTML = `开始 <b>${fmtMs(s.start)}</b><span class="hint" style="margin:0 14px">结束 <b>${fmtMs(s.end)}</b></span>时长 <b>${Math.max(0, Number(s.end) - Number(s.start)).toFixed(3)} 秒</b>`;
+    box.innerHTML = `<div class="aw-segedit seg-row" data-i="${i}">
+      <div class="aw-segedit-head">
+        <span class="aw-segedit-title">段级标注 · <b>#${i + 1}</b> · <b style="color:${color}">${esc(s.spk || '')}</b> · ${fmtShort(s.start)}–${fmtShort(s.end)} <span class="hint">/ ${wb.segments.length}</span></span>
+        <button class="icon-btn" id="aw-seg-play" title="播放本段" style="width:24px;height:24px">▶</button>
+        <span class="chip ${st === 'labeled' ? 'done' : st === 'draft' ? 'annotating' : 'pending'}">${st === 'labeled' ? '已标注' : st === 'draft' ? '草稿' : '待标注'}</span>
       </div>
-      <textarea class="seg-text" data-f="text" rows="2" placeholder="转写文本…">${esc(s.text)}</textarea>
+      <div class="aw-segedit-attrs">
+        <label>性别 <select data-f="gender">${['未指定', '男', '女'].map((x) => `<option ${(s.gender || '未指定') === x ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
+        <label>情绪 <select data-f="emotion">${emotions.map((x) => `<option ${x === s.emotion ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></label>
+        <label>说话人 <select data-f="spk" style="color:${color};font-weight:600">${spks.map((x) => `<option ${x === s.spk ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></label>
+        <span class="spacer"></span>
+        <span class="hint">边界</span>
+        <span class="seg-time"><input value="${Number(s.start).toFixed(2)}" data-f="start"/><em>→</em><input value="${Number(s.end).toFixed(2)}" data-f="end"/></span>
+      </div>
+      <textarea class="seg-text" data-f="text" rows="3" placeholder="转写文本…">${esc(s.text)}</textarea>
       <div class="seg-pron-row">
-        <select data-f="emotion" title="情绪">${emotions.map((x) => `<option ${x === s.emotion ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>
-        <input data-f="emo_intensity" type="number" min="1" max="5" value="${Number(s.emo_intensity) || 3}" title="情绪强度" style="width:52px"/>
         <select data-f="lang" title="语种">${['中文', '英文', '日语', '粤语', '混合', '其他'].map((x) => `<option ${(s.lang || '中文') === x ? 'selected' : ''}>${x}</option>`).join('')}</select>
         <select data-f="pron_type" title="发音校对">${['无', '错读', '漏读', '多读', '声调错误'].map((x) => `<option ${(s.pron_type || '无') === x ? 'selected' : ''}>${x}</option>`).join('')}</select>
+        <input data-f="emo_intensity" type="number" min="1" max="5" value="${Number(s.emo_intensity) || 3}" title="情绪强度" style="width:52px"/>
         ${events.length ? `<select data-f="event" title="事件"><option value="">+事件</option>${events.filter((x) => !evs.includes(x)).map((x) => `<option>${esc(x)}</option>`).join('')}</select>` : ''}
       </div>
       ${evs.length ? `<div class="seg-tags">${evs.map((x) => `<span class="seg-tag">${esc(x)}<button type="button" data-del-event="${esc(x)}" data-seg="${i}">×</button></span>`).join('')}</div>` : ''}
       <div id="aw-gloss-hint"></div>
+      <div class="aw-segedit-foot">
+        <button class="btn ghost" id="aw-prev-frame">上一框</button>
+        <button class="btn primary" id="aw-save-next">保存并下一框</button>
+      </div>
     </div>`;
+    $id('aw-seg-play').onclick = () => {
+      if (!audio) return toast('该任务还没有音频文件', 'warn');
+      audio.currentTime = Number(s.start); wb.currentTime = audio.currentTime;
+      wb._playUntil = Number(s.end);
+      audio.play(); wb.playing = true; $id('btn-play').innerHTML = icon('pause');
+      updateTimeLabel(wb); drawWave();
+    };
+    $id('aw-prev-frame').onclick = () => selectSeg(Math.max(0, i - 1), true);
+    $id('aw-save-next').onclick = async () => {
+      s.status = 'labeled'; markDirty(wb);
+      syncCardStatus(i); drawWave();
+      try { await save(wb); } catch (e) { /* 保存失败已由 save toast */ }
+      const nxt = wb.segments.findIndex((x, j) => j > i && awStatusOf(x) !== 'labeled');
+      const target = nxt >= 0 ? nxt : (i + 1 < wb.segments.length ? i + 1 : i);
+      selectSeg(target, true, true);
+    };
     glossHint(s);
   }
 
@@ -2034,7 +2081,7 @@ async function bindAudioWB(wb, mediaName, labels, qc) {
   $id('rate').onchange = (e) => { if (audio) audio.playbackRate = Number(e.target.value); };
   $id('aw-loop').onclick = () => {
     wb.loopSeg = !wb.loopSeg;
-    $id('aw-loop').style.color = wb.loopSeg ? '#60A5FA' : '';
+    $id('aw-loop').style.color = wb.loopSeg ? '#2563EB' : '';
     toast(wb.loopSeg ? '循环播放当前段' : '关闭循环', 'ok');
   };
   const stepSeg = (d) => {
@@ -2146,6 +2193,10 @@ async function bindAudioWB(wb, mediaName, labels, qc) {
       const seg = wb._focus != null && wb.segments[wb._focus];
       if (wb.loopSeg && seg && audio.currentTime >= Number(seg.end) && wb.playing) {
         audio.currentTime = Number(seg.start);
+      }
+      if (wb._playUntil != null && audio.currentTime >= wb._playUntil && wb.playing) {
+        wb._playUntil = null;
+        audio.pause(); wb.playing = false; playBtn.innerHTML = icon('play');
       }
       // 播放中的段高亮（不重渲染，直接切 class）
       const pIdx = wb.segments.findIndex((s) => audio.currentTime >= Number(s.start) && audio.currentTime < Number(s.end));
@@ -3061,7 +3112,7 @@ function bindImageWorkbench(wb, classes) {
       });
       html += esc(text.slice(pos));
       $('#ocr-check-out').innerHTML = `
-        <div style="font-size:12.5px;line-height:2;background:rgba(13,21,36,.6);border:1px solid var(--border);border-radius:8px;padding:10px;max-height:180px;overflow:auto">${html || esc(text)}</div>
+        <div style="font-size:12.5px;line-height:2;background:rgba(255,255,255,.6);border:1px solid var(--border);border-radius:8px;padding:10px;max-height:180px;overflow:auto">${html || esc(text)}</div>
         ${issues.length ? `<div style="margin-top:6px">${issues.slice(0, 8).map((it) => `<div class="hint" style="line-height:1.7">[${it.level === 'error' ? '疑似错误' : '提示'}] ${esc(it.message)}${it.suggestion ? ` → ${esc(it.suggestion)}` : ''}</div>`).join('')}</div>` : ''}`;
     } catch (err) { toast(err.message, 'err'); }
     chk.disabled = false;
@@ -3278,7 +3329,7 @@ function drawImageBoxes(wb) {
   // 正在拖的预览框
   if (wb._dragRect) {
     const r = wb._dragRect;
-    ctx.strokeStyle = '#FCD34D'; ctx.setLineDash([5, 3]); ctx.lineWidth = 2;
+    ctx.strokeStyle = '#B45309'; ctx.setLineDash([5, 3]); ctx.lineWidth = 2;
     ctx.strokeRect(r.x * sw, r.y * sh, r.w * sw, r.h * sh);
     ctx.setLineDash([]);
   }
@@ -3292,12 +3343,12 @@ function drawImageBoxes(wb) {
   // 多边形草稿
   if (wb._polyDraft && wb._polyDraft.length) {
     const pts = wb._polyDraft;
-    ctx.strokeStyle = '#FCD34D'; ctx.lineWidth = 2;
+    ctx.strokeStyle = '#B45309'; ctx.lineWidth = 2;
     ctx.beginPath();
     pts.forEach(([x, y], i) => (i ? ctx.lineTo(x * sw, y * sh) : ctx.moveTo(x * sw, y * sh)));
     ctx.stroke();
     pts.forEach(([x, y], i) => {
-      ctx.fillStyle = i === 0 ? '#22C55E' : '#FCD34D';
+      ctx.fillStyle = i === 0 ? '#16A34A' : '#B45309';
       ctx.fillRect(x * sw - 3, y * sh - 3, 6, 6);
     });
   }
@@ -3368,7 +3419,7 @@ function drawShapes(ctx, wb, sw, sh) {
     ctx.stroke();
     kps.forEach((k, i) => {
       const x = k.x * sw, y = k.y * sh;
-      const col = sel && sel.kind === 'keypoint' && sel.index === i ? '#FCD34D' : '#22C55E';
+      const col = sel && sel.kind === 'keypoint' && sel.index === i ? '#B45309' : '#16A34A';
       ctx.fillStyle = col;
       ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI * 2); ctx.fill();
       ctx.fillStyle = '#050912';
@@ -3405,7 +3456,7 @@ function shapeListHTML(wb) {
   (wb.keypoints || []).forEach((k, i) => {
     const on = sel && sel.kind === 'keypoint' && sel.index === i;
     rows.push(`<div class="shape-row ${on ? 'sel' : ''}" data-sel="keypoint:${i}">
-      <i style="background:#22C55E"></i><span class="shape-kind">关键点</span>
+      <i style="background:#16A34A"></i><span class="shape-kind">关键点</span>
       <input class="box-name" data-shape-label="keypoint:${i}" value="${esc(k.label || `P${i + 1}`)}" style="width:82px" />
       <span class="sub">${(k.x * 100).toFixed(1)},${(k.y * 100).toFixed(1)}</span>
       <button class="box-del" data-shape-del="keypoint:${i}" title="删除">${icon('x')}</button></div>`);
@@ -3590,8 +3641,8 @@ async function mountSpecPanel(task, project, el) {
 function violationsHTML(violations) {
   if (!violations || !violations.length) return '';
   return `<div style="margin-top:8px;border:1px solid rgba(239,68,68,.4);background:rgba(239,68,68,.08);border-radius:8px;padding:8px 10px">
-    <div style="font-size:12px;font-weight:600;color:#FCA5A5;margin-bottom:4px">规范预警 · ${violations.length} 项</div>
-    ${violations.map((v) => `<div style="font-size:11.5px;line-height:1.7;color:${v.level === 'error' ? '#FECACA' : '#FCD34D'}">[${v.level === 'error' ? '错误' : '警告'}] ${esc(v.message)}</div>`).join('')}
+    <div style="font-size:12px;font-weight:600;color:#B91C1C;margin-bottom:4px">规范预警 · ${violations.length} 项</div>
+    ${violations.map((v) => `<div style="font-size:11.5px;line-height:1.7;color:${v.level === 'error' ? '#FECACA' : '#B45309'}">[${v.level === 'error' ? '错误' : '警告'}] ${esc(v.message)}</div>`).join('')}
   </div>`;
 }
 
@@ -3620,7 +3671,7 @@ async function submitWithRuleGuard(path, payload, okText = '提交质检') {
     if (err.status === 428 && err.data && err.data.confirm_required) {
       const vs = err.data.violations || [];
       renderViolations(vs);
-      const html = vs.map((v) => `<div style="font-size:12px;line-height:1.8;color:${v.level === 'error' ? '#FECACA' : '#FCD34D'}">[${v.level === 'error' ? '错误' : '警告'}] ${esc(v.message)}</div>`).join('');
+      const html = vs.map((v) => `<div style="font-size:12px;line-height:1.8;color:${v.level === 'error' ? '#FECACA' : '#B45309'}">[${v.level === 'error' ? '错误' : '警告'}] ${esc(v.message)}</div>`).join('');
       const ok = await confirmModal('存在规范违规', `<div style="text-align:left">${html}<div class="hint" style="margin-top:8px">修正后提交，或强制提交由质检环节复核。</div></div>`, '强制提交');
       if (!ok) throw err;
       return api(path, { method: 'POST', body: { payload, force: true } });
@@ -3980,7 +4031,7 @@ async function pageAudioBench() {
         <div style="flex:1;min-width:0">
           <b style="font-size:13.5px">任务 #${t.id}</b>
           <div class="sub" style="margin-top:3px">${fmtDur(t.duration || 0)} · 共 ${t.frames} 框 ·
-            <span style="color:#22C55E">已标注 ${t.labeled}</span> ·
+            <span style="color:#16A34A">已标注 ${t.labeled}</span> ·
             <span style="color:#F59E0B">待标注 ${t.pending}</span>${t.draft ? ` · <span style="color:#3B82F6">草稿 ${t.draft}</span>` : ''}
             <span class="hint"> · ${esc(t.project_name || '')}</span></div>
         </div>
@@ -4046,7 +4097,7 @@ async function pageBench(query) {
     </div>
     <div class="grid kpi-grid" style="margin-bottom:14px">
       <div class="kpi"><div class="kpi-label">${T('dash.doing')}</div><div class="kpi-value">${doing.length}</div></div>
-      <div class="kpi"><div class="kpi-label">${T('task.rework')}</div><div class="kpi-value" style="color:${rework.length ? '#F87171' : 'inherit'}">${rework.length}</div></div>
+      <div class="kpi"><div class="kpi-label">${T('task.rework')}</div><div class="kpi-value" style="color:${rework.length ? '#DC2626' : 'inherit'}">${rework.length}</div></div>
       <div class="kpi"><div class="kpi-label">${T('task.submitted')}/${T('task.review')}</div><div class="kpi-value">${inQc.length}</div></div>
       <div class="kpi"><div class="kpi-label">${T('dash.done')}</div><div class="kpi-value">${done.length}</div></div>
     </div>
@@ -4059,7 +4110,7 @@ async function pageBench(query) {
       </div></div>`
     : `<div class="empty" style="margin-bottom:14px">${lang() === 'zh' ? '当前没有可生产的' + esc(modLabel) + '任务，去任务大厅领取吧' : 'No tasks, visit the hall'}</div>`}
     ${rework.length ? `<div class="card" style="margin-bottom:14px;border-color:rgba(239,68,68,.4)"><div class="card-head"><h3 class="card-title">${T('task.rework')}</h3><span class="card-sub">${rework.length}</span></div>
-      <div class="card-body">${rework.map((t) => `<div style="display:flex;gap:10px;align-items:center;padding:6px 0;border-bottom:1px solid rgba(30,42,63,.4)">
+      <div class="card-body">${rework.map((t) => `<div style="display:flex;gap:10px;align-items:center;padding:6px 0;border-bottom:1px solid rgba(31,35,41,.4)">
         <b style="font-size:12.5px">${esc(t.name)}</b><span class="chip danger">${lang() === 'zh' ? '返修×' : 'R'}${t.rework_count}</span>
         <span class="sub">${esc(t.batch || '')}</span><a class="btn sm primary" style="margin-left:auto" href="#/annotate/${t.id}">${T('task.annotate')}</a></div>`).join('')}</div></div>` : ''}
     <div class="card"><div class="card-head"><h3 class="card-title">${T('nav.tasks')}</h3><span class="card-sub">${mine.length}</span></div>
@@ -4402,7 +4453,7 @@ async function pageMembers() {
           <div class="kv"><span>客户(只读)</span><b>只读查看进度</b></div>
           <div class="divider"></div>
           <div class="panel-label">数据隔离规则</div>
-          <div class="hint">• 非平台管理员只能看到 <b style="color:#93C5FD">project_members</b> 中授权的项目<br/>
+          <div class="hint">• 非平台管理员只能看到 <b style="color:#1D4ED8">project_members</b> 中授权的项目<br/>
           • 标注员只能访问 assignee_id 为自己的任务<br/>
           • 质检员只能复核 reviewer_id 为自己的任务<br/>
           • 所有跨项目访问在后端二次校验，不依赖前端隐藏</div>
@@ -4487,9 +4538,9 @@ async function pageStats() {
     const h2 = Math.round((d.done / maxTrend) * 150);
     return `<g>
       <rect x="${x}" y="${200 - h1}" width="18" height="${h1}" rx="3" fill="#3B82F6" opacity=".9"/>
-      <rect x="${x + 22}" y="${200 - h2}" width="18" height="${h2}" rx="3" fill="#10B981" opacity=".9"/>
+      <rect x="${x + 22}" y="${200 - h2}" width="18" height="${h2}" rx="3" fill="#16A34A" opacity=".9"/>
       <text x="${x + 20}" y="218" text-anchor="middle" fill="#64748B" font-size="10">${d.day}</text>
-      <text x="${x + 9}" y="${195 - h1}" text-anchor="middle" fill="#93C5FD" font-size="9">${d.created || ''}</text>
+      <text x="${x + 9}" y="${195 - h1}" text-anchor="middle" fill="#1D4ED8" font-size="9">${d.created || ''}</text>
     </g>`;
   }).join('');
   const content = `
@@ -4503,11 +4554,11 @@ async function pageStats() {
     <div class="grid two-col">
       <div class="card"><div class="card-head"><h3 class="card-title">近 7 日吞吐</h3><span class="card-sub">新建 / 完成</span></div>
         <div class="card-body"><svg class="chart" viewBox="0 0 620 230" height="230">
-          <line x1="30" y1="201" x2="610" y2="201" stroke="#1E2A3F"/>
+          <line x1="30" y1="201" x2="610" y2="201" stroke="#E5E6EB"/>
           ${[0, 50, 100, 150].map((v, i) => `<line x1="30" y1="${201 - v}" x2="610" y2="${201 - v}" stroke="#16213A" stroke-dasharray="3 4"/>
             <text x="22" y="${205 - v}" text-anchor="end" fill="#475569" font-size="9">${v}</text>`).join('')}
           ${chart}</svg>
-          <div class="legend"><span><i style="background:#3B82F6"></i>新建任务</span><span><i style="background:#10B981"></i>完成</span></div>
+          <div class="legend"><span><i style="background:#3B82F6"></i>新建任务</span><span><i style="background:#16A34A"></i>完成</span></div>
         </div></div>
       <div class="card"><div class="card-head"><h3 class="card-title">项目进度</h3><span class="card-sub">按完成率</span></div>
         <div class="card-body">${s.projects.map((p) => `
@@ -4821,7 +4872,7 @@ async function refreshSpecManager() {
   const tpls = data.templates || [];
   const projData = state.projects || [];
   el.innerHTML = tpls.map((t) => `
-    <div class="filters" style="border-bottom:1px solid rgba(30,42,63,.4);padding:8px 0;align-items:center">
+    <div class="filters" style="border-bottom:1px solid rgba(31,35,41,.4);padding:8px 0;align-items:center">
       <b style="font-size:12.5px">${esc(t.name)}</b>
       <span class="chip plain">${t.modality ? esc(dbMODALITY(t.modality)) : '通用'}</span>
       <span class="sub">${(t.content || '').split('\n').filter(Boolean).length} 条规范 · ${(t.samples || []).length} 个示例</span>

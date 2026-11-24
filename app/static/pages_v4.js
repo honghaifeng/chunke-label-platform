@@ -115,7 +115,7 @@
     body.innerHTML = `<div class="grid two-col">
       <div class="card"><div class="card-head"><h3 class="card-title">双向集成端点</h3>
         <button class="btn primary sm" id="ig-add" style="margin-left:auto">新增端点</button></div>
-        <div class="card-body">${eps.endpoints.length ? eps.endpoints.map((x) => `<div style="padding:8px 0;border-bottom:1px solid rgba(30,42,63,.5)">
+        <div class="card-body">${eps.endpoints.length ? eps.endpoints.map((x) => `<div style="padding:8px 0;border-bottom:1px solid rgba(31,35,41,.5)">
           <div style="display:flex;gap:8px;align-items:center"><b style="font-size:12.5px">${e(x.name)}</b>
             <span class="tag">${e(x.kind)}</span><span class="chip ${x.enabled ? 'done' : ''}">${x.enabled ? '启用' : '停用'}</span>
             <span class="spacer"></span>
@@ -190,7 +190,7 @@
       </div></div>
       <div class="card"><div class="card-head"><h3 class="card-title">等保三级基线自检</h3>
         <span class="card-sub">得分 ${base.score} / 100</span></div><div class="card-body">
-        ${base.checks.map((c) => `<div style="display:flex;gap:8px;align-items:flex-start;padding:6px 0;border-bottom:1px solid rgba(30,42,63,.5)">
+        ${base.checks.map((c) => `<div style="display:flex;gap:8px;align-items:flex-start;padding:6px 0;border-bottom:1px solid rgba(31,35,41,.5)">
           <span class="chip ${c.ok ? 'done' : 'danger'}">${c.ok ? '通过' : '待补'}</span>
           <div><b style="font-size:12px">${e(c.name)}</b><div class="sub">${e(c.detail)}</div></div></div>`).join('')}
         <div class="panel-label" style="margin-top:16px">凭据加密库（${e(secrets.encryption)}）</div>
@@ -359,7 +359,7 @@
   function drawLayout() {
     const canvas = $('#st-canvas');
     if (!canvas) return;
-    const render = (nodes, parent) => nodes.map((n, i) => `<div class="card" draggable="true" data-node="${n.id}" style="margin-bottom:8px;border:1px solid rgba(30,42,63,.7)">
+    const render = (nodes, parent) => nodes.map((n, i) => `<div class="card" draggable="true" data-node="${n.id}" style="margin-bottom:8px;border:1px solid rgba(31,35,41,.7)">
       <div class="card-body" style="padding:10px">
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <span class="tag">${e((TYPES.find((t) => t[0] === n.type) || [])[1] || n.type)}</span>
@@ -797,7 +797,7 @@
     const drawPoly = async () => {
       const ex = await readExtras();
       const polys = ex.polygons || [];
-      $('#poly-list').innerHTML = polys.length ? polys.map((p, i) => `<div class="filters" style="margin-bottom:4px;border-bottom:1px solid rgba(30,42,63,.4);padding-bottom:4px">
+      $('#poly-list').innerHTML = polys.length ? polys.map((p, i) => `<div class="filters" style="margin-bottom:4px;border-bottom:1px solid rgba(31,35,41,.4);padding-bottom:4px">
         <b>${e(p.label)}</b><span class="sub">${(p.points || []).length} 顶点${(p.holes || []).length ? ` · ${p.holes.length} 孔洞` : ''}</span>
         <span class="spacer"></span><button class="btn ghost sm" data-pedit="${i}">编辑顶点</button><button class="btn ghost sm danger" data-pdel="${i}">删除</button></div>`).join('')
         : '<div class="hint">暂无多边形，运行 SAM 或手动添加后在此编辑。</div>';
@@ -992,7 +992,7 @@
       <div class="panel-label">事件区间与时间轴联动</div>
       <div class="filters"><input class="input" id="ve-s" placeholder="开始秒" style="width:80px"><input class="input" id="ve-e" placeholder="结束秒" style="width:80px">
       <input class="input" id="ve-l" placeholder="事件标签" style="width:110px"><button class="btn primary sm" id="ve-add">添加区间</button></div>
-      <div id="ve-bar" style="height:24px;background:rgba(30,42,63,.7);border-radius:6px;position:relative;margin:6px 0;cursor:pointer" title="点击定位"></div>
+      <div id="ve-bar" style="height:24px;background:rgba(31,35,41,.7);border-radius:6px;position:relative;margin:6px 0;cursor:pointer" title="点击定位"></div>
       <div id="ve-list" class="hint"></div>
       <div class="panel-label" style="margin-top:12px">目标跟踪（向前/向后传播 · 断轨 · 合并）</div>
       <div class="filters"><select class="input" id="vt-dir" style="width:90px"><option value="both">双向传播</option><option value="forward">向前传播</option><option value="backward">向后传播</option></select>
@@ -1115,7 +1115,7 @@
     const drawQa = async () => {
       const ex = await readExtras(wb.task.id);
       const qa = ex.qa || [];
-      $('#qa-list').innerHTML = qa.length ? qa.map((q, i) => `<div style="border-bottom:1px solid rgba(30,42,63,.45);padding:4px 0">
+      $('#qa-list').innerHTML = qa.length ? qa.map((q, i) => `<div style="border-bottom:1px solid rgba(31,35,41,.45);padding:4px 0">
         <b>${e(q.question)}</b><div class="sub">${e(q.answer)}</div>
         <div class="sub">出处：${e(q.evidence || '—')} · ${e(q.algo || 'human')}</div>
         <button class="btn ghost sm danger" data-qa-del="${i}">删除</button></div>`).join('') + (candidates.length ? '<div class="panel-label" style="margin-top:6px">候选（点击采纳）</div>' : '') : '<div class="hint">暂无问答对</div>';
@@ -1146,7 +1146,7 @@
       if (!candidates.length) return toast('未生成候选，请先保存文本标注', 'warn');
       const ex = await readExtras(wb.task.id);
       const qa = ex.qa || [];
-      $('#qa-list').innerHTML = qa.map((q, i) => `<div style="border-bottom:1px solid rgba(30,42,63,.45);padding:4px 0"><b>${e(q.question)}</b><div class="sub">${e(q.answer)}</div></div>`).join('')
+      $('#qa-list').innerHTML = qa.map((q, i) => `<div style="border-bottom:1px solid rgba(31,35,41,.45);padding:4px 0"><b>${e(q.question)}</b><div class="sub">${e(q.answer)}</div></div>`).join('')
         + '<div class="panel-label" style="margin-top:6px">候选（点击采纳）</div>'
         + candidates.map((c, i) => `<div class="filters" style="margin-bottom:3px"><span style="flex:1">${e(c.answer)}</span><button class="btn ghost sm" data-qa-take="${i}">采纳</button></div>`).join('');
       $$('[data-qa-take]').forEach((b) => {
@@ -1169,7 +1169,7 @@
         if (r.error) { $('#cmp-out').innerHTML = `<div class="hint">${e(r.error)}</div>`; return; }
         $('#cmp-out').innerHTML = (r.results || []).map((x) => `<div class="card" style="margin-bottom:8px"><div class="card-body">
           <div class="filters"><b>${e(x.name)}</b><span class="tag">${e(x.model || '')}</span><span class="spacer"></span><span class="sub">${(x.answers || []).length} 条</span></div>
-          ${x.error ? `<div class="hint">${e(x.error)}</div>` : (x.answers || []).map((a) => `<div style="border-top:1px solid rgba(30,42,63,.45);padding:5px 0">
+          ${x.error ? `<div class="hint">${e(x.error)}</div>` : (x.answers || []).map((a) => `<div style="border-top:1px solid rgba(31,35,41,.45);padding:5px 0">
             <div>${e(a.answer)}</div><div class="sub">来源：${e(x.name)}${a.start != null ? ` @${a.start}-${a.end}` : ' · 生成'}${a.score != null ? ` · 相关度 ${a.score}` : ''}</div></div>`).join('')}
         </div></div>`).join('');
       };
@@ -1216,7 +1216,7 @@
     const drawPolish = async () => {
       const ex = await readExtras(wb.task.id);
       const logs = ex.polish || [];
-      $('#pl-list').innerHTML = logs.length ? logs.map((p) => `<div style="border-top:1px solid rgba(30,42,63,.45);padding:4px 0">
+      $('#pl-list').innerHTML = logs.length ? logs.map((p) => `<div style="border-top:1px solid rgba(31,35,41,.45);padding:4px 0">
         <div class="sub">原文：${e(p.original)}</div><div>${e(p.polished)}</div>
         <div class="sub">${e(p.style)} · ${p.accepted ? '已采纳' : '未采纳'}</div></div>`).join('') : '';
     };
@@ -1279,7 +1279,7 @@
         const bL = Math.min(100, (Number(p.b_start) || 0) / maxT * 100);
         const bW = Math.max(0.8, (Math.max(0, (Number(p.b_end) || 0) - (Number(p.b_start) || 0))) / maxT * 100);
         const label = { match: '一致', mismatch: '不一致', uncertain: '存疑' }[p.verdict] || p.verdict;
-        return `<div style="border-bottom:1px solid rgba(30,42,63,.45);padding:5px 0">
+        return `<div style="border-bottom:1px solid rgba(31,35,41,.45);padding:5px 0">
           <div class="filters"><b>${e(p.a)}</b><span class="sub">${p.a_start != null ? `${p.a_start}→${p.a_end}` : ''}</span>
             <span class="hint">↔</span><b>${e(p.b)}</b><span class="sub">${p.b_start != null ? `${p.b_start}→${p.b_end}` : ''}</span>
             <span class="chip ${p.verdict === 'match' ? 'done' : p.verdict === 'mismatch' ? 'danger' : 'pending'}">${label}</span>
@@ -1288,7 +1288,7 @@
           <div class="sub">${e(p.relation)} · ${e(p.note || '')}${(p.a_region || []).length ? ` · A 区域 ${p.a_region.join(',')}` : ''}${(p.b_region || []).length ? ` · B 区域 ${p.b_region.join(',')}` : ''}</div>
           <div style="height:14px;margin-top:3px">
             <div style="height:6px;background:rgba(59,130,246,.35);border-radius:3px;position:relative"><i style="position:absolute;left:${aL}%;width:${aW}%;top:0;bottom:0;background:#3B82F6;border-radius:3px"></i></div>
-            <div style="height:6px;background:rgba(16,185,129,.3);border-radius:3px;position:relative;margin-top:2px"><i style="position:absolute;left:${bL}%;width:${bW}%;top:0;bottom:0;background:#10B981;border-radius:3px"></i></div>
+            <div style="height:6px;background:rgba(16,185,129,.3);border-radius:3px;position:relative;margin-top:2px"><i style="position:absolute;left:${bL}%;width:${bW}%;top:0;bottom:0;background:#16A34A;border-radius:3px"></i></div>
           </div></div>`;
       }).join('') : '<div class="hint">暂无跨模态配对</div>';
       $$('[data-mp-sync]').forEach((b) => { b.onclick = () => syncPair(pairs[+b.dataset.mpSync]); });
@@ -1355,7 +1355,7 @@
     const draw = async () => {
       const ex = await readExtras(wb.task.id);
       const regs = ex.doc_regions || [];
-      $('#pd-regions').innerHTML = regs.length ? regs.map((r, i) => `<div style="border-bottom:1px solid rgba(30,42,63,.45);padding:4px 0">
+      $('#pd-regions').innerHTML = regs.length ? regs.map((r, i) => `<div style="border-bottom:1px solid rgba(31,35,41,.45);padding:4px 0">
         <div class="filters"><span class="tag">第${r.page}页</span><span class="sub">${(r.bbox || []).join(',')}</span>
         <input class="input" data-pdr-text="${i}" value="${e(r.text || '')}" placeholder="区域文本" style="flex:1">
         <button class="btn ghost sm danger" data-pdr-del="${i}">删</button></div>
@@ -1411,7 +1411,7 @@
       if (r.error) { $('#pd-out').innerHTML = `<div class="hint">${e(r.error)}</div>`; return; }
       $('#pd-out').innerHTML = (r.results || []).map((x) => `<div class="card" style="margin-bottom:6px"><div class="card-body">
         <div class="filters"><b>${e(x.name)}</b><span class="tag">${e(x.model || '')}</span></div>
-        ${x.error ? `<div class="hint">${e(x.error)}</div>` : (x.answers || []).map((a) => `<div style="border-top:1px solid rgba(30,42,63,.45);padding:4px 0">
+        ${x.error ? `<div class="hint">${e(x.error)}</div>` : (x.answers || []).map((a) => `<div style="border-top:1px solid rgba(31,35,41,.45);padding:4px 0">
           <div>${e(a.answer)}</div><div class="sub">来源：${e(x.name)}${a.start != null ? ` @${a.start}-${a.end}` : ' · 生成'}${a.score != null ? ` · 相关度 ${a.score}` : ''}</div></div>`).join('')}
       </div></div>`).join('');
     };

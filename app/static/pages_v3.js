@@ -579,7 +579,7 @@
           <button class="btn" id="scim-save">保存 SCIM Token</button>
         </div></div>
         <div class="card"><div class="card-head"><h3 class="card-title">安全基线</h3><span class="card-sub">得分 ${baseline.score}</span></div><div class="card-body">
-          ${baseline.checks.map((c) => `<div style="display:flex;gap:8px;padding:7px 0;border-bottom:1px solid rgba(30,42,63,.5)">
+          ${baseline.checks.map((c) => `<div style="display:flex;gap:8px;padding:7px 0;border-bottom:1px solid rgba(31,35,41,.5)">
             <span class="chip ${c.pass ? 'done' : 'danger'}" style="flex:none">${c.pass ? '通过' : '待改'}</span>
             <div><b style="font-size:12px">${esc(c.name)}</b><div class="sub">${esc(c.detail)}</div></div></div>`).join('')}
         </div></div></div>`;
@@ -769,13 +769,13 @@
     const video = $v('#v-video');
     let current = 0;
     const drawSegs = () => {
-      $v('#v-segments').innerHTML = segments.map((s, i) => `<div style="display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid rgba(30,42,63,.5)">
+      $v('#v-segments').innerHTML = segments.map((s, i) => `<div style="display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid rgba(31,35,41,.5)">
         <span class="tag">${esc(s.label || '行为')}</span><span class="sub">${esc(s.subject || '')} ${Number(s.start).toFixed(1)}→${Number(s.end).toFixed(1)}s</span>
         <button class="btn ghost danger" data-del-seg="${i}" style="margin-left:auto">删除</button></div>`).join('') || '<div class="empty">暂无行为区间</div>';
       $$v('[data-del-seg]').forEach((b) => { b.onclick = () => { segments.splice(Number(b.dataset.delSeg), 1); drawSegs(); markDirty(wb); }; });
     };
     const draw = () => {
-      $v('#v-tracks').innerHTML = tracks.map((tr, i) => `<div style="display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid rgba(30,42,63,.5)">
+      $v('#v-tracks').innerHTML = tracks.map((tr, i) => `<div style="display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid rgba(31,35,41,.5)">
         <b style="font-size:12px">${esc(tr.label || '目标')}</b><span class="tag">${(tr.keyframes || []).length} 帧</span>
         <button class="btn ghost" data-kf="${i}" style="margin-left:auto">打关键帧</button>
         <button class="btn ghost" data-copy="${i}">复制上一帧</button>
@@ -931,21 +931,21 @@
         const raw = esc(text.slice(a, b));
         if (!inner) { html += raw; continue; }
         const d = spanDepth(inner);
-        html += `<mark data-span="${spans.indexOf(inner)}" title="${esc(inner.label)}${d ? ` · L${d + 1}` : ''}" style="background:rgba(59,130,246,${(0.34 - d * 0.09).toFixed(2)});border-bottom:2px solid ${d ? '#22C55E' : '#3B82F6'}">${raw}</mark>`;
+        html += `<mark data-span="${spans.indexOf(inner)}" title="${esc(inner.label)}${d ? ` · L${d + 1}` : ''}" style="background:rgba(59,130,246,${(0.34 - d * 0.09).toFixed(2)});border-bottom:2px solid ${d ? '#16A34A' : '#3B82F6'}">${raw}</mark>`;
       }
       $v('#t-preview').innerHTML = html || '<span class="hint">在左侧输入文本</span>';
     };
     const draw = () => {
       drawText();
-      $v('#t-spans').innerHTML = spans.map((s, i) => `<div style="display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid rgba(30,42,63,.5)">
+      $v('#t-spans').innerHTML = spans.map((s, i) => `<div style="display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid rgba(31,35,41,.5)">
         <span class="tag">${esc(s.label)}</span><span class="sub">L${spanDepth(s) + 1}</span>
         ${s.source === 'ai' ? '<span class="chip info">AI</span>' : ''}
         <span style="font-size:12px">${esc(text.slice(s.start, s.end))}</span>
         <button class="btn ghost danger" data-del-span="${i}" style="margin-left:auto">删除</button></div>`).join('') || '<div class="empty">暂无实体</div>';
-      $v('#t-pos').innerHTML = posList.map((p, i) => `<div style="display:flex;gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid rgba(30,42,63,.5)">
+      $v('#t-pos').innerHTML = posList.map((p, i) => `<div style="display:flex;gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid rgba(31,35,41,.5)">
         <span class="tag">${esc(p.tag)}</span><span style="font-size:12px">${esc(text.slice(p.start, p.end))}</span>
         <button class="btn ghost danger" data-del-pos="${i}" style="margin-left:auto">删除</button></div>`).join('') || '<div class="empty">暂无词性标注</div>';
-      $v('#t-matches').innerHTML = matches.map((m, i) => `<div style="display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid rgba(30,42,63,.5)">
+      $v('#t-matches').innerHTML = matches.map((m, i) => `<div style="display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid rgba(31,35,41,.5)">
         <span class="tag">${esc(m.relation)}</span><span class="sub">${esc(m.a)} ↔ ${esc(m.b)}</span>
         <button class="btn ghost danger" data-del-match="${i}" style="margin-left:auto">删除</button></div>`).join('') || '<div class="empty">暂无匹配对</div>';
       $v('#t-keywords').value = (sentiment.keywords || []).join(',');
@@ -1139,7 +1139,7 @@
         <div class="card-body"><canvas id="ts-canvas" style="width:100%;height:260px"></canvas>
         <div class="filters" style="margin-top:10px"><input class="input" id="ts-start" placeholder="区间开始" style="width:110px"><input class="input" id="ts-end" placeholder="区间结束" style="width:110px"><input class="input" id="ts-label" placeholder="区间标签" style="width:120px"><button class="btn primary" id="ts-add">添加区间</button></div>
         <div class="field"><label>或粘贴 CSV（每行：时间,数值）</label><textarea class="input" id="ts-csv" rows="4"></textarea><button class="btn" id="ts-parse" style="margin-top:8px">解析</button></div></div></div>`,
-      `<div class="card"><div class="card-head"><h3 class="card-title">标注区间</h3></div><div class="card-body">${intervals.map((iv, i) => `<div style="display:flex;gap:8px;padding:6px 0;border-bottom:1px solid rgba(30,42,63,.5)"><span class="tag">${esc(iv.label || '区间')}</span><span class="sub">${iv.start} → ${iv.end}</span><button class="btn ghost danger" data-del-iv="${i}" style="margin-left:auto">删除</button></div>`).join('') || '<div class="empty">暂无区间</div>'}</div></div>`);
+      `<div class="card"><div class="card-head"><h3 class="card-title">标注区间</h3></div><div class="card-body">${intervals.map((iv, i) => `<div style="display:flex;gap:8px;padding:6px 0;border-bottom:1px solid rgba(31,35,41,.5)"><span class="tag">${esc(iv.label || '区间')}</span><span class="sub">${iv.start} → ${iv.end}</span><button class="btn ghost danger" data-del-iv="${i}" style="margin-left:auto">删除</button></div>`).join('') || '<div class="empty">暂无区间</div>'}</div></div>`);
     const parse = (txt) => {
       rows = txt.split('\n').map((l) => l.split(',').map((x) => Number(x.trim()))).filter((r) => r.length >= 2 && r.every((x) => isFinite(x)));
       draw();
@@ -1196,7 +1196,7 @@
       return renderer;
     };
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x050912);
+    scene.background = new THREE.Color(0xF2F3F5);
     const camera = new THREE.PerspectiveCamera(55, 1.5, 0.1, 600);
     camera.up.set(0, 0, 1); // 世界坐标：x 前 y 左 z 上
     // 默认与 2D 相机同向：从车尾上方俯视前方道路（x 前 y 左 z 上）
@@ -1212,7 +1212,7 @@
       camera.lookAt(cam.tx, cam.ty, cam.tz);
     };
     // 地面网格（XY 平面，法线 Z）
-    const grid = new THREE.GridHelper(160, 16, 0x334155, 0x1e2a3f);
+    const grid = new THREE.GridHelper(160, 16, 0xC9CDD4, 0xD8DBE0);
     grid.rotation.x = Math.PI / 2;
     scene.add(grid);
     const segColorOf = {};
@@ -1265,7 +1265,7 @@
       scene.add(pointsObj);
       rebuildColors();
     };
-    const bgColor = new THREE.Color(0x050912);
+    const bgColor = new THREE.Color(0xF2F3F5);
     const tmpColor = new THREE.Color();
     const rebuildColors = () => {
       if (!pointsObj) return;
@@ -1394,7 +1394,7 @@
       keypoints.forEach((k) => {
         const g = new THREE.Group();
         const s = new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 10), new THREE.MeshBasicMaterial({ color: 0x22c55e }));
-        const core = new THREE.Mesh(new THREE.SphereGeometry(0.07, 8, 8), new THREE.MeshBasicMaterial({ color: 0x050912 }));
+        const core = new THREE.Mesh(new THREE.SphereGeometry(0.07, 8, 8), new THREE.MeshBasicMaterial({ color: 0x1F2329 }));
         g.add(s); g.add(core);
         g.position.set(k.x, k.y, k.z);
         const lb = makeLabel(k.label || '关键点', '#86EFAC');
@@ -1510,7 +1510,7 @@
         for (const dx of [-b.l / 2, b.l / 2]) for (const dy of [-b.w / 2, b.w / 2]) for (const dz of [0, b.h]) {
           cs.push(proj([b.x + dx * ca - dy * sa, b.y + dx * sa + dy * ca, b.z + dz]));
         }
-        const col = selBox === i ? '#FCD34D' : (b.source === 'ai' ? '#22D3EE' : '#FB923C');
+        const col = selBox === i ? '#B45309' : (b.source === 'ai' ? '#22D3EE' : '#FB923C');
         x.strokeStyle = col;
         x.lineWidth = selBox === i ? 2.2 : 1.5;
         x.beginPath();
@@ -1919,15 +1919,15 @@
 
     /* ---------- 列表 ---------- */
     const drawLists = () => {
-      $v('#pc-list').innerHTML = boxes.map((b, i) => `<div style="display:flex;gap:8px;padding:5px 0;border-bottom:1px solid rgba(30,42,63,.5);align-items:center;${i === selBox ? 'background:rgba(252,211,77,.08)' : ''}">
+      $v('#pc-list').innerHTML = boxes.map((b, i) => `<div style="display:flex;gap:8px;padding:5px 0;border-bottom:1px solid rgba(31,35,41,.5);align-items:center;${i === selBox ? 'background:rgba(252,211,77,.08)' : ''}">
         <span class="tag">${esc(b.label)}</span><span class="sub">(${b.x},${b.y},${b.z}) L${b.l} W${b.w} H${b.h} ${((b.yaw || 0) * 57.3).toFixed(0)}°</span>
         ${b.source === 'ai' ? `<span class="chip info" title="AI 预标注，请核对">AI ${typeof b.conf === 'number' ? b.conf : ''}</span>` : ''}
         <button class="btn ghost sm" data-cp-box="${i}" title="复制盒参数">复制</button>
         <button class="btn ghost danger" data-del-3d="${i}">删除</button></div>`).join('') || '<div class="empty">暂无 3D 框</div>';
-      $v('#pc-kps').innerHTML = keypoints.map((k, i) => `<div style="display:flex;gap:8px;padding:5px 0;border-bottom:1px solid rgba(30,42,63,.5)"><span class="tag">${esc(k.label)}</span><span class="sub">(${k.x},${k.y},${k.z})</span><button class="btn ghost danger" data-del-kp="${i}" style="margin-left:auto">删除</button></div>`).join('') || '<div class="empty">暂无关键点</div>';
-      $v('#pc-lanes').innerHTML = lanes.map((ln, i) => `<div style="display:flex;gap:8px;padding:5px 0;border-bottom:1px solid rgba(30,42,63,.5);align-items:center;${i === selLane ? 'background:rgba(34,211,238,.08)' : ''}"><span class="tag">${esc(ln.type)}</span><span class="sub">${esc(ln.style)} · ${(ln.points || []).length} 点</span><button class="btn ghost sm" data-cp-lane="${i}" title="复制到相邻帧/批量标注">复用</button><button class="btn ghost danger" data-del-lane="${i}">删除</button></div>`).join('') || '<div class="empty">暂无车道线</div>';
-      $v('#pc-segs').innerHTML = segs.map((sg, i) => `<div style="display:flex;gap:8px;padding:5px 0;border-bottom:1px solid rgba(30,42,63,.5);align-items:center"><i style="width:10px;height:10px;border-radius:2px;background:#F59E0B"></i><span class="tag">${esc(sg.label)}</span><span class="sub">${rleDecode(sg.ranges || []).length.toLocaleString()} 点</span><button class="btn ghost danger" data-del-seg="${i}" style="margin-left:auto">清除</button></div>`).join('') || '<div class="empty">暂无分割：框选或多边形圈选点后标记类别</div>';
-      $v('#pc-frames').innerHTML = frames.map((f, i) => `<div style="display:flex;gap:8px;padding:5px 0;border-bottom:1px solid rgba(30,42,63,.5);align-items:center"><span class="tag">帧 ${i + 1}</span><span class="sub">${(f.boxes || []).length} 框 · ${(f.lanes || []).length} 车道线 · ${(f.seg || []).length} 分割</span><button class="btn ghost sm" data-load-f="${i}" style="margin-left:auto">载入</button><button class="btn ghost sm" data-cp-f="${i}" title="把当前标注复制到该帧">写入</button><button class="btn ghost danger" data-del-f="${i}">删除</button></div>`).join('') || '<div class="empty">暂无帧：点「+帧快照」把当前帧加入时间轴</div>';
+      $v('#pc-kps').innerHTML = keypoints.map((k, i) => `<div style="display:flex;gap:8px;padding:5px 0;border-bottom:1px solid rgba(31,35,41,.5)"><span class="tag">${esc(k.label)}</span><span class="sub">(${k.x},${k.y},${k.z})</span><button class="btn ghost danger" data-del-kp="${i}" style="margin-left:auto">删除</button></div>`).join('') || '<div class="empty">暂无关键点</div>';
+      $v('#pc-lanes').innerHTML = lanes.map((ln, i) => `<div style="display:flex;gap:8px;padding:5px 0;border-bottom:1px solid rgba(31,35,41,.5);align-items:center;${i === selLane ? 'background:rgba(34,211,238,.08)' : ''}"><span class="tag">${esc(ln.type)}</span><span class="sub">${esc(ln.style)} · ${(ln.points || []).length} 点</span><button class="btn ghost sm" data-cp-lane="${i}" title="复制到相邻帧/批量标注">复用</button><button class="btn ghost danger" data-del-lane="${i}">删除</button></div>`).join('') || '<div class="empty">暂无车道线</div>';
+      $v('#pc-segs').innerHTML = segs.map((sg, i) => `<div style="display:flex;gap:8px;padding:5px 0;border-bottom:1px solid rgba(31,35,41,.5);align-items:center"><i style="width:10px;height:10px;border-radius:2px;background:#F59E0B"></i><span class="tag">${esc(sg.label)}</span><span class="sub">${rleDecode(sg.ranges || []).length.toLocaleString()} 点</span><button class="btn ghost danger" data-del-seg="${i}" style="margin-left:auto">清除</button></div>`).join('') || '<div class="empty">暂无分割：框选或多边形圈选点后标记类别</div>';
+      $v('#pc-frames').innerHTML = frames.map((f, i) => `<div style="display:flex;gap:8px;padding:5px 0;border-bottom:1px solid rgba(31,35,41,.5);align-items:center"><span class="tag">帧 ${i + 1}</span><span class="sub">${(f.boxes || []).length} 框 · ${(f.lanes || []).length} 车道线 · ${(f.seg || []).length} 分割</span><button class="btn ghost sm" data-load-f="${i}" style="margin-left:auto">载入</button><button class="btn ghost sm" data-cp-f="${i}" title="把当前标注复制到该帧">写入</button><button class="btn ghost danger" data-del-f="${i}">删除</button></div>`).join('') || '<div class="empty">暂无帧：点「+帧快照」把当前帧加入时间轴</div>';
       $$v('[data-del-3d]').forEach((b) => { b.onclick = () => { boxes.splice(Number(b.dataset.del3d), 1); if (selBox >= boxes.length) selBox = -1; drawLists(); rebuildBoxes(); markDirty(wb); }; });
       $$v('[data-cp-box]').forEach((b) => { b.onclick = () => { const src = boxes[Number(b.dataset.cpBox)]; boxes.push({ ...JSON.parse(JSON.stringify(src)), x: src.x + 1.5 }); drawLists(); rebuildBoxes(); markDirty(wb); toast('已复制盒参数（偏移 1.5m）', 'ok'); }; });
       $$v('[data-del-kp]').forEach((b) => { b.onclick = () => { keypoints.splice(Number(b.dataset.delKp), 1); drawLists(); rebuildKPs(); markDirty(wb); }; });
@@ -2215,7 +2215,7 @@
     }
     drawGallery();
     const draw = () => {
-      $v('#mm-items').innerHTML = items.map((it, i) => `<div style="padding:7px 0;border-bottom:1px solid rgba(30,42,63,.5)">
+      $v('#mm-items').innerHTML = items.map((it, i) => `<div style="padding:7px 0;border-bottom:1px solid rgba(31,35,41,.5)">
         <div style="display:flex;gap:8px"><span class="tag">${esc(it.media || '主媒体')}</span><b style="font-size:12px">${esc(it.label || '')}</b><button class="btn ghost danger" data-del-mm="${i}" style="margin-left:auto">删除</button></div>
         <div class="sub">${esc(it.note || '')}</div></div>`).join('') || '<div class="empty">暂无条目</div>';
       $$v('[data-del-mm]').forEach((b) => { b.onclick = () => { items.splice(Number(b.dataset.delMm), 1); draw(); }; });
@@ -2427,7 +2427,7 @@
       const list = $v('#ed-box-list');
       if (!list) return;
       list.innerHTML = wb.boxes.length ? wb.boxes.map((b, i) => `
-        <div style="display:flex;align-items:center;gap:8px;padding:6px 12px;border-bottom:1px solid rgba(30,42,63,.45);font-size:11.5px">
+        <div style="display:flex;align-items:center;gap:8px;padding:6px 12px;border-bottom:1px solid rgba(31,35,41,.45);font-size:11.5px">
           <span class="box-idx"><i class="bdot" style="background:${b.target ? '#EF4444' : '#3B82F6'}"></i>#${String(i + 1).padStart(2, '0')}</span>
           <input class="input" data-ed-name="${i}" value="${esc(b.name || '')}" placeholder="目标名称（可选）" style="flex:1;height:26px;font-size:11px" />
           <span class="box-pos">${(b.x * 100).toFixed(1)}, ${(b.y * 100).toFixed(1)}</span>
@@ -2555,7 +2555,7 @@
         box.innerHTML = '<span class="chip done">规范校验通过，可提交质检</span>';
         return;
       }
-      box.innerHTML = issues.map((i) => `<div style="display:flex;gap:6px;padding:5px 0;border-bottom:1px solid rgba(30,42,63,.45);font-size:11.5px">
+      box.innerHTML = issues.map((i) => `<div style="display:flex;gap:6px;padding:5px 0;border-bottom:1px solid rgba(31,35,41,.45);font-size:11.5px">
         <span class="chip ${i.level === 'error' ? 'danger' : 'pending'}" style="flex:none">${i.level === 'error' ? '需修正' : '提示'}</span>
         <span>${esc(i.message)}</span></div>`).join('');
     };
@@ -2827,7 +2827,7 @@
       card.innerHTML = `<div class="card-head"><h3 class="card-title">我的待办</h3><span class="card-sub">共 ${total} 项</span></div>
         <div class="card-body">${data.groups.filter((g) => g.items.length).map((g) => `
           <div class="panel-label">${esc(g.label)} · ${g.items.length}</div>
-          ${g.items.slice(0, 5).map((t) => `<div style="display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid rgba(30,42,63,.5)">
+          ${g.items.slice(0, 5).map((t) => `<div style="display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid rgba(31,35,41,.5)">
             <span class="name" style="font-size:12.5px">${esc(t.name)}</span><span class="sub">${esc(t.project_name || '')}</span>
             <span class="spacer"></span>${statusChip(t.status)}
             <a class="btn ghost sm" href="#/annotate/${t.id}">打开</a></div>`).join('')}`).join('')}</div>`;
@@ -2855,9 +2855,9 @@
     openModal(`<div class="card-head"><h3 class="card-title">任务 #${tid} · 问题 / 版本 / 规则</h3><button class="btn ghost" style="margin-left:auto" onclick="closeModal()">关闭</button></div>
       <div class="card-body">
         <div class="filters"><input class="input" id="ex-title" placeholder="新增问题标题" style="width:200px"><input class="input" id="ex-desc" placeholder="说明（可选）" style="width:190px"><button class="btn primary" id="ex-add">新增问题</button><button class="btn" id="ex-rule">运行规则质检</button></div>
-        <div id="ex-issues">${issues.issues.map((i) => `<div style="display:flex;gap:8px;padding:6px 0;border-bottom:1px solid rgba(30,42,63,.5)"><span class="chip ${i.status === 'open' ? 'pending' : 'done'}">${i.status === 'open' ? '待处理' : '已解决'}</span><span style="font-size:12px">${esc(i.title)}</span>${i.item_index >= 0 ? `<span class="tag">第 ${i.item_index + 1} 项</span>` : ''}<button class="btn ghost" data-ex-resolve="${i.id}" style="margin-left:auto">${i.status === 'open' ? '解决' : '重新打开'}</button></div>`).join('') || '<div class="empty">暂无问题</div>'}</div>
+        <div id="ex-issues">${issues.issues.map((i) => `<div style="display:flex;gap:8px;padding:6px 0;border-bottom:1px solid rgba(31,35,41,.5)"><span class="chip ${i.status === 'open' ? 'pending' : 'done'}">${i.status === 'open' ? '待处理' : '已解决'}</span><span style="font-size:12px">${esc(i.title)}</span>${i.item_index >= 0 ? `<span class="tag">第 ${i.item_index + 1} 项</span>` : ''}<button class="btn ghost" data-ex-resolve="${i.id}" style="margin-left:auto">${i.status === 'open' ? '解决' : '重新打开'}</button></div>`).join('') || '<div class="empty">暂无问题</div>'}</div>
         <div class="card-head" style="margin-top:14px"><h3 class="card-title">标注版本</h3></div>
-        <div>${hist.versions.map((v) => `<div style="display:flex;gap:8px;padding:6px 0;border-bottom:1px solid rgba(30,42,63,.5)"><span class="tag">v${v.version}</span><span class="sub">${esc(v.note || '')} · ${time(v.created_at)} · ${esc(v.created_by_name || '')}</span><button class="btn ghost" data-ex-restore="${v.id}" style="margin-left:auto">恢复</button></div>`).join('') || '<div class="empty">暂无历史版本（保存后自动生成）</div>'}</div>
+        <div>${hist.versions.map((v) => `<div style="display:flex;gap:8px;padding:6px 0;border-bottom:1px solid rgba(31,35,41,.5)"><span class="tag">v${v.version}</span><span class="sub">${esc(v.note || '')} · ${time(v.created_at)} · ${esc(v.created_by_name || '')}</span><button class="btn ghost" data-ex-restore="${v.id}" style="margin-left:auto">恢复</button></div>`).join('') || '<div class="empty">暂无历史版本（保存后自动生成）</div>'}</div>
         <pre class="hint" id="ex-rule-out" style="white-space:pre-wrap;margin-top:10px"></pre>
       </div>`);
     $v('#ex-add').onclick = async () => {
@@ -2899,7 +2899,7 @@
     openModal(`<div class="card-head"><h3 class="card-title">通知中心</h3><button class="btn ghost" style="margin-left:auto" onclick="closeModal()">关闭</button></div>
       <div class="card-body">
         <div class="filters"><span class="hint">${data.unread > 0 ? `打开时已标记 ${data.unread} 条为已读` : '没有未读通知'}</span></div>
-        ${data.notifications.map((n) => `<div style="display:flex;gap:10px;padding:9px 0;border-bottom:1px solid rgba(30,42,63,.5);opacity:${n.read_at ? '.6' : '1'}">
+        ${data.notifications.map((n) => `<div style="display:flex;gap:10px;padding:9px 0;border-bottom:1px solid rgba(31,35,41,.5);opacity:${n.read_at ? '.6' : '1'}">
           <span class="chip ${n.kind === 'rework' ? 'danger' : n.kind === 'qc' ? 'done' : 'pending'}">${esc(n.kind)}</span>
           <div><b style="font-size:12.5px">${esc(n.title)}</b><div class="sub">${esc(n.body || '')} · ${time(n.created_at)}</div></div>
           ${n.link ? `<a class="btn ghost" href="${esc(n.link)}" style="margin-left:auto" onclick="closeModal()">查看</a>` : ''}
@@ -3130,7 +3130,7 @@
         <div class="card"><div class="card-head"><h3 class="card-title">试卷</h3>
           ${isMgr ? '<button class="btn sm primary" id="ex-new" style="margin-left:auto">新建试卷</button>' : ''}</div>
           <div class="card-body">${papers.length ? papers.map((pp) => `
-            <div class="filters" style="border-bottom:1px solid rgba(30,42,63,.4);padding:8px 0;align-items:center">
+            <div class="filters" style="border-bottom:1px solid rgba(31,35,41,.4);padding:8px 0;align-items:center">
               <b style="font-size:12.5px">${esc(pp.title)}</b>
               <span class="chip plain">${pp.questions.length} 题 · ${pp.pass_score} 分通过</span>
               <span class="spacer"></span>
