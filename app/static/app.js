@@ -4028,17 +4028,18 @@ async function pageAudioBench() {
     const fmtDur = (s) => fmtShort(s || 0);
     const card = (t, action) => `
       <div class="aw-task-card">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#3B82F6" stroke-width="1.8" stroke-linecap="round" style="flex:none"><path d="M3 10v4M7 6v12M11 3v18M15 7v10M19 10v4"/></svg>
         <div style="flex:1;min-width:0">
           <b style="font-size:13.5px">任务 #${t.id}</b>
           <div class="sub" style="margin-top:3px">${fmtDur(t.duration || 0)} · 共 ${t.frames} 框 ·
             <span style="color:#16A34A">已标注 ${t.labeled}</span> ·
-            <span style="color:#F59E0B">待标注 ${t.pending}</span>${t.draft ? ` · <span style="color:#3B82F6">草稿 ${t.draft}</span>` : ''}
+            <span style="color:#D97706">待标注 ${t.pending}</span>${t.draft ? ` · <span style="color:#3B82F6">草稿 ${t.draft}</span>` : ''}
             <span class="hint"> · ${esc(t.project_name || '')}</span></div>
         </div>
         ${action}
       </div>`;
     $('#ab-body').innerHTML = `
-      <div class="page-head"><div><h1 class="page-title">语音拉框标注</h1>
+      <div class="page-head"><div><h1 class="page-title" style="display:flex;align-items:center;gap:8px"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#3B82F6" stroke-width="1.8" stroke-linecap="round"><path d="M3 10v4M7 6v12M11 3v18M15 7v10M19 10v4"/></svg>语音拉框标注</h1>
         <p class="page-sub">任务领取后归属于你，关闭页面不会释放；草稿实时保存，下次进入可继续</p></div>
         <div class="page-actions">
           <button class="btn" id="ab-refresh">${icon('refresh')} 刷新</button>
