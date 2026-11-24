@@ -41,7 +41,7 @@
 | 数据管理 | 项目级「数据管理」页：数据资产统计（条目/总时长/任务包/项目）、四类上传入口（本地/续传/长音频切分/作业队列）、可搜索数据资产表 |
 | 模态工作台 | 语音/图像/点云独立生产台：生产 KPI（标注中/返修中/待质检/已完成）、继续生产卡（继续标注或一键领取并标注）、返修区、我的队列 |
 | 生产线与结算 | 任务包**时长配额**（目标/已分配/剩余，领取按 est_minutes 扣减）与**双轨计价**（按件/按时长，项目级 billing.mode）；长音频**切分工序**（作业中心一键切成子任务）；**考试门禁**（项目可选开关，未通过不能领取）；**申诉仲裁**（验收驳回可申诉，仲裁留痕）；**错题本**（驳回错误类型按人聚合）；**AI 助手**（读取任务规范与质检记录问答，可接大模型） |
-| 交互式算子 | SAM 分割、OCR、文档问答、LLM 润色走 `operator.<name>.url` 外部推理服务（未配置时明确报错并指引配置，**不输出伪造结果**）；ASR（FunASR 本地 worker）、图像检测（Grounding DINO/YOLO worker）、开放词检测为真实本地实现；视频跟踪内置关键帧插值与运动估计（如实标注算法性质） |
+| 交互式算子 | **本地真实实现，无伪造输出**：OCR=RapidOCR（ONNX 中文识别，真实文本+置信度）；SAM 类分割=GrabCut 图割/区域生长（OpenCV 真实算法，框/点提示）；LLM 润色/QA 生成/AI 助手=Ollama（自动发现本机模型）或 OpenAI 兼容服务；文档问答=抽取式检索（带出处）+LLM 生成双路；ASR=FunASR worker；图像检测=Grounding DINO/YOLO worker；视频跟踪=关键帧插值+运动估计（如实标注）；均可再配置 `operator.<name>.url` 切换更强模型 |
 | 智能质检 | 规则引擎 + 质检算子库 + 阈值/权重/组合规则 + 字符级定位高亮；驳回错误类型（漏标/错标/框选偏差等）与分布统计 |
 | 集成与运维 | 双向集成端点、Prometheus/Loki/数据湖、备份恢复、升级回滚、TLS 反向代理 |
 | 安全合规 | PBKDF2 口令、SQLite 持久化会话（12h 过期）、IP 白名单、TOTP MFA、OIDC SSO、SCIM 2.0、API Key、媒体短时 Token、水印、审计导出 |
@@ -558,7 +558,7 @@ curl -s -b /tmp/ck.jar -H 'Content-Type: application/json' \
 
 **需要外部条件的能力**
 
-- SAM/OCR/文档问答/LLM 需配置 `operator.<name>.url` 外部推理服务后方可使用（未配置明确报错）；ASR/图像检测为本地真实实现，依赖 FunASR 与 torch/ultralytics 环境。
+- 本地 AI 依赖（演示/生产前安装）：`uv pip install rapidocr_onnxruntime opencv-python-headless`；LLM 需安装 Ollama 并拉取模型（如 `ollama pull qwen3`）或在系统设置填写 OpenAI 兼容地址 `operator.llm.url`。未安装时对应算子明确报错，不输出伪造结果。
 - 等保三级测评、信创硬件实测、200 用户压测：需在交付环境执行并出具报告。
 - FunASR 语音转写：需要独立 Python 3.10 venv 与模型权重，路径见 `app/prelabel.py` 顶部常量；未安装时不影响其他模态。
 - 点云渲染/大模型评测等重依赖能力，建议在具备 GPU 的环境部署。

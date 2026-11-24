@@ -25,6 +25,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from . import auth, db, ops, workbench
+from . import ai_local
 
 router = APIRouter()
 
@@ -1011,6 +1012,38 @@ def _qa_sentences(text: str) -> list[dict]:
     return out
 
 
+def _parse_qa_json(raw: str) -> list[dict]:
+    """解析大模型输出的问答 JSON，兼容数组、单对象、{'qa': [...]} 等形态。"""
+    try:
+        data = json.loads(raw)
+        if isinstance(data, list):
+            return [x for x in data if isinstance(x, dict)]
+        if isinstance(data, dict):
+            for k in ("qa", "items", "data", "pairs"):
+                if isinstance(data.get(k), list):
+                    return [x for x in data[k] if isinstance(x, dict)]
+            return [data]
+    except (ValueError, TypeError):
+        pass
+    s, e = raw.find("["), raw.rfind("]") + 1
+    if s >= 0 and e > s:
+        try:
+            arr = json.loads(raw[s:e])
+            if isinstance(arr, list):
+                return [x for x in arr if isinstance(x, dict)]
+        except ValueError:
+            pass
+    s, e = raw.find("{"), raw.rfind("}") + 1
+    if s >= 0 and e > s:
+        try:
+            obj = json.loads(raw[s:e])
+            if isinstance(obj, dict):
+                return [obj]
+        except ValueError:
+            pass
+    return []
+
+
 def _qa_extractive(text: str, question: str, limit: int = 5) -> list[dict]:
     sents = _qa_sentences(text)
     q = re.sub(r"\s+", "", question or "")
@@ -1078,8 +1111,40 @@ def _builtin_operator(key: str, task: dict, data: dict) -> dict:
     payload = _json((db.row("SELECT payload,prelabel FROM annotations WHERE task_id=? ORDER BY id DESC LIMIT 1",
                             (task["id"],)) or {}).get("payload"), {})
     if key in ("sam", "segment"):
-        raise HTTPException(400, "SAM 分割算子未配置：请在 系统设置 填写 operator.sam.url 外部推理服务后使用；"
-                                 "提示框转多边形请使用图片工具栏的「几何工具」")
+        media = task.get("media_path") or ""
+        path = db.media_abspath(media)
+        if not path or not os.path.exists(path):
+            raise HTTPException(400, "该任务没有可用的图像媒体")
+        boxes = [b for b in (data.get("boxes") or []) if isinstance(b, dict)]
+        if isinstance(data.get("box"), dict):
+            boxes.insert(0, data["box"])
+        points = [p for p in (data.get("points") or []) if isinstance(p, dict)]
+        if not boxes and not points:
+            raise HTTPException(400, "请提供提示框 box 或点提示 points")
+        label = str(data.get("label") or "目标")
+        polygons, masks = [], []
+        try:
+            for idx, b in enumerate(boxes[:12]):
+                x, y = float(b.get("x", 0)), float(b.get("y", 0))
+                w, h = float(b.get("w", 0.2)), float(b.get("h", 0.2))
+                if w <= 0 or h <= 0:
+                    raise HTTPException(400, "提示框宽高需大于 0")
+                r = ai_local.segment_box(path, (x, y, w, h))
+                polygons.append({"label": str(b.get("label") or label), "points": r["polygon"],
+                                 "coverage": r["coverage"], "algo": "grabcut", "instance": idx + 1})
+                masks.append({"label": str(b.get("label") or label), "box": {"x": x, "y": y, "w": w, "h": h},
+                              "rle": "", "points": r["polygon"], "algo": "grabcut"})
+            for j, pt in enumerate(points[:12]):
+                if str(pt.get("positive", 1)) in ("0", "false", "False"):
+                    continue
+                r = ai_local.segment_point(path, (float(pt.get("x", 0.5)), float(pt.get("y", 0.5))))
+                polygons.append({"label": str(pt.get("label") or label), "points": r["polygon"],
+                                 "coverage": r["coverage"], "algo": "region-growing", "instance": len(polygons) + 1})
+        except RuntimeError as exc:
+            raise HTTPException(400, str(exc))
+        return {"provider": "local", "algorithm": "opencv-grabcut/region-growing",
+                "polygons": polygons, "masks": masks, "instances": len(polygons),
+                "note": "本地真实分割（GrabCut 图割 / 区域生长）；配置 operator.sam.url 可切换 SAM 模型。"}
     if key == "__sam_disabled__":
         label = data.get("label") or "目标"
         boxes = [b for b in (data.get("boxes") or []) if isinstance(b, dict)]
@@ -1126,8 +1191,34 @@ def _builtin_operator(key: str, task: dict, data: dict) -> dict:
                 "polygons": polygons, "masks": masks, "instances": len(polygons),
                 "note": "未配置 SAM 服务，已按提示框/点生成可编辑多边形与掩码框；每个目标可独立编辑顶点与孔洞。"}
     if key == "ocr":
-        raise HTTPException(400, "OCR 识别算子未配置：请在 系统设置 填写 operator.ocr.url 外部推理服务后使用；"
-                                 "手工区域录入请使用图片工具栏的「区域录入」")
+        media = task.get("media_path") or ""
+        path = db.media_abspath(media)
+        if not path or not os.path.exists(path):
+            raise HTTPException(400, "该任务没有可用的图像媒体")
+        try:
+            detected = ai_local.ocr_image(path)
+        except RuntimeError as exc:
+            raise HTTPException(400, str(exc))
+        regions = []
+        for i, d in enumerate(detected[:80]):
+            x, y, w, h = d["bbox_norm"]
+            regions.append({"page": 1, "bbox": [x, y, x + w, y + h], "text": d["text"],
+                            "conf": d["conf"], "engine": "rapidocr"})
+        for r in (data.get("regions") or [])[:80]:
+            if isinstance(r, dict) and r.get("text"):
+                try:
+                    bbox = [round(min(1, max(0, float(v))), 4) for v in (r.get("bbox") or [0, 0, 1, 1])][:4]
+                except (TypeError, ValueError):
+                    continue
+                regions.append({"page": int(r.get("page") or 1), "bbox": bbox, "text": str(r.get("text")),
+                                "conf": round(min(1, float(r.get("conf") or 0)), 3), "engine": "manual"})
+        if not regions:
+            return {"provider": "local", "algorithm": "rapidocr", "regions": [],
+                    "mean_conf": 0, "note": "未识别到文字区域（ RapidOCR 真实识别，空白即无文本）"}
+        mean_conf = round(sum(r["conf"] for r in regions) / len(regions), 3)
+        return {"provider": "local", "algorithm": "rapidocr-onnx", "regions": regions,
+                "mean_conf": mean_conf,
+                "note": f"RapidOCR 本地真实识别 {len(regions)} 个文字区域"}
     if key == "__ocr_disabled__":
         regions: list[dict] = []
         for r in (data.get("regions") or [])[:80]:
@@ -1243,7 +1334,23 @@ def _builtin_operator(key: str, task: dict, data: dict) -> dict:
                 "note": f"已按关键帧{dir_label}传播逐帧框，"
                         f"间隔超过 {max_gap}s 自动断轨；合并轨迹已合并关键帧，可继续人工修正。"}
     if key == "llm":
-        raise HTTPException(400, "大模型算子未配置：请在 系统设置 填写 operator.llm.url 外部推理服务后使用")
+        text = str(data.get("text") or "").strip()
+        if not text:
+            raise HTTPException(400, "请提供待润色文本")
+        style = str(data.get("style") or "简洁")
+        try:
+            polished = ai_local.llm_chat([
+                {"role": "system", "content": f"你是文本润色助手。请在不改变原意的前提下，按「{style}」风格润色用户文本，只输出润色后的文本。"},
+                {"role": "user", "content": text},
+            ], temperature=0.4)
+        except RuntimeError as exc:
+            raise HTTPException(400, str(exc))
+        except (urllib.error.URLError, TimeoutError, ValueError) as exc:
+            raise HTTPException(502, f"大模型服务调用失败：{str(exc)[:200]}")
+        svc = ai_local.llm_service() or {}
+        return {"provider": svc.get("kind", "local"), "model": svc.get("model", ""),
+                "algorithm": "llm-polish", "style": style,
+                "original": text, "polished": polished.strip(), "changed": polished.strip() != text}
     if key == "__llm_disabled__":
         text = str(data.get("text") or "").strip()
         if not text:
@@ -1265,7 +1372,35 @@ def _builtin_operator(key: str, task: dict, data: dict) -> dict:
                 "original": text, "polished": out, "changed": out != text,
                 "note": f"已按“{style}”风格完成规则润色；配置 operator.llm.url 可切换大模型润色与生成。"}
     if key == "qa":
-        raise HTTPException(400, "文档问答算子未配置：请在 系统设置 填写 operator.qa.url 外部推理服务后使用")
+        text = str(data.get("text") or "").strip()
+        if not text:
+            raise HTTPException(400, "请提供文档文本")
+        question = str(data.get("question") or "").strip()
+        extractive = _qa_extractive(text, question) if question else []
+        qa_pairs = [{"question": question, "answer": a["answer"], "evidence": a["answer"][:40],
+                     "algo": "extractive", "score": a.get("score")} for a in extractive[:5]]
+        llm_pairs = []
+        svc = ai_local.llm_service()
+        if svc:
+            try:
+                prompt = ("基于以下文档生成问答对，严格使用 JSON 数组格式输出，"
+                          "每项包含 question/answer 字段，问答必须可由文档内容回答。"
+                          f"{'围绕问题：' + question if question else '生成 5 组高质量问答'}。\n\n文档：\n" + text[:6000])
+                raw = ai_local.llm_chat([{"role": "user", "content": prompt}], temperature=0.5, json_mode=True)
+                items_ = _parse_qa_json(raw)
+                for it in items_[:8]:
+                    if isinstance(it, dict) and it.get("question") and it.get("answer"):
+                        llm_pairs.append({"question": str(it["question"]), "answer": str(it["answer"]),
+                                          "evidence": str(it["answer"])[:40], "algo": "llm",
+                                          "model": svc.get("model", "")})
+            except Exception:
+                llm_pairs = []
+        if not qa_pairs and not llm_pairs:
+            raise HTTPException(400, "未能从文档生成问答：请提供问题或配置大模型服务（Ollama/operator.llm.url）")
+        return {"provider": "local", "extractive": qa_pairs, "llm": llm_pairs,
+                "qa": llm_pairs or qa_pairs,
+                "note": ("抽取式检索来自原文；LLM 生成来自本地/配置的大模型服务" if svc else
+                         "抽取式检索来自原文；配置 Ollama 或 operator.llm.url 可启用大模型生成")}
     if key == "__qa_disabled__":
         text = str(data.get("text") or "").strip()
         if not text:
@@ -1368,14 +1503,17 @@ def assistant_ask(body: dict, user: dict = Depends(me)):
             (tid,))
         for r in qc:
             context.append("历史质检意见：" + r["comment"])
-    url = ops.get_setting("operator.llm.url")
-    if url:
+    svc = ai_local.llm_service()
+    if svc:
         try:
-            res = _call_external(url, {"assistant": True, "question": q, "context": context})
-            answer = res.get("answer") or res.get("polished") or res.get("text") or json.dumps(res, ensure_ascii=False)
-            return {"provider": "external", "answer": str(answer)}
-        except (urllib.error.URLError, TimeoutError, ValueError) as exc:
-            raise HTTPException(502, f"外部助手调用失败：{str(exc)[:200]}")
+            answer = ai_local.llm_chat([
+                {"role": "system", "content": "你是数据标注平台的标注助手。基于给定的任务上下文（标注说明/规范/质检意见）回答标注员的问题，"
+                                               "回答要具体、可执行，使用与提问相同的语言。找不到依据时明确说明。"},
+                {"role": "user", "content": "上下文：\n" + "\n".join(context[:60]) + "\n\n问题：" + q},
+            ], temperature=0.3)
+            return {"provider": svc["kind"], "model": svc.get("model"), "answer": answer.strip()}
+        except Exception as exc:
+            raise HTTPException(502, f"大模型助手调用失败：{str(exc)[:200]}")
     # 内置检索式降级：按关键词命中度从规范/质检上下文中取最相关条目
     keys = [k for k in re.split(r"[\s，。？！、,.?!]+", q) if len(k) >= 2]
     scored = []

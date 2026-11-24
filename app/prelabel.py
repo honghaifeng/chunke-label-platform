@@ -142,6 +142,13 @@ def engine_status() -> list[dict]:
         except Exception:
             ok = False
         out.append({"name": name, "desc": desc, "url": url, "kind": kind, "online": ok, "code": code})
+    try:
+        from . import ai_local
+        for it in ai_local.ai_status():
+            out.append({"name": it["name"], "desc": it["desc"], "url": "", "kind": "ai",
+                        "online": it["online"], "code": 0})
+    except Exception:
+        pass
     return out
 
 
