@@ -1233,7 +1233,7 @@ function renderOtherWorkbench(wb) {
 function renderAudioWorkbench(wb, labels, qc, mediaName) {
   const { task, project, canEdit, pre } = wb;
   const content = `
-  <div class="wb" id="wb">
+  <div class="wb light" id="wb">
     <div class="wb-head">
       <a class="btn ghost sm" href="#/bench?m=audio">← 返回</a>
       <div><h1>${esc(task.name)} <span class="hint">(${fmtShort(wb.duration || task.duration || 0)})</span></h1>
@@ -1359,12 +1359,27 @@ async function bindAudioWB(wb, mediaName, labels, qc) {
     return Math.max(0, Math.min(view().dur, vs + ((clientX - r.left - 10) / (r.width - 20)) * span));
   };
 
-  /* ---------- 波形渲染 ---------- */
-  const HATCH = document.createElement('canvas');
-  HATCH.width = HATCH.height = 8;
-  const hx = HATCH.getContext('2d');
-  hx.strokeStyle = 'rgba(255,255,255,.35)'; hx.beginPath(); hx.moveTo(0, 8); hx.lineTo(8, 0); hx.stroke();
-  const hatchPattern = () => { const c = $id('wave'); return c.getContext('2d').createPattern(HATCH, 'repeat'); };
+  /* ---------- 波形渲染（浅色主题，对标产线） ---------- */
+  const PAL = {
+    waveBg: '#FFFFFF', ruler: '#E5E6EB', tick: '#8F959E',
+    waveBar: 'rgba(47,111,235,.65)',
+    segNum: '#646A73', blockText: '#1F2329',
+    playhead: '#F54A45',
+    miniBg: '#F2F3F5', miniBar: 'rgba(47,111,235,.4)',
+    viewFill: 'rgba(59,130,246,.16)', viewStroke: '#3B82F6', ind: 'rgba(100,116,139,.4)',
+  };
+  const _hatchCache = {};
+  function hatchPattern(color) {
+    if (!color) color = 'rgba(255,255,255,.35)';
+    if (_hatchCache[color]) return _hatchCache[color];
+    const c = document.createElement('canvas');
+    c.width = c.height = 8;
+    const x = c.getContext('2d');
+    x.strokeStyle = color; x.beginPath(); x.moveTo(0, 8); x.lineTo(8, 0); x.stroke();
+    const p = $id('wave').getContext('2d').createPattern(c, 'repeat');
+    _hatchCache[color] = p;
+    return p;
+  }
 
   function drawWave() {
     const cvs = $id('wave');
@@ -1375,13 +1390,13 @@ async function bindAudioWB(wb, mediaName, labels, qc) {
     const ctx = cvs.getContext('2d');
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
-    ctx.fillStyle = '#0B1424'; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = PAL.waveBg; ctx.fillRect(0, 0, W, H);
     const { dur, vs, ve, span } = view();
     const padL = 10, plotW = W - 20;
     const tx = (t) => padL + ((t - vs) / span) * plotW;
     // 刻度尺
     const rulerH = 16, waveH = 62, laneY = 84, laneH = 70;
-    ctx.strokeStyle = '#1C2B44'; ctx.fillStyle = '#5B6B85'; ctx.font = '9px ui-monospace,monospace';
+    ctx.strokeStyle = PAL.ruler; ctx.fillStyle = PAL.tick; ctx.font = '9px ui-monospace,monospace';
     const step = span > 300 ? 60 : span > 120 ? 30 : span > 60 ? 10 : span > 20 ? 5 : span > 8 ? 2 : 1;
     for (let t = Math.ceil(vs / step) * step; t <= ve + 1e-6; t += step) {
       const x = tx(t);
@@ -1391,7 +1406,7 @@ async function bindAudioWB(wb, mediaName, labels, qc) {
     // 波形
     const midY = rulerH + waveH / 2;
     if (wb.peaks && wb.peaks.length) {
-      ctx.fillStyle = 'rgba(96,165,250,.6)';
+      ctx.fillStyle = PAL.waveBar;
       const p0 = Math.max(0, Math.floor((vs / dur) * wb.peaks.length));
       const p1 = Math.min(wb.peaks.length, Math.ceil((ve / dur) * wb.peaks.length));
       const n = Math.max(1, p1 - p0), bars = Math.min(plotW, n);
@@ -1412,24 +1427,30 @@ async function bindAudioWB(wb, mediaName, labels, qc) {
       const focused = wb._focus === i;
       ctx.save();
       ctx.beginPath(); ctx.roundRect(x1, laneY, Math.max(4, x2 - x1), laneH, 3); ctx.clip();
-      ctx.fillStyle = st === 'labeled' ? color + 'CC' : st === 'draft' ? color + '66' : color + '3D';
+      ctx.fillStyle = st === 'labeled' ? color + 'B8' : st === 'draft' ? color + '73' : color + '40';
       ctx.fillRect(x1, laneY, x2 - x1, laneH);
-      if (st === 'pending') { ctx.fillStyle = hatchPattern(); ctx.fillRect(x1, laneY, x2 - x1, laneH); }
+      if (st === 'pending') { ctx.fillStyle = hatchPattern('rgba(255,255,255,.55)'); ctx.fillRect(x1, laneY, x2 - x1, laneH); }
       ctx.restore();
-      ctx.strokeStyle = focused ? '#fff' : color;
-      ctx.lineWidth = focused ? 1.8 : 1;
+      ctx.strokeStyle = focused ? color : color + '99';
+      ctx.lineWidth = focused ? 2 : 1.2;
       if (st === 'draft' && !focused) ctx.setLineDash([4, 3]);
       ctx.beginPath(); ctx.roundRect(x1, laneY, Math.max(4, x2 - x1), laneH, 3); ctx.stroke();
       ctx.setLineDash([]);
-      ctx.fillStyle = '#fff';
-      ctx.font = '600 10px ui-monospace,monospace';
-      ctx.fillText(String(i + 1).padStart(2, '0'), x1 + 3, laneY + 12);
+      // 块标签：段号 + 说话人（说话人着色），窄块不画避免重叠
+      if (x2 - x1 > 30) {
+        ctx.font = '600 10px ui-sans-serif,system-ui';
+        ctx.fillStyle = PAL.segNum;
+        ctx.fillText('#' + (i + 1), x1 + 3, laneY + 12);
+        const nw = ctx.measureText('#' + (i + 1)).width;
+        ctx.fillStyle = color;
+        ctx.fillText(s.spk || '', x1 + 3 + nw + 4, laneY + 12);
+      }
       if (x2 - x1 > 46) {
-        ctx.fillStyle = 'rgba(255,255,255,.9)'; ctx.font = '10px ui-sans-serif,system-ui';
+        ctx.fillStyle = PAL.blockText; ctx.font = '10px ui-sans-serif,system-ui';
         ctx.fillText((s.text || '').slice(0, Math.floor((x2 - x1) / 10)), x1 + 3, laneY + laneH - 6);
       }
       if (focused) {
-        ctx.fillStyle = '#fff';
+        ctx.fillStyle = color;
         ctx.fillRect(x1 - 2.5, laneY + laneH / 2 - 6, 5, 12);
         ctx.fillRect(x2 - 2.5, laneY + laneH / 2 - 6, 5, 12);
       }
@@ -1437,7 +1458,7 @@ async function bindAudioWB(wb, mediaName, labels, qc) {
     // 拖拽新建预览
     if (wb._create && wb._create.length === 2) {
       const [a, b] = wb._create;
-      ctx.fillStyle = 'rgba(252,211,77,.3)'; ctx.strokeStyle = '#FCD34D'; ctx.setLineDash([5, 3]);
+      ctx.fillStyle = 'rgba(252,211,77,.35)'; ctx.strokeStyle = '#D97706'; ctx.setLineDash([5, 3]);
       const x1 = tx(Math.min(a, b)), x2 = tx(Math.max(a, b));
       ctx.fillRect(x1, laneY, Math.max(2, x2 - x1), laneH);
       ctx.strokeRect(x1, laneY, Math.max(2, x2 - x1), laneH);
@@ -1445,13 +1466,21 @@ async function bindAudioWB(wb, mediaName, labels, qc) {
     }
     // 播放指针
     const ph = tx(Math.min(ve, Math.max(vs, wb.currentTime || 0)));
-    ctx.strokeStyle = '#EF4444'; ctx.lineWidth = 1.4;
+    ctx.strokeStyle = PAL.playhead; ctx.lineWidth = 1.4;
     ctx.beginPath(); ctx.moveTo(ph, 0); ctx.lineTo(ph, H - 8); ctx.stroke();
-    ctx.fillStyle = '#EF4444';
+    ctx.fillStyle = PAL.playhead;
     ctx.beginPath(); ctx.moveTo(ph - 4, 0); ctx.lineTo(ph + 4, 0); ctx.lineTo(ph, 7); ctx.closePath(); ctx.fill();
+    // 视口范围标签（右上，白底衬垫避免与刻度重叠）
+    ctx.font = '10px ui-monospace,monospace';
+    const rangeTxt = `${fmtShort(vs)} – ${fmtShort(ve)} (${Math.round(span)}s)`;
+    const rw = ctx.measureText(rangeTxt).width;
+    ctx.fillStyle = PAL.waveBg;
+    ctx.fillRect(W - rw - 12, 1, rw + 8, 13);
+    ctx.fillStyle = PAL.tick;
+    ctx.fillText(rangeTxt, W - rw - 8, 11);
     drawMini();
     const indY = H - 6;
-    ctx.fillStyle = 'rgba(148,163,184,.25)';
+    ctx.fillStyle = PAL.ind;
     ctx.fillRect(padL + (vs / dur) * plotW, indY, Math.max(3, (span / dur) * plotW), 4);
   }
 
@@ -1464,10 +1493,10 @@ async function bindAudioWB(wb, mediaName, labels, qc) {
     const ctx = cvs.getContext('2d');
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
-    ctx.fillStyle = '#0D1626'; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = PAL.miniBg; ctx.fillRect(0, 0, W, H);
     const dur = wb.duration || 1;
     if (wb.peaks && wb.peaks.length) {
-      ctx.fillStyle = 'rgba(96,165,250,.5)';
+      ctx.fillStyle = PAL.miniBar;
       const bars = Math.min(W, 400);
       for (let i = 0; i < bars; i++) {
         const v = wb.peaks[Math.floor((i / bars) * wb.peaks.length)];
@@ -1482,8 +1511,8 @@ async function bindAudioWB(wb, mediaName, labels, qc) {
       ctx.fillRect((Number(s.start) / dur) * W, H - 6, Math.max(2, ((Number(s.end) - Number(s.start)) / dur) * W), 4);
     });
     const { vs, ve } = view();
-    ctx.fillStyle = 'rgba(59,130,246,.18)';
-    ctx.strokeStyle = 'rgba(59,130,246,.8)';
+    ctx.fillStyle = PAL.viewFill;
+    ctx.strokeStyle = PAL.viewStroke;
     const wx = (vs / dur) * W, ww = Math.max(6, ((ve - vs) / dur) * W);
     ctx.fillRect(wx, 0, ww, H); ctx.strokeRect(wx + .5, .5, ww - 1, H - 1);
   }
@@ -1549,7 +1578,7 @@ async function bindAudioWB(wb, mediaName, labels, qc) {
         </div>
         <div class="aw-card-body">
           <span class="spk-dot" style="background:${color}"></span>
-          <select class="select aw-card-spk" data-card-spk="${i}" style="height:22px;font-size:11px;width:88px">${spks.map((x) => `<option ${x === s.spk ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>
+          <select class="select aw-card-spk" data-card-spk="${i}" style="height:22px;font-size:11px;width:88px;color:${color};font-weight:600">${spks.map((x) => `<option ${x === s.spk ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>
           <span class="aw-card-text ${s.text ? '' : 'empty'}" data-card-text="${i}">${esc(s.text || '（点击录入转写）')}</span>
         </div>
       </div>`;
@@ -1572,7 +1601,7 @@ async function bindAudioWB(wb, mediaName, labels, qc) {
       <div class="seg-head">
         <span class="seg-no">${String(i + 1).padStart(2, '0')}</span>
         <span class="seg-spk"><span class="spk-dot" style="background:${color}"></span>
-          <select data-f="spk">${spks.map((x) => `<option ${x === s.spk ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></span>
+          <select data-f="spk" style="color:${color};font-weight:600">${spks.map((x) => `<option ${x === s.spk ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></span>
         <span class="seg-time"><input value="${Number(s.start).toFixed(2)}" data-f="start"/><em>→</em><input value="${Number(s.end).toFixed(2)}" data-f="end"/></span>
         <span class="seg-dur">${Math.max(0, Number(s.end) - Number(s.start)).toFixed(2)}s</span>
         <span class="spacer"></span>
@@ -1597,7 +1626,7 @@ async function bindAudioWB(wb, mediaName, labels, qc) {
     $id('aw-spk-row').innerHTML = `<span class="hint" style="font-size:11px">说话人</span>` + spks.map((sp, k) => {
       const c = SPK_COLORS[k % SPK_COLORS.length];
       const n = wb.segments.filter((s) => s.spk === sp).length;
-      return `<span class="aw-spk-chip"><i class="spk-dot" style="background:${c}"></i>${esc(sp)} <b>${n}</b>
+      return `<span class="aw-spk-chip"><i class="spk-dot" style="background:${c}"></i><span style="color:${c};font-weight:600">${esc(sp)}</span> <b>${n}</b>
         <button class="icon-btn" data-spk-play="${esc(sp)}" title="连播该说话人" style="width:20px;height:20px">▶</button></span>`;
     }).join('') + (wb.canEdit ? `<button class="btn sm ghost" id="aw-spk-new">+ 新建说话人</button>` : '');
   }
@@ -1605,10 +1634,12 @@ async function bindAudioWB(wb, mediaName, labels, qc) {
   function renderFulltext() {
     const el = $id('aw-fulltext-card');
     if (!wb.segments.length) { el.innerHTML = ''; return; }
+    const spks = awSpeakers(wb);
+    const spkColor = (sp) => SPK_COLORS[Math.max(0, spks.indexOf(sp)) % SPK_COLORS.length];
     el.innerHTML = `<div class="card" style="margin:0"><div class="card-head" style="padding:8px 12px;cursor:pointer" id="aw-ft-toggle">
       <h3 class="card-title" style="font-size:12px">全部转写框（共 ${wb.segments.length} 框）</h3><span class="card-sub" id="aw-ft-arrow">▾</span></div>
       <div class="card-body" id="aw-ft-body" style="font-size:13px;line-height:2">${wb.segments.map((s, i) =>
-        `<span data-jump="${i}" style="color:#93C5FD;cursor:pointer;margin-right:6px" title="${fmtShort(s.start)} 跳转">${esc(s.text || '（空）')}</span>`).join('')}</div></div>`;
+        `<span data-jump="${i}" style="color:${spkColor(s.spk)};cursor:pointer;margin-right:6px" title="${fmtShort(s.start)} 跳转">${esc(s.text || '（空）')}</span>`).join('')}</div></div>`;
     $id('aw-ft-toggle').onclick = () => {
       const b = $id('aw-ft-body');
       const hidden = b.style.display === 'none';

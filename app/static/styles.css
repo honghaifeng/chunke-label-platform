@@ -627,3 +627,64 @@ table.table{width:100%;border-collapse:collapse;font-size:12.5px}
 .aw-card.playing{border-color:rgba(239,68,68,.75);box-shadow:0 0 0 1px rgba(239,68,68,.35)}
 .aw-card-text{cursor:text}
 .aw-card-text:hover{color:#93C5FD}
+
+
+/* ---------- 语音工作台浅色主题（对标产线长音频标注页） ---------- */
+.wb.light{
+  --bg:#F2F3F5;--bg-soft:#EAECEF;--panel:#FFFFFF;--panel-2:#F5F6F8;--panel-3:#EDEFF2;
+  --border:#E5E6EB;--border-2:#D8DBE0;--text:#1F2329;--muted:#646A73;--muted-2:#8F959E;
+  --primary-soft:rgba(59,130,246,.12);--success-soft:rgba(22,163,74,.12);--warning-soft:rgba(217,119,6,.12);
+  --danger-soft:rgba(220,38,38,.10);--info:#0891B2;
+  --shadow:0 8px 24px rgba(31,35,41,.08);
+  background:var(--bg);border-radius:14px;padding:12px 14px;
+}
+.wb.light ::selection{background:rgba(59,130,246,.22)}
+/* 芯片 */
+.wb.light .chip.pending{background:rgba(100,116,139,.14);color:#4B5563}
+.wb.light .chip.annotating{background:rgba(59,130,246,.16);color:#1D4ED8}
+.wb.light .chip.submitted,.wb.light .chip.reviewing{background:rgba(217,119,6,.14);color:#B45309}
+.wb.light .chip.done{background:rgba(22,163,74,.15);color:#15803D}
+.wb.light .chip.danger{background:rgba(220,38,38,.12);color:#B91C1C}
+.wb.light .chip.info{background:rgba(8,145,178,.13);color:#0E7490}
+.wb.light .chip.purple{background:rgba(139,92,246,.14);color:#6D28D9}
+.wb.light .chip.plain{background:var(--panel-2);color:var(--muted);border-color:var(--border)}
+/* 段卡 */
+.wb.light .aw-card{background:#FFFFFF;border-color:var(--border);box-shadow:0 1px 2px rgba(31,35,41,.04)}
+.wb.light .aw-card:hover{border-color:rgba(59,130,246,.55)}
+.wb.light .aw-card.on{border-color:var(--primary);background:rgba(59,130,246,.07);box-shadow:0 0 0 1px rgba(59,130,246,.25)}
+.wb.light .aw-card.playing{border-color:rgba(239,68,68,.7);box-shadow:0 0 0 1px rgba(239,68,68,.3)}
+.wb.light .aw-card-text:hover{color:#2563EB}
+.wb.light .aw-card-text.empty{color:var(--muted-2)}
+/* 筛选 chips */
+.wb.light .fchip{background:#FFFFFF;border-color:var(--border-2)}
+.wb.light .fchip.on{border-color:rgba(59,130,246,.8);color:#1D4ED8;background:rgba(59,130,246,.12)}
+/* 说话人 chips */
+.wb.light .aw-spk-chip{background:#FFFFFF;border-color:var(--border-2);color:var(--text)}
+.wb.light .aw-spk-chip b{color:var(--muted)}
+/* 段编辑器 */
+.wb.light .seg-row{border-bottom-color:var(--border)}
+.wb.light .seg-row:hover{background:rgba(59,130,246,.05)}
+.wb.light .seg-row.playing{background:rgba(59,130,246,.09);box-shadow:inset 0 0 0 1px rgba(59,130,246,.25)}
+.wb.light .seg-time input{color:#1D4ED8;background:var(--bg-soft);border-color:var(--border-2)}
+.wb.light .seg-time input:focus{border-color:var(--primary);background:#FFFFFF}
+.wb.light .seg-pron-row select{background:rgba(220,38,38,.06);border-color:rgba(220,38,38,.25);color:#B91C1C}
+.wb.light .seg-tag{background:rgba(217,119,6,.10);border-color:rgba(217,119,6,.3);color:#B45309}
+.wb.light .seg-tag button:hover{background:rgba(217,119,6,.2)}
+.wb.light .seg-text{background:#FFFFFF;border-color:var(--border-2)}
+.wb.light .seg-text:focus{border-color:var(--primary);box-shadow:0 0 0 3px rgba(59,130,246,.14)}
+/* 页签 */
+.wb.light .seg-tabs{background:var(--panel-2);border-color:var(--border)}
+.wb.light .seg-tabs button{color:var(--muted)}
+.wb.light .seg-tabs button.active{background:rgba(59,130,246,.14);color:#1D4ED8}
+/* 任务信息 */
+.wb.light .kv{border-bottom-color:var(--border)}
+/* 波形画布外框 */
+.wb.light .wave-panel{background:#FFFFFF;border-color:var(--border);box-shadow:0 1px 3px rgba(31,35,41,.05)}
+.wb.light #wave-mini{border-bottom:1px solid var(--border)}
+/* 全转写文本区 */
+.wb.light #aw-ft-body{color:var(--text)}
+/* 按钮微调 */
+.wb.light .btn.ghost{border-color:var(--border-2);color:var(--muted)}
+.wb.light .btn.ghost:hover{color:var(--primary);border-color:rgba(59,130,246,.5)}
+/* 标注页整页浅色（容器层随动，导航/顶栏保持平台暗色） */
+.page:has(> .wb.light){background:#F2F3F5;color:#1F2329}
