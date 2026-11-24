@@ -538,6 +538,9 @@ function shell(active, content, crumb = '') {
 }
 
 function mount(active, crumb, content) {
+  if (window.CK_CLEANUP && window.CK_CLEANUP.length) {
+    window.CK_CLEANUP.splice(0).forEach((fn) => { try { fn(); } catch (e) { /* ignore */ } });
+  }
   $('#app').innerHTML = shell(active, content, crumb);
   if (state.counts && state.counts.review) {
     const el = $('#nav-qc-count');
@@ -1039,6 +1042,61 @@ function exportTasks(tasks) {
 }
 
 /* ---------------- 标注工作台 ---------------- */
+function markDirty(wb) {
+  wb.dirty = true;
+  const el = document.getElementById('save-ind');
+  if (el) { el.textContent = T('common.unsaved'); el.style.color = '#F59E0B'; }
+}
+
+function payloadOf(wb) {
+  const base = {};
+  if (typeof wb.customPayload === 'function') {
+    Object.assign(base, wb.customPayload());
+  } else if (wb.mediaType === 'audio') {
+    base.segments = (wb.segments || []).map((s) => ({ ...s, events: s.events || [] }));
+  } else if (wb.mediaType === 'image') {
+    base.boxes = (wb.boxes || []).map((b) => ({ ...b }));
+    base.polygons = wb.polygons || [];
+    base.keypoints = wb.keypoints || [];
+    base.masks = wb.masks || [];
+    base.category = wb.imageClass || '';
+    base.attrs = wb.imgAttrs || {};
+    base.transcription = wb.transcription || '';
+  } else {
+    if (Array.isArray(wb.segments)) base.segments = wb.segments;
+    if (Array.isArray(wb.boxes)) base.boxes = wb.boxes;
+    if (wb.edit && typeof wb.edit === 'object') base.edit = wb.edit;
+  }
+  if (wb.summary) base.summary = wb.summary;
+  if (wb.business) base.business = wb.business;
+  if (wb.quality) base.quality_score = wb.quality;
+  return base;
+}
+
+async function save(wb) {
+  if (!wb || wb.saving) return;
+  wb.saving = true;
+  const btn = document.getElementById('btn-save') || document.getElementById('wb-save');
+  if (btn) btn.disabled = true;
+  try {
+    const r = await api(`/api/tasks/${wb.task.id}/annotation`, { method: 'POST', body: { payload: payloadOf(wb) } });
+    wb.dirty = false;
+    const el = document.getElementById('save-ind');
+    if (el) {
+      el.textContent = `${T('common.saved')}${r.saved_at ? ' · ' + String(r.saved_at).slice(11, 19) : ''}`;
+      el.style.color = '#22C55E';
+    }
+    toast(T('common.saved'), 'ok');
+    return r;
+  } catch (err) {
+    toast(err.message, 'err');
+    throw err;
+  } finally {
+    wb.saving = false;
+    if (btn) btn.disabled = false;
+  }
+}
+
 async function pageAnnotate(id) {
   const data = await api(`/api/tasks/${id}`);
   state.current = data;
@@ -1269,9 +1327,14 @@ function awStatusOf(s) {
   return s.status === 'labeled' ? 'labeled' : s.status === 'draft' ? 'draft' : 'pending';
 }
 
+function onCleanup(fn) {
+  (window.CK_CLEANUP = window.CK_CLEANUP || []).push(fn);
+}
+
 async function bindAudioWB(wb, mediaName, labels, qc) {
   const audio = wb.audio;
   if (mediaName) loadAudio(`/media/${encodeURIComponent(mediaName)}`, wb);
+  wb._redraw = () => drawWave();
   const $id = (s) => document.getElementById(s);
   const saveInd = () => $id('save-ind');
 
@@ -1436,17 +1499,33 @@ async function bindAudioWB(wb, mediaName, labels, qc) {
     });
   }
 
-  function renderList() {
-    const spks = awSpeakers(wb);
+  function renderStats() {
     const stCnt = { labeled: 0, draft: 0, pending: 0 };
     wb.segments.forEach((s) => stCnt[awStatusOf(s)]++);
-    $id('aw-stats').innerHTML = `
+    const el = $id('aw-stats'); if (!el) return;
+    el.innerHTML = `
       <div style="display:flex;gap:16px;font-size:12px;align-items:center">
         <span><i style="width:8px;height:8px;border-radius:50%;background:#22C55E;display:inline-block;margin-right:4px"></i>已标注 <b>${stCnt.labeled}</b></span>
         <span><i style="width:8px;height:8px;border-radius:50%;background:#3B82F6;display:inline-block;margin-right:4px"></i>草稿 <b>${stCnt.draft}</b></span>
         <span><i style="width:8px;height:8px;border-radius:50%;background:#F59E0B;display:inline-block;margin-right:4px"></i>待标注 <b>${stCnt.pending}</b></span>
         <span class="hint" style="margin-left:auto">共 ${wb.segments.length} 段</span>
       </div>`;
+  }
+  /* 不整表重绘，原地刷新某一段的角标与统计（打字时保持输入焦点） */
+  function syncCardStatus(i) {
+    const s = wb.segments[i]; if (!s) return;
+    const st = awStatusOf(s);
+    const chip = document.querySelector(`#aw-list .aw-card[data-i="${i}"] .chip[data-st]`);
+    if (chip) {
+      chip.className = 'chip ' + (st === 'labeled' ? 'done' : st === 'draft' ? 'annotating' : 'pending');
+      chip.textContent = st === 'labeled' ? '已标注' : st === 'draft' ? '草稿' : '待标注';
+    }
+    renderStats();
+  }
+
+  function renderList() {
+    const spks = awSpeakers(wb);
+    renderStats();
     const f = wb._flt;
     $id('aw-filters').innerHTML = `
       ${[['all', '全部'], ['pending', '待标注'], ['draft', '草稿'], ['labeled', '已标注']].map(([k, l]) => `<button class="fchip ${f.st === k ? 'on' : ''}" data-flt-st="${k}">${l}</button>`).join('')}
@@ -1463,7 +1542,7 @@ async function bindAudioWB(wb, mediaName, labels, qc) {
         <div class="aw-card-head">
           <span class="mono">#${i + 1} ${fmtShort(s.start)}–${fmtShort(s.end)}</span>
           ${s.source === 'ai' ? '<span class="chip info">AI</span>' : ''}
-          <span class="chip ${st === 'labeled' ? 'done' : st === 'draft' ? 'annotating' : 'pending'}">${st === 'labeled' ? '已标注' : st === 'draft' ? '草稿' : '待标注'}</span>
+          <span class="chip ${st === 'labeled' ? 'done' : st === 'draft' ? 'annotating' : 'pending'}" data-st>${st === 'labeled' ? '已标注' : st === 'draft' ? '草稿' : '待标注'}</span>
           <span class="spacer"></span>
           <button class="btn sm ghost" data-confirm="${i}" title="完成标注">✓</button>
           <button class="btn sm ghost danger" data-del="${i}">×</button>
@@ -1549,14 +1628,16 @@ async function bindAudioWB(wb, mediaName, labels, qc) {
       `<button class="btn sm ghost" data-gloss-apply="${esc(g.term)}|${esc(g.reading || '')}" title="替换为规范读法">${esc(g.term)}→${esc(g.reading || '?')}</button>`).join(' ')}</div>` : '';
   }
   const openGlossary = () => {
+    const canEditGl = ['platform_admin', 'tenant_admin', 'project_manager'].includes((state.user || {}).platform_role)
+      || (window.CK_STATE && window.CK_STATE.permissions || []).includes('project.write');
     openModal(`<div class="modal-head"><h3>方言辞典</h3><button class="x" data-close>×</button></div>
       <div class="modal-body"><div id="gl-list">${glossary.map((g, i) => `<div class="filters" style="margin-bottom:6px">
-        <input class="input" value="${esc(g.term || '')}" data-gl-term="${i}" placeholder="方言词" style="width:150px"/>
-        <input class="input" value="${esc(g.reading || '')}" data-gl-read="${i}" placeholder="规范读法/说明" style="flex:1"/>
-        <button class="btn sm ghost danger" data-gl-del="${i}">×</button></div>`).join('') || '<div class="hint">暂无词条，点击下方添加</div>'}</div>
-      <button class="btn sm" id="gl-add">+ 添加词条</button></div>
-      <div class="modal-foot"><span class="hint" style="margin-right:auto">在段文本中命中词条时会提示规范读法</span>
-      <button class="btn ghost" data-close>取消</button><button class="btn primary" id="gl-save">保存辞典</button></div>`);
+        <input class="input" value="${esc(g.term || '')}" data-gl-term="${i}" placeholder="方言词" style="width:150px" ${canEditGl ? '' : 'disabled'}/>
+        <input class="input" value="${esc(g.reading || '')}" data-gl-read="${i}" placeholder="规范读法/说明" style="flex:1" ${canEditGl ? '' : 'disabled'}/>
+        ${canEditGl ? `<button class="btn sm ghost danger" data-gl-del="${i}">×</button>` : ''}</div>`).join('') || '<div class="hint">暂无词条' + (canEditGl ? '，点击下方添加' : '（由项目经理维护）') + '</div>'}</div>
+      ${canEditGl ? '<button class="btn sm" id="gl-add">+ 添加词条</button>' : ''}</div>
+      <div class="modal-foot"><span class="hint" style="margin-right:auto">在段文本中命中词条时会提示规范读法，点击即可替换</span>
+      <button class="btn ghost" data-close>关闭</button>${canEditGl ? '<button class="btn primary" id="gl-save">保存辞典</button>' : ''}</div>`);
     $('#gl-add').onclick = () => {
       $('#gl-list').insertAdjacentHTML('beforeend', `<div class="filters" style="margin-bottom:6px">
         <input class="input" data-gl-term="-1" placeholder="方言词" style="width:150px"/>
@@ -1589,15 +1670,14 @@ async function bindAudioWB(wb, mediaName, labels, qc) {
       ${(spec.samples || []).length ? `<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">${spec.samples.map((sm) => `<img src="${esc(sm.url)}" style="width:80px;height:56px;object-fit:cover;border-radius:6px;border:1px solid var(--border)"/>`).join('')}</div>` : ''}`
       : '<div class="hint">该项目未绑定规范模板</div>';
   };
-  $id('aw-rules').onclick = () => openModal(`<div class="modal-head"><h3>作业规则</h3><button class="x" data-close>×</button></div>
+  $id('aw-rules').onclick = async () => {
+    openModal(`<div class="modal-head"><h3>作业规则</h3><button class="x" data-close>×</button></div>
     <div class="modal-body" id="aw-rules-body"><span class="hint">加载规则…</span></div>
     <div class="modal-foot"><button class="btn ghost" data-close>关闭</button></div>`);
-  document.addEventListener('click', async (e) => {
-    if (e.target.id === 'aw-rules') {
-      const spec = await fetchSpecForTask(wb.task, wb.project);
-      $('#aw-rules-body').innerHTML = spec ? `<b>${esc(spec.title)}</b><ul style="margin:8px 0 0 16px;line-height:1.9;font-size:12.5px">${spec.lines.map((l) => `<li>${esc(l)}</li>`).join('')}</ul>` : '未绑定规范模板';
-    }
-  });
+    const spec = await fetchSpecForTask(wb.task, wb.project);
+    const bodyEl = $('#aw-rules-body');
+    if (bodyEl) bodyEl.innerHTML = spec ? `<b>${esc(spec.title)}</b><ul style="margin:8px 0 0 16px;line-height:1.9;font-size:12.5px">${spec.lines.map((l) => `<li>${esc(l)}</li>`).join('')}</ul>` : '未绑定规范模板';
+  };
 
   /* ---------- 段交互 ---------- */
   const panel = $id('aw-list');
@@ -1607,7 +1687,7 @@ async function bindAudioWB(wb, mediaName, labels, qc) {
     const confirm_ = e.target.closest('[data-confirm]');
     if (confirm_) { const i = Number(confirm_.dataset.confirm); wb.segments[i].status = 'labeled'; markDirty(wb); renderList(); drawWave(); return; }
     const jump = e.target.closest('[data-card-text]');
-    if (jump) { const i = Number(jump.dataset.cardText); selectSeg(i, true); return; }
+    if (jump) { const i = Number(jump.dataset.cardText); selectSeg(i, true, true); return; }
     const card = e.target.closest('.aw-card');
     if (card) selectSeg(Number(card.dataset.i), false);
   };
@@ -1627,18 +1707,27 @@ async function bindAudioWB(wb, mediaName, labels, qc) {
     const s = wb.segments[i];
     if (f === 'start' || f === 'end') s[f] = Number(e.target.value) || 0;
     else s[f] = e.target.value;
-    if (awStatusOf(s) === 'pending') s.status = 'draft';
+    if (awStatusOf(s) === 'pending') { s.status = 'draft'; syncCardStatus(i); }
     markDirty(wb); drawWave();
     const durEl = row.querySelector('.seg-dur');
     if (durEl) durEl.textContent = Math.max(0, Number(s.end) - Number(s.start)).toFixed(2) + 's';
   };
   editorBox.onchange = (e) => {
     const row = e.target.closest('.seg-row'); if (!row) return;
-    const i = Number(row.dataset.i); const f = e.target.dataset.f;
-    if (f === 'event' && e.target.value) {
-      wb.segments[i].events = Array.from(new Set([...(wb.segments[i].events || []), e.target.value]));
-      markDirty(wb); renderList(); drawWave();
+    const i = Number(row.dataset.i); const f = e.target.dataset.f; if (!f) return;
+    const s = wb.segments[i];
+    if (f === 'event') {
+      if (e.target.value) {
+        s.events = Array.from(new Set([...(s.events || []), e.target.value]));
+        if (awStatusOf(s) === 'pending') s.status = 'draft';
+        markDirty(wb); renderList(); drawWave();
+      }
+      return;
     }
+    s[f] = e.target.value;
+    if (awStatusOf(s) === 'pending') { s.status = 'draft'; syncCardStatus(i); }
+    markDirty(wb);
+    if (f === 'spk' || f === 'emotion') { renderList(); } else { drawWave(); }
   };
   editorBox.onclick = (e) => {
     const confirm_ = e.target.closest('[data-confirm]');
@@ -1658,7 +1747,7 @@ async function bindAudioWB(wb, mediaName, labels, qc) {
     }
   };
 
-  function selectSeg(i, seek) {
+  function selectSeg(i, seek, focusEditor) {
     wb._focus = i;
     renderList(); drawWave();
     if (seek && audio && wb.segments[i]) {
@@ -1668,6 +1757,10 @@ async function bindAudioWB(wb, mediaName, labels, qc) {
     }
     const el = document.querySelector(`.aw-card[data-i="${i}"]`);
     if (el) el.scrollIntoView({ block: 'nearest' });
+    if (focusEditor) {
+      const ta = document.querySelector('#aw-editor textarea[data-f="text"]');
+      if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+    }
   }
   function afterSegChange() { markDirty(wb); renderList(); drawWave(); }
   function pushUndo() {
@@ -1684,7 +1777,7 @@ async function bindAudioWB(wb, mediaName, labels, qc) {
   $id('aw-next-draft').onclick = () => nextOf('draft');
 
   /* ---------- 说话人 ---------- */
-  document.body.addEventListener('click', (e) => {
+  const bodyClick = (e) => {
     const playBtn = e.target.closest('[data-spk-play]');
     if (playBtn) {
       const sp = playBtn.dataset.spkPlay;
@@ -1700,7 +1793,9 @@ async function bindAudioWB(wb, mediaName, labels, qc) {
       const name = prompt('新说话人名称（如 S3 / 客户B）：');
       if (name && name.trim()) { wb.customSpk.push(name.trim()); markDirty(wb); renderList(); }
     }
-  });
+  };
+  document.body.addEventListener('click', bodyClick);
+  onCleanup(() => document.body.removeEventListener('click', bodyClick));
 
   /* ---------- 波形交互 ---------- */
   const waveEl = $id('wave');
@@ -1739,7 +1834,7 @@ async function bindAudioWB(wb, mediaName, labels, qc) {
     if (hit) { wb._focus = hit.i; wb._create = null; renderList(); drawWave(); }
     else if (inLane && wb.canEdit) { wb._create = [wDrag.t0, wDrag.t0]; drawWave(); }
   };
-  window.addEventListener('mousemove', (e) => {
+  const winMove = (e) => {
     if (!wDrag || !wb.duration) return;
     const dx = e.clientX - wDrag.x;
     if (Math.abs(dx) > 2) wDrag.moved = true;
@@ -1774,10 +1869,12 @@ async function bindAudioWB(wb, mediaName, labels, qc) {
     wb.viewStart = Math.max(0, Math.min(wb.duration - span, (wb.viewStart || 0) - dsec));
     wDrag.x = e.clientX;
     drawWave();
-  });
-  window.addEventListener('mouseup', () => {
+  };
+  window.addEventListener('mousemove', winMove);
+  onCleanup(() => window.removeEventListener('mousemove', winMove));
+  const winUp = () => {
     if (!wDrag) return;
-    if (wb._create) {
+    if (wb._create && wDrag.moved) {
       const [a, b] = wb._create;
       wb._create = null;
       const s0 = Math.max(0, Math.min(a, b)), s1 = Math.min(wb.duration || 60, Math.max(a, b));
@@ -1792,12 +1889,18 @@ async function bindAudioWB(wb, mediaName, labels, qc) {
     } else if (wDrag.hit && wDrag.moved) {
       renderList(); drawWave();
     } else if (!wDrag.hit && !wDrag.moved && audio) {
+      wb._create = null;
       audio.currentTime = wDrag.t0;
       wb.currentTime = audio.currentTime;
       updateTimeLabel(wb); drawWave();
+    } else {
+      wb._create = null;
+      drawWave();
     }
     setTimeout(() => { wDrag = null; }, 0);
-  });
+  };
+  window.addEventListener('mouseup', winUp);
+  onCleanup(() => window.removeEventListener('mouseup', winUp));
 
   /* ---------- 缩略图 ---------- */
   const mini = $id('wave-mini');
@@ -1811,7 +1914,7 @@ async function bindAudioWB(wb, mediaName, labels, qc) {
     if (audio) { audio.currentTime = frac * dur; wb.currentTime = audio.currentTime; updateTimeLabel(wb); }
     drawWave();
   };
-  window.addEventListener('mousemove', (e) => {
+  const miniMove = (e) => {
     if (!mDrag || !wb.duration) return;
     if (mDrag.mode === 'win') {
       const r = mini.getBoundingClientRect();
@@ -1821,8 +1924,12 @@ async function bindAudioWB(wb, mediaName, labels, qc) {
       mDrag.x = e.clientX;
       drawWave();
     }
-  });
-  window.addEventListener('mouseup', () => { mDrag = null; });
+  };
+  window.addEventListener('mousemove', miniMove);
+  onCleanup(() => window.removeEventListener('mousemove', miniMove));
+  const miniUp = () => { mDrag = null; };
+  window.addEventListener('mouseup', miniUp);
+  onCleanup(() => window.removeEventListener('mouseup', miniUp));
 
   /* ---------- 缩放控件 ---------- */
   const zoomEl = $id('aw-zoom');
@@ -1886,11 +1993,13 @@ async function bindAudioWB(wb, mediaName, labels, qc) {
     const b = e.target.closest('[data-flt-st]');
     if (b) { wb._flt.st = b.dataset.fltSt; renderList(); }
   });
-  document.body.addEventListener('change', (e) => {
+  const bodyChange = (e) => {
     if (e.target.id === 'aw-flt-spk') { wb._flt.spk = e.target.value; renderList(); }
     if (e.target.id === 'aw-flt-ai') { wb._flt.ai = e.target.checked; renderList(); }
     if (e.target.id === 'business') { wb.business = e.target.value; markDirty(wb); }
-  });
+  };
+  document.body.addEventListener('change', bodyChange);
+  onCleanup(() => document.body.removeEventListener('change', bodyChange));
 
   /* ---------- 全文跳转 ---------- */
   document.body.addEventListener('click', (e) => {
@@ -1952,16 +2061,29 @@ async function bindAudioWB(wb, mediaName, labels, qc) {
 
   /* ---------- 播放跟随 ---------- */
   if (audio) {
-    audio.addEventListener('timeupdate', () => {
+    const onTime = () => {
       wb.currentTime = audio.currentTime;
       const cur = $id('aw-cur'); if (cur) cur.textContent = fmt(audio.currentTime);
-      const seg = wb.segments[wb._focus];
-      if (wb.loopSeg && seg && audio.currentTime >= Number(seg.end)) {
+      const seg = wb._focus != null && wb.segments[wb._focus];
+      if (wb.loopSeg && seg && audio.currentTime >= Number(seg.end) && wb.playing) {
         audio.currentTime = Number(seg.start);
       }
+      // 播放中的段高亮（不重渲染，直接切 class）
+      const pIdx = wb.segments.findIndex((s) => audio.currentTime >= Number(s.start) && audio.currentTime < Number(s.end));
+      if (pIdx !== wb._playIdx) {
+        wb._playIdx = pIdx;
+        document.querySelectorAll('#aw-list .aw-card').forEach((el) =>
+          el.classList.toggle('playing', Number(el.dataset.i) === pIdx));
+      }
+      // 视图自动跟随播放头
+      const { vs, ve } = view();
+      if (wb.playing && (audio.currentTime < vs || audio.currentTime > ve - 0.3)) {
+        wb.viewStart = Math.max(0, Math.min((wb.duration || 1) - (ve - vs), audio.currentTime - (ve - vs) * 0.1));
+      }
+      updateTimeLabel(wb);
       drawWave();
-    });
-    audio.addEventListener('ended', () => {
+    };
+    const onEnded = () => {
       if (wb._playlist && wb._plIdx < wb._playlist.length - 1) {
         wb._plIdx += 1;
         const i = wb._playlist[wb._plIdx];
@@ -1974,7 +2096,10 @@ async function bindAudioWB(wb, mediaName, labels, qc) {
       wb.playing = false;
       playBtn.innerHTML = icon('play');
       drawWave();
-    });
+    };
+    audio.addEventListener('timeupdate', onTime);
+    audio.addEventListener('ended', onEnded);
+    onCleanup(() => { audio.removeEventListener('timeupdate', onTime); audio.removeEventListener('ended', onEnded); });
   }
   document.onkeydown = (e) => {
     if (!document.body.contains($id('wb'))) return;
@@ -1987,7 +2112,9 @@ async function bindAudioWB(wb, mediaName, labels, qc) {
     if (e.key === ']') stepSeg(1);
     if (e.key.toLowerCase() === 'z' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); doUndo(); }
   };
-  window.addEventListener('resize', drawWave);
+  const onResize = () => drawWave();
+  window.addEventListener('resize', onResize);
+  onCleanup(() => window.removeEventListener('resize', onResize));
 
   renderList();
   drawWave();
@@ -2362,22 +2489,9 @@ function loadAudio(url, wb) {
   wb.audio = audio;
   audio.addEventListener('loadedmetadata', () => {
     wb.duration = audio.duration || wb.duration;
-    $('#total-t').textContent = fmt(wb.duration);
+    const tt = $('#total-t'); if (tt) tt.textContent = fmt(wb.duration);
     updateTimeLabel(wb);
-    drawWave(wb);
-  });
-  audio.addEventListener('timeupdate', () => {
-    wb.currentTime = audio.currentTime;
-    updateTimeLabel(wb);
-    const pct = wb.duration ? (audio.currentTime / wb.duration) * 100 : 0;
-    const bar = $('#seek-bar');
-    if (bar) bar.style.width = pct + '%';
-    drawWave(wb, true);
-  });
-  audio.addEventListener('ended', () => {
-    wb.playing = false;
-    const b = $('#btn-play');
-    if (b) b.innerHTML = icon('play');
+    if (wb._redraw) wb._redraw();
   });
   audio.load();
   fetch(url, { credentials: 'same-origin' })
