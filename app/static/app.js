@@ -64,11 +64,122 @@ const STATUS = {
   appeal: ['申诉中', 'purple'],
 };
 const statusChip = (s) => {
-  const [label, cls] = STATUS[s] || [s, 'plain'];
-  return `<span class="chip ${cls}"><i class="dot"></i>${label}</span>`;
+  const [, cls] = STATUS[s] || [s, 'plain'];
+  return `<span class="chip ${cls}"><i class="dot"></i>${T('status.' + s)}</span>`;
 };
 const MODALITY_ICON = { audio: 'audio', image: 'image', video: 'video', pointcloud: 'cloud', editing: 'spark' };
 const SPK_COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#8B5CF6', '#06B6D4', '#EF4444'];
+
+/* ================= i18n 中/英/越 ================= */
+const I18N = {
+  zh: {
+    'brand.tag': '春科标注', 'brand.full': '春科数据标注平台', 'brand.space': '项目平台',
+    'nav.dashboard': '工作台', 'nav.tasks': '我的任务', 'nav.hall': '任务大厅', 'nav.qc': '质检中心',
+    'nav.acceptance': '验收中心', 'nav.issues': '问题清单', 'nav.errors': '我的错题', 'nav.help': '帮助中心',
+    'nav.prefs': '个人偏好', 'nav.projects': '项目空间', 'nav.datasets': '数据管理', 'nav.templates': '模板中心',
+    'nav.workflows': '工作流', 'nav.stats': '数据统计', 'nav.members': '成员管理', 'nav.benchAudio': '语音工作台',
+    'nav.benchImage': '图像工作台', 'nav.benchPc': '点云工作台', 'nav.datahub': '数据管理', 'nav.appeals': '申诉仲裁',
+    'login.title': '登录春科数据标注平台', 'login.username': '请输入账号', 'login.password': '请输入密码', 'login.submit': '进入平台',
+    'login.slogan': '多模态数据标注 · 智能质检 · 交付闭环',
+    'dash.hello': '今天有', 'dash.pending': '个待标注任务、', 'dash.reviewing': '个待质检任务', 'dash.total': '任务总量',
+    'dash.cover': '个项目', 'dash.todo': '待标注', 'dash.doing': '标注中', 'dash.review': '质检中', 'dash.accept': '待验收', 'dash.done': '已完成',
+    'dash.passrate': '质检通过率', 'dash.reworkrate': '平均返修率', 'dash.trend': '近 7 日任务吞吐', 'dash.dist': '任务状态分布',
+    'dash.recent': '最近任务', 'dash.alltasks': '全部任务', 'dash.viewtasks': '查看任务', 'dash.goto': '进入标注',
+    'task.center': '任务中心', 'task.sub': '按项目、状态筛选任务，点击行进入标注或质检', 'task.all': '全部', 'task.todo': '待标注',
+    'task.doing': '标注中', 'task.rework': '返修中', 'task.submitted': '待质检', 'task.review': '质检中', 'task.accept': '待验收',
+    'task.paused': '已暂停', 'task.appeal': '申诉中', 'task.done': '已完成', 'task.allproj': '全部项目', 'task.count': '条',
+    'task.export': '导出清单', 'task.new': '新建任务', 'task.annotate': '标注', 'task.reviewAct': '质检', 'task.assign': '分配',
+    'task.unassigned': '未分配', 'task.filterph': '搜索任务 / 项目',
+    'btn.save': '保存草稿', 'btn.submit': '提交质检', 'btn.back': '返回', 'btn.close': '关闭', 'btn.cancel': '取消',
+    'btn.ok': '确定', 'btn.del': '删除', 'btn.upload': '上传', 'btn.search': '搜索', 'btn.create': '新建',
+    'wb.spec': '标注规范', 'wb.info': '任务信息', 'wb.project': '项目', 'wb.batch': '批次', 'wb.annotator': '标注员', 'wb.reviewer': '质检员',
+    'status.pending': '待标注', 'status.annotating': '标注中', 'status.submitted': '待质检', 'status.review': '质检中',
+    'status.review_done': '待验收', 'status.done': '已完成', 'status.paused': '已暂停', 'status.appeal': '申诉中',
+    'mod.audio': '语音', 'mod.image': '图片', 'mod.video': '视频', 'mod.text': '文本', 'mod.pointcloud': '3D 点云',
+    'mod.llm': '大模型', 'mod.pdf': 'PDF', 'mod.multimodal': '多模态', 'mod.editing': '图像编辑',
+    'common.unsaved': '未保存', 'common.saved': '已保存', 'common.loading': '加载中…', 'common.empty': '暂无数据',
+    'common.yes': '是', 'common.no': '否', 'lang.label': '界面语言',
+  },
+  en: {
+    'brand.tag': 'Chunke Label', 'brand.full': 'Chunke Data Labeling Platform', 'brand.space': 'Project Space',
+    'nav.dashboard': 'Dashboard', 'nav.tasks': 'My Tasks', 'nav.hall': 'Task Hall', 'nav.qc': 'QC Center',
+    'nav.acceptance': 'Acceptance', 'nav.issues': 'Issues', 'nav.errors': 'My Mistakes', 'nav.help': 'Help',
+    'nav.prefs': 'Preferences', 'nav.projects': 'Projects', 'nav.datasets': 'Data Management', 'nav.templates': 'Templates',
+    'nav.workflows': 'Workflows', 'nav.stats': 'Statistics', 'nav.members': 'Members', 'nav.benchAudio': 'Audio Workbench',
+    'nav.benchImage': 'Image Workbench', 'nav.benchPc': 'Point Cloud Workbench', 'nav.datahub': 'Data Management', 'nav.appeals': 'Appeals',
+    'login.title': 'Sign in to Chunke Labeling', 'login.username': 'Username', 'login.password': 'Password', 'login.submit': 'Sign in',
+    'login.slogan': 'Multimodal labeling · Smart QC · Delivery loop',
+    'dash.hello': 'Today:', 'dash.pending': 'to-annotate,', 'dash.reviewing': 'in QC queue', 'dash.total': 'Total tasks',
+    'dash.cover': 'projects', 'dash.todo': 'To do', 'dash.doing': 'Annotating', 'dash.review': 'In QC', 'dash.accept': 'To accept', 'dash.done': 'Done',
+    'dash.passrate': 'QC pass rate', 'dash.reworkrate': 'Avg rework', 'dash.trend': '7-day throughput', 'dash.dist': 'Status distribution',
+    'dash.recent': 'Recent tasks', 'dash.alltasks': 'All tasks', 'dash.viewtasks': 'View tasks', 'dash.goto': 'Start labeling',
+    'task.center': 'Task Center', 'task.sub': 'Filter by project and status; click a row to annotate or review', 'task.all': 'All', 'task.todo': 'To do',
+    'task.doing': 'Annotating', 'task.rework': 'Reworking', 'task.submitted': 'Submitted', 'task.review': 'In QC', 'task.accept': 'To accept',
+    'task.paused': 'Paused', 'task.appeal': 'Appeal', 'task.done': 'Done', 'task.allproj': 'All projects', 'task.count': 'items',
+    'task.export': 'Export', 'task.new': 'New task', 'task.annotate': 'Label', 'task.reviewAct': 'Review', 'task.assign': 'Assign',
+    'task.unassigned': 'Unassigned', 'task.filterph': 'Search tasks / projects',
+    'btn.save': 'Save draft', 'btn.submit': 'Submit QC', 'btn.back': 'Back', 'btn.close': 'Close', 'btn.cancel': 'Cancel',
+    'btn.ok': 'OK', 'btn.del': 'Delete', 'btn.upload': 'Upload', 'btn.search': 'Search', 'btn.create': 'New',
+    'wb.spec': 'Annotation Spec', 'wb.info': 'Task Info', 'wb.project': 'Project', 'wb.batch': 'Batch', 'wb.annotator': 'Annotator', 'wb.reviewer': 'Reviewer',
+    'status.pending': 'To do', 'status.annotating': 'Annotating', 'status.submitted': 'Submitted', 'status.review': 'In QC',
+    'status.review_done': 'To accept', 'status.done': 'Done', 'status.paused': 'Paused', 'status.appeal': 'Appeal',
+    'mod.audio': 'Audio', 'mod.image': 'Image', 'mod.video': 'Video', 'mod.text': 'Text', 'mod.pointcloud': 'Point Cloud',
+    'mod.llm': 'LLM', 'mod.pdf': 'PDF', 'mod.multimodal': 'Multimodal', 'mod.editing': 'Image Editing',
+    'common.unsaved': 'Unsaved', 'common.saved': 'Saved', 'common.loading': 'Loading…', 'common.empty': 'No data',
+    'common.yes': 'Yes', 'common.no': 'No', 'lang.label': 'Language',
+  },
+  vi: {
+    'brand.tag': 'Chunke Label', 'brand.full': 'Nền tảng gán nhãn dữ liệu Chunke', 'brand.space': 'Không gian dự án',
+    'nav.dashboard': 'Bảng làm việc', 'nav.tasks': 'Tác vụ của tôi', 'nav.hall': 'Sảnh tác vụ', 'nav.qc': 'Trung tâm KC',
+    'nav.acceptance': 'Nghiệm thu', 'nav.issues': 'Vấn đề', 'nav.errors': 'Lỗi của tôi', 'nav.help': 'Trợ giúp',
+    'nav.prefs': 'Tùy chọn', 'nav.projects': 'Dự án', 'nav.datasets': 'Quản lý dữ liệu', 'nav.templates': 'Mẫu',
+    'nav.workflows': 'Quy trình', 'nav.stats': 'Thống kê', 'nav.members': 'Thành viên', 'nav.benchAudio': 'Bàn làm việc âm thanh',
+    'nav.benchImage': 'Bàn làm việc hình ảnh', 'nav.benchPc': 'Bàn làm việc điểm 3D', 'nav.datahub': 'Quản lý dữ liệu', 'nav.appeals': 'Khiếu nại',
+    'login.title': 'Đăng nhập nền tảng Chunke', 'login.username': 'Tên đăng nhập', 'login.password': 'Mật khẩu', 'login.submit': 'Đăng nhập',
+    'login.slogan': 'Gán nhãn đa phương thức · KC thông minh · Vòng giao hàng',
+    'dash.hello': 'Hôm nay:', 'dash.pending': 'tác vụ chờ gán nhãn,', 'dash.reviewing': 'đang chờ kiểm tra', 'dash.total': 'Tổng tác vụ',
+    'dash.cover': 'dự án', 'dash.todo': 'Chờ làm', 'dash.doing': 'Đang gán nhãn', 'dash.review': 'Đang KC', 'dash.accept': 'Chờ nghiệm thu', 'dash.done': 'Hoàn thành',
+    'dash.passrate': 'Tỷ lệ đạt KC', 'dash.reworkrate': 'TB sửa lại', 'dash.trend': 'Năng suất 7 ngày', 'dash.dist': 'Phân bố trạng thái',
+    'dash.recent': 'Tác vụ gần đây', 'dash.alltasks': 'Tất cả', 'dash.viewtasks': 'Xem tác vụ', 'dash.goto': 'Bắt đầu gán nhãn',
+    'task.center': 'Trung tâm tác vụ', 'task.sub': 'Lọc theo dự án và trạng thái; bấm để gán nhãn hoặc kiểm tra', 'task.all': 'Tất cả', 'task.todo': 'Chờ làm',
+    'task.doing': 'Đang gán nhãn', 'task.rework': 'Đang sửa lại', 'task.submitted': 'Đã nộp', 'task.review': 'Đang KC', 'task.accept': 'Chờ nghiệm thu',
+    'task.paused': 'Tạm dừng', 'task.appeal': 'Khiếu nại', 'task.done': 'Hoàn thành', 'task.allproj': 'Tất cả dự án', 'task.count': 'mục',
+    'task.export': 'Xuất', 'task.new': 'Tác vụ mới', 'task.annotate': 'Gán nhãn', 'task.reviewAct': 'Kiểm tra', 'task.assign': 'Phân công',
+    'task.unassigned': 'Chưa phân công', 'task.filterph': 'Tìm tác vụ / dự án',
+    'btn.save': 'Lưu nháp', 'btn.submit': 'Nộp kiểm tra', 'btn.back': 'Quay lại', 'btn.close': 'Đóng', 'btn.cancel': 'Hủy',
+    'btn.ok': 'Đồng ý', 'btn.del': 'Xóa', 'btn.upload': 'Tải lên', 'btn.search': 'Tìm', 'btn.create': 'Tạo mới',
+    'wb.spec': 'Quy chuẩn gán nhãn', 'wb.info': 'Thông tin tác vụ', 'wb.project': 'Dự án', 'wb.batch': 'Lô', 'wb.annotator': 'Người gán nhãn', 'wb.reviewer': 'Người KC',
+    'status.pending': 'Chờ làm', 'status.annotating': 'Đang gán nhãn', 'status.submitted': 'Đã nộp', 'status.review': 'Đang KC',
+    'status.review_done': 'Chờ nghiệm thu', 'status.done': 'Hoàn thành', 'status.paused': 'Tạm dừng', 'status.appeal': 'Khiếu nại',
+    'mod.audio': 'Âm thanh', 'mod.image': 'Hình ảnh', 'mod.video': 'Video', 'mod.text': 'Văn bản', 'mod.pointcloud': 'Điểm 3D',
+    'mod.llm': 'LLM', 'mod.pdf': 'PDF', 'mod.multimodal': 'Đa phương thức', 'mod.editing': 'Chỉnh sửa ảnh',
+    'common.unsaved': 'Chưa lưu', 'common.saved': 'Đã lưu', 'common.loading': 'Đang tải…', 'common.empty': 'Không có dữ liệu',
+    'common.yes': 'Có', 'common.no': 'Không', 'lang.label': 'Ngôn ngữ',
+  },
+};
+function lang() {
+  return localStorage.getItem('ck_lang')
+    || (state.preferences && state.preferences.language)
+    || (state.user && state.user.language) || 'zh';
+}
+function T(key) {
+  const d = I18N[lang()] || I18N.zh;
+  return d[key] || I18N.zh[key] || key;
+}
+function applyI18n(root) {
+  (root || document).querySelectorAll('[data-i18n]').forEach((el) => {
+    const k = el.dataset.i18n;
+    const v = T(k);
+    if (v !== k) el.textContent = v;
+  });
+}
+function setLang(l) {
+  localStorage.setItem('ck_lang', l);
+  state.preferences = { ...(state.preferences || {}), language: l };
+  api('/api/preferences', { method: 'POST', body: { language: l } }).catch(() => {});
+  route();
+}
+
 
 /* 目标类别配色：画布、列表、结果面板统一取色 */
 const BOX_COLORS = {
@@ -179,30 +290,37 @@ function confirmModal(title, text, okText = '确认', danger = false) {
 
 /* ---------------- 登录 ---------------- */
 function renderLogin() {
-  document.title = '春科数据标注平台 · 登录';
+  document.title = T('brand.full') + ' · Login';
+  const EN = lang() !== 'zh';
+  const hero = EN
+    ? { h1: lang() === 'vi' ? 'Nền tảng gán nhãn<br/>đa phương thức một chạm' : 'One-stop multimodal<br/>labeling & QC platform',
+        p: lang() === 'vi'
+          ? 'Chuyển giọng nói · tách ngưới nói · phát hiện đối tượng · điểm 3D xe tự hành. Cổng thống nhất tự phát triển + động cơ CVAT / labelU / FunASR.'
+          : 'Speech transcription · speaker diarization · image detection · autonomous-driving point clouds. Unified portal with CVAT / labelU / FunASR engines, covering the full pipeline from project setup to QC delivery.' }
+    : { h1: '一站式多模态<br/>数据标注与质检平台', p: '语音转写 · 说话人分离 · 图像检测 · 智驾点云。自研统一门户 + CVAT / labelU / FunASR 引擎，覆盖项目创建到质检交付的完整链路。' };
   $('#app').innerHTML = `
   <div class="login-wrap">
     <div class="login-left">
-      <div class="login-logo"><div class="logo-mark">CK</div><span>春科数据标注平台</span></div>
+      <div class="login-logo"><div class="logo-mark">CK</div><span>${T('brand.full')}</span></div>
       <div class="login-hero">
-        <h1>一站式多模态<br/>数据标注与质检平台</h1>
-        <p>语音转写 · 说话人分离 · 图像检测 · 智驾点云。自研统一门户 + CVAT / labelU / FunASR 引擎，覆盖项目创建到质检交付的完整链路。</p>
+        <h1>${hero.h1}</h1>
+        <p>${hero.p}</p>
         <div class="hero-points">
-          <div><b>4</b>模态统一调度</div>
-          <div><b>6</b>级角色权限</div>
-          <div><b>本地</b>AI 预识别</div>
+          <div><b>4</b>${lang() === 'vi' ? 'phương thức' : EN ? 'modalities' : '模态统一调度'}</div>
+          <div><b>6</b>${lang() === 'vi' ? 'vai trò' : EN ? 'role levels' : '级角色权限'}</div>
+          <div><b>${lang() === 'vi' ? 'Cục bộ' : EN ? 'Local' : '本地'}</b>${lang() === 'vi' ? 'AI nhận diện' : EN ? ' AI prelabel' : 'AI 预识别'}</div>
         </div>
       </div>
-      <div class="hint">春科数据 · 标注中台 v1.0</div>
+      <div class="hint">${T('brand.tag')} · v1.0</div>
     </div>
     <div class="login-right">
       <div class="login-card">
         <h2>登录工作台</h2>
         <div class="sub">使用平台账号进入，或联系管理员开通</div>
         <form id="login-form">
-          <div class="field"><label>账号</label><input class="input" name="username" id="login-user" autocomplete="username" placeholder="例如 admin" required /></div>
-          <div class="field"><label>密码</label><input class="input" type="password" name="password" autocomplete="current-password" placeholder="请输入密码" required /></div>
-          <button class="btn primary lg" type="submit" id="login-btn">进入平台</button>
+          <div class="field"><label>账号</label><input class="input" name="username" id="login-user" autocomplete="username" placeholder="${T('login.username')}" required /></div>
+          <div class="field"><label>密码</label><input class="input" type="password" name="password" autocomplete="current-password" placeholder="${T('login.password')}" required /></div>
+          <button class="btn primary lg" type="submit" id="login-btn">${T('login.submit')}</button>
         </form>
         <div class="login-hint">
           体验账号（密码 <code>chunke123</code>）<br/>
@@ -281,8 +399,9 @@ const NAV_PERM = {
 const PROJECT_NAV_BY_ROLE = {
   annotator: [
     ['dashboard', '工作台', 'dashboard'],
-    ['bench-audio', '语音工作台', 'audio', '', '#/tasks?modality=audio'],
-    ['bench-image', '图像工作台', 'image', '', '#/tasks?modality=image'],
+    ['bench-audio', '语音工作台', 'audio', '', '#/bench?m=audio'],
+    ['bench-image', '图像工作台', 'image', '', '#/bench?m=image'],
+    ['bench-pc', '点云工作台', 'cloud', '', '#/bench?m=pointcloud'],
     ['tasks', '我的任务', 'tasks'],
     ['hall', '任务大厅', 'tasks'],
     ['issues', '问题清单', 'qc'],
@@ -343,17 +462,29 @@ function shell(active, content, crumb = '') {
   }).join('');
   const role = state.user.role_label || '';
   const ctx = state.context || {};
-  const tenantName = ctx.tenant ? ctx.tenant.name : (ctx.space === 'admin' ? '平台视角' : '未归属租户');
+  const tenantName = ctx.tenant ? ctx.tenant.name : (ctx.space === 'admin' ? (lang() === 'zh' ? '平台视角' : 'Platform') : (lang() === 'zh' ? '未归属租户' : 'No tenant'));
   const scope = [
     ctx.tenant && ctx.tenant.code,
     ctx.org && ctx.org.name,
     ctx.team && ctx.team.name,
   ].filter(Boolean).join(' · ');
+  const navHtml = navDef().map(([key, label, ico, , href]) => {
+    const badge = key === 'qc'
+      ? '<b class="tag" id="nav-qc-count">0</b>'
+      : key === 'acceptance' ? '<b class="tag" id="nav-accept-count">0</b>' : '';
+    const navKey = { dashboard: 'nav.dashboard', tasks: 'nav.tasks', hall: 'nav.hall', qc: 'nav.qc',
+      acceptance: 'nav.acceptance', issues: 'nav.issues', errors: 'nav.errors', help: 'nav.help',
+      preferences: 'nav.prefs', projects: 'nav.projects', datasets: 'nav.datasets', templates: 'nav.templates',
+      workflows: 'nav.workflows', stats: 'nav.stats', members: 'nav.members', appeals: 'nav.appeals',
+      'bench-audio': 'nav.benchAudio', 'bench-image': 'nav.benchImage', 'bench-pc': 'nav.benchPc' }[key];
+    const text = navKey ? T(navKey) : label;
+    return `<a class="nav-item ${active === key ? 'active' : ''}" href="${href || hrefFor(key)}" title="${esc(text)}" aria-current="${active === key ? 'page' : 'false'}">${icon(ico)}<span>${esc(text)}</span>${badge}</a>`;
+  }).join('');
   return `
   <div class="layout">
     <aside class="sidebar">
-      <div class="side-brand"><div class="logo-mark">CK</div><div><span>春科标注</span><small>${esc(ctx.space_label || 'CHUNKE LABEL')}</small></div></div>
-      <nav class="nav">${nav}</nav>
+      <div class="side-brand"><div class="logo-mark">CK</div><div><span>${T('brand.tag')}</span><small>${esc(ctx.space_label || 'CHUNKE LABEL')}</small></div></div>
+      <nav class="nav">${navHtml}</nav>
       <div class="side-foot">
         <b>${esc(state.user.name)}</b> · ${esc(role)}<br/>
         ${esc(scope || '未归属租户 / 团队')}
@@ -364,7 +495,10 @@ function shell(active, content, crumb = '') {
         <div class="crumb">${esc(ctx.space_label || '春科数据')} / <b>${esc(crumb)}</b></div>
         <div class="top-actions">
           <button class="btn sm ghost tenant-btn" id="tenant-switch" title="当前：${esc(tenantName)}，点击切换租户">${icon('shield')}<span class="t-name">${esc(tenantName)}</span></button>
-          <div class="search">${icon('search')}<input id="top-search" placeholder="搜索任务 / 项目" aria-label="搜索任务或项目" /></div>
+          <div class="search">${icon('search')}<input id="top-search" placeholder="${T('task.filterph')}" aria-label="search" /></div>
+        <select class="select" id="lang-switch" title="${T('lang.label')}" style="width:76px;height:28px;padding:2px 6px">
+          ${['zh', 'en', 'vi'].map((l) => `<option value="${l}" ${lang() === l ? 'selected' : ''}>${({ zh: '中', en: 'EN', vi: 'VI' })[l]}</option>`).join('')}
+        </select>
           <button class="icon-btn" id="notif-btn" title="通知">${icon('bell')}<b class="tag" id="notif-dot" style="display:none">0</b></button>
           <div class="user-chip" id="user-chip" title="${esc(state.user.name)} · ${esc(role)}"><div class="avatar">${esc(state.user.name.slice(0, 1))}</div><div class="u-meta"><b>${esc(state.user.name)}</b><span>${esc(role)}</span></div></div>
         </div>
@@ -404,6 +538,8 @@ function mount(active, crumb, content) {
   $('#user-chip').onclick = () => userMenu();
   $('#tenant-switch').onclick = () => tenantSwitcher();
   bindAssistant();
+  const langSel = $('#lang-switch');
+  if (langSel) langSel.onchange = () => setLang(langSel.value);
   const nb = $('#notif-btn');
   if (nb) nb.onclick = () => { if (window.CK_OPEN_NOTIFICATIONS) window.CK_OPEN_NOTIFICATIONS(); };
   if (window.CK_AFTER_MOUNT) window.CK_AFTER_MOUNT(active);
@@ -569,6 +705,8 @@ async function route() {
     else if (page === 'members') await pageMembers();
     else if (page === 'errors') await pageErrors();
     else if (page === 'appeals') await pageAppeals();
+    else if (page === 'datahub') await pageDataHub();
+    else if (page === 'bench') await pageBench(query);
     else if (page === 'stats') await pageStats();
     else if (page === 'settings') await pageSettings();
     else if (window.CK_PAGES && window.CK_PAGES[page]) await window.CK_PAGES[page](query, id);
@@ -615,43 +753,44 @@ async function pageDashboard() {
 
   const content = `
     <div class="page-head">
-      <div><h1 class="page-title">工作台</h1><p class="page-sub">${esc(state.user.name)}，今天有 ${s.pending || 0} 个待标注任务、${(s.submitted || 0) + (s.reviewing || 0)} 个待质检任务</p></div>
+      <div><h1 class="page-title">${T('nav.dashboard')}</h1><p class="page-sub">${esc(state.user.name)} · ${T('dash.hello')} ${s.pending || 0} ${T('dash.pending')} ${(s.submitted || 0) + (s.reviewing || 0)} ${T('dash.reviewing')}</p></div>
       <div class="page-actions">
-        <a class="btn" href="${hrefFor('tasks')}">${icon('tasks')} 查看任务</a>
-        <a class="btn primary" href="${nextTask ? `#/annotate/${nextTask.id}` : hrefFor('tasks')}">${icon('spark')} 进入标注</a>
+        <a class="btn" href="${hrefFor('tasks')}">${icon('tasks')} ${T('dash.viewtasks')}</a>
+        <a class="btn primary" href="${nextTask ? `#/annotate/${nextTask.id}` : hrefFor('tasks')}">${icon('spark')} ${T('dash.goto')}</a>
       </div>
     </div>
     <div class="grid kpi-grid" style="margin-bottom:14px">
-      <div class="kpi"><div class="kpi-label">任务总量</div><div class="kpi-value">${s.total || 0}</div><div class="kpi-delta">覆盖 ${stats.projects.length} 个项目</div></div>
-      <div class="kpi"><div class="kpi-label">待标注</div><div class="kpi-value">${s.pending || 0}</div><div class="kpi-delta warn">建议今日优先处理</div></div>
-      <div class="kpi"><div class="kpi-label">质检中</div><div class="kpi-value">${(s.submitted || 0) + (s.reviewing || 0)}</div><div class="kpi-delta">平均返修率 8.4%</div></div>
-      <div class="kpi"><div class="kpi-label">质检通过率</div><div class="kpi-value">${s.qc_pass_rate || 0}<small style="font-size:14px">%</small></div><div class="kpi-delta up">累计质检 ${s.qc_total || 0} 次</div></div>
+      <div class="kpi"><div class="kpi-label">${T('dash.total')}</div><div class="kpi-value">${s.total || 0}</div><div class="kpi-delta">${stats.projects.length} ${T('dash.cover')}</div></div>
+      <div class="kpi"><div class="kpi-label">${T('dash.todo')}</div><div class="kpi-value">${s.pending || 0}</div><div class="kpi-delta warn">${T('dash.hello')}${T('dash.todo')}</div></div>
+      <div class="kpi"><div class="kpi-label">${T('dash.review')}</div><div class="kpi-value">${(s.submitted || 0) + (s.reviewing || 0)}</div><div class="kpi-delta">${T('dash.reworkrate')} 8.4%</div></div>
+      <div class="kpi"><div class="kpi-label">${T('dash.passrate')}</div><div class="kpi-value">${s.qc_pass_rate || 0}<small style="font-size:14px">%</small></div><div class="kpi-delta up">${T('dash.review')} ${s.qc_total || 0}</div></div>
     </div>
     <div class="grid two-col" style="margin-bottom:14px">
       <div class="card">
-        <div class="card-head"><h3 class="card-title">近 7 日任务吞吐</h3><span class="card-sub">新建 / 完成</span></div>
+        <div class="card-head"><h3 class="card-title">${T('dash.trend')}</h3><span class="card-sub">${T('task.new')} / ${T('dash.done')}</span></div>
         <div class="card-body">
           ${chartHtml}
-          <div class="legend"><span><i style="background:#3B82F6"></i>新建任务</span><span><i style="background:#10B981"></i>完成质检</span></div>
+          <div class="legend"><span><i style="background:#3B82F6"></i>${T('task.new')}</span><span><i style="background:#10B981"></i>${T('dash.done')}</span></div>
         </div>
       </div>
       <div class="card">
-        <div class="card-head"><h3 class="card-title">任务状态分布</h3><span class="card-sub">实时</span></div>
+        <div class="card-head"><h3 class="card-title">${T('dash.dist')}</h3><span class="card-sub">Live</span></div>
         <div class="card-body">
           ${stats.by_status.map((x) => {
             const pct = s.total ? Math.round((x.value / s.total) * 100) : 0;
-            return `<div class="bar-row"><span>${x.name}</span><div class="bar"><i style="width:${pct}%;background:${x.key === 'done' ? '#10B981' : x.key === 'pending' ? '#64748B' : x.key === 'annotating' ? '#3B82F6' : '#F59E0B'}"></i></div><b>${x.value}</b></div>`;
+            const stKey = ({ reviewing: 'review', accepting: 'review_done' })[x.key] || x.key;
+            return `<div class="bar-row"><span>${T('status.' + stKey)}</span><div class="bar"><i style="width:${pct}%;background:${x.key === 'done' ? '#10B981' : x.key === 'pending' ? '#64748B' : x.key === 'annotating' ? '#3B82F6' : '#F59E0B'}"></i></div><b>${x.value}</b></div>`;
           }).join('')}
           <div class="divider"></div>
-          <div class="kv"><span>多模态覆盖</span><b>${stats.by_modality.map((m) => `${m.name} ${m.value}`).join(' · ') || '—'}</b></div>
+          <div class="kv"><span>${T('dash.dist').indexOf('分布') >= 0 ? '多模态覆盖' : 'Coverage'}</span><b>${stats.by_modality.map((m) => `${T('mod.' + m.modality) !== 'mod.' + m.modality ? T('mod.' + m.modality) : esc(m.name)} ${m.value}`).join(' · ') || '—'}</b></div>
         </div>
       </div>
     </div>
     <div class="grid two-col">
       <div class="card">
-        <div class="card-head"><h3 class="card-title">最近任务</h3><a class="card-sub" href="${hrefFor('tasks')}">全部任务 →</a></div>
+        <div class="card-head"><h3 class="card-title">${T('dash.recent')}</h3><a class="card-sub" href="${hrefFor('tasks')}">${T('dash.alltasks')} →</a></div>
         <div class="table-wrap">
-          <table class="table"><thead><tr><th>任务</th><th>项目</th><th class="hide-sm">标注员</th><th>状态</th><th class="right">更新时间</th></tr></thead>
+          <table class="table"><thead><tr><th>${lang() === 'zh' ? '任务' : 'Task'}</th><th>${T('wb.project')}</th><th class="hide-sm">${T('wb.annotator')}</th><th>${lang() === 'zh' ? '状态' : 'Status'}</th><th class="right">${lang() === 'zh' ? '更新时间' : 'Updated'}</th></tr></thead>
           <tbody>${recent.map((t) => `<tr onclick="location.hash='#/annotate/${t.id}'">
             <td><div class="name">${esc(t.name)}</div><div class="sub">${esc(t.batch || '')}</div></td>
             <td>${esc(t.project_name)}</td><td class="hide-sm">${esc(t.assignee_name || '—')}</td>
@@ -660,7 +799,7 @@ async function pageDashboard() {
       </div>
       <div class="col" style="display:flex;flex-direction:column;gap:14px">
         <div class="card">
-          <div class="card-head"><h3 class="card-title">引擎与预识别</h3><span class="card-sub">本地服务探测</span></div>
+          <div class="card-head"><h3 class="card-title">${lang() === 'zh' ? '引擎与预识别' : 'Engines & Prelabel'}</h3><span class="card-sub">${lang() === 'zh' ? '本地服务探测' : 'Local probe'}</span></div>
           <div>${b.engines.map((e) => `<div class="engine"><i class="dot ${e.online ? 'online' : 'offline'}"></i>
             <div class="engine-info"><b>${esc(e.name)}</b><span>${esc(e.desc)}</span></div>
             <a href="${esc(e.url)}" target="_blank" rel="noreferrer" title="${e.online ? '在新窗口打开' : '服务未启动'}">${e.online ? '打开' : '未启动'}</a></div>`).join('')}</div>
@@ -698,23 +837,23 @@ async function pageTasks(query) {
   const canManage = ['platform_admin', 'project_manager'].includes(state.user.platform_role);
   const projOptions = state.projects.map((p) => `<option value="${p.id}" ${String(p.id) === pid ? 'selected' : ''}>${esc(p.name)}</option>`).join('');
   const content = `
-    <div class="page-head"><div><h1 class="page-title">任务中心</h1><p class="page-sub">按项目、状态筛选任务，点击行进入标注或质检</p></div>
-      <div class="page-actions"><button class="btn" id="btn-export">${icon('download')} 导出清单</button>
-      ${canManage ? `<button class="btn primary" id="btn-new-task">${icon('plus')} 新建任务</button>` : ''}</div></div>
+    <div class="page-head"><div><h1 class="page-title">${T('task.center')}</h1><p class="page-sub">${T('task.sub')}</p></div>
+      <div class="page-actions"><button class="btn" id="btn-export">${icon('download')} ${T('task.export')}</button>
+      ${canManage ? `<button class="btn primary" id="btn-new-task">${icon('plus')} ${T('task.new')}</button>` : ''}</div></div>
     <div class="filters">
       <div class="seg-tabs" id="task-tabs">
-        <button class="active" data-st="">全部</button><button data-st="pending">待标注</button>
-        <button data-st="annotating">标注中</button><button data-st="__rework__">返修中</button>
-        <button data-st="submitted">待质检</button><button data-st="review">质检中</button>
-        <button data-st="review_done">待验收</button><button data-st="paused">已暂停</button>
-        <button data-st="appeal">申诉中</button>
-        <button data-st="done">已完成</button>
+        <button class="active" data-st="">${T('task.all')}</button><button data-st="pending">${T('task.todo')}</button>
+        <button data-st="annotating">${T('task.doing')}</button><button data-st="__rework__">${T('task.rework')}</button>
+        <button data-st="submitted">${T('task.submitted')}</button><button data-st="review">${T('task.review')}</button>
+        <button data-st="review_done">${T('task.accept')}</button><button data-st="paused">${T('task.paused')}</button>
+        <button data-st="appeal">${T('task.appeal')}</button>
+        <button data-st="done">${T('task.done')}</button>
       </div>
-      <select class="select" id="filter-project" style="width:190px"><option value="">全部项目</option>${projOptions}</select>
+      <select class="select" id="filter-project" style="width:190px"><option value="">${T('task.allproj')}</option>${projOptions}</select>
       <span class="spacer"></span>
       ${modality ? `<span class="chip info">${esc(({audio:'语音',image:'图片',video:'视频',text:'文本',pointcloud:'点云',llm:'大模型',pdf:'PDF',multimodal:'多模态'})[modality] || modality)}工作台</span>
         <a class="btn sm ghost" href="${hrefFor('tasks')}">查看全部</a>` : ''}
-      <span class="tag">共 ${tasks.length} 条</span>
+      <span class="tag">${tasks.length} ${T('task.count')}</span>
     </div>
     <div class="card"><div class="table-wrap">
       <table class="table"><thead><tr><th style="width:30px"></th><th>任务名称</th><th>项目</th><th class="hide-lg">模态</th><th class="hide-lg">批次</th><th>标注员</th><th class="hide-md">质检员</th><th>状态</th><th class="hide-md">优先级</th><th class="right">操作</th></tr></thead>
@@ -752,8 +891,8 @@ function taskRows(tasks, canAssign = false) {
     <td>${statusChip(t.status)}${(t.rework_count || 0) > 0 ? ` <span class="chip danger" title="已被驳回 ${t.rework_count} 次">返修×${t.rework_count}</span>` : ''}</td>
     <td class="hide-md">${t.priority === 'high' ? '<span class="chip danger">高</span>' : t.priority === 'low' ? '<span class="chip plain">低</span>' : '<span class="chip plain">普通</span>'}</td>
     <td class="right"><div style="display:flex;gap:4px;justify-content:flex-end">
-      ${canAssign ? `<button class="btn sm ghost" data-assign="${t.id}" data-pid="${t.project_id}">分配</button>` : ''}
-      <a class="btn sm" href="#/annotate/${t.id}" onclick="event.stopPropagation()">${t.status === 'submitted' ? '质检' : '标注'}</a></div></td></tr>`).join('')
+      ${canAssign ? `<button class="btn sm ghost" data-assign="${t.id}" data-pid="${t.project_id}">${T('task.assign')}</button>` : ''}
+      <a class="btn sm" href="#/annotate/${t.id}" onclick="event.stopPropagation()">${t.status === 'submitted' ? T('task.reviewAct') : T('task.annotate')}</a></div></td></tr>`).join('')
     || '<tr><td colspan="10" class="empty"><b>没有符合条件的任务</b>调整筛选条件或新建任务</td></tr>';
 }
 
@@ -1025,9 +1164,9 @@ function renderAudioWorkbench(wb, labels, qc, mediaName) {
         <div class="wb-meta">${esc(project.name)} · <span class="tag">音频</span> ${statusChip(task.status)}
         ${task.priority === 'high' ? '<span class="chip danger">高优</span>' : ''}</div></div>
       <div class="wb-actions">
-        <span class="hint" id="save-ind">未保存</span>
-        <button class="btn" id="btn-save" ${canEdit ? '' : 'disabled'}>保存草稿</button>
-        <button class="btn primary" id="btn-submit" ${canEdit ? '' : 'disabled'}>提交质检</button>
+        <span class="hint" id="save-ind">${T('common.unsaved')}</span>
+        <button class="btn" id="btn-save" ${canEdit ? '' : 'disabled'}>${T('btn.save')}</button>
+        <button class="btn primary" id="btn-submit" ${canEdit ? '' : 'disabled'}>${T('btn.submit')}</button>
       </div>
     </div>
     <div class="wb-grid">
@@ -1119,9 +1258,9 @@ function renderImageWorkbench(wb, classes, qc) {
         <div class="wb-meta">${esc(project.name)} · <span class="tag">图片</span> ${statusChip(task.status)}
         ${task.priority === 'high' ? '<span class="chip danger">高优</span>' : ''}</div></div>
       <div class="wb-actions">
-        <span class="hint" id="save-ind">未保存</span>
-        <button class="btn" id="btn-save" ${canEdit ? '' : 'disabled'}>保存草稿</button>
-        <button class="btn primary" id="btn-submit" ${canEdit ? '' : 'disabled'}>提交质检</button>
+        <span class="hint" id="save-ind">${T('common.unsaved')}</span>
+        <button class="btn" id="btn-save" ${canEdit ? '' : 'disabled'}>${T('btn.save')}</button>
+        <button class="btn primary" id="btn-submit" ${canEdit ? '' : 'disabled'}>${T('btn.submit')}</button>
       </div>
     </div>
     <div class="wb-grid">
@@ -1461,11 +1600,22 @@ function segRows(wb) {
   const speakers = speakerList(wb);
   const emotions = wb.labels['情绪'] || ['中性', '满意', '不满', '愤怒'];
   const events = wb.labels['事件'] || [];
-  return wb.segments.map((s, i) => {
-    const color = SPK_COLORS[Math.max(0, speakers.indexOf(s.spk)) % SPK_COLORS.length];
-    const dur = Math.max(0, Number(s.end) - Number(s.start));
-    const evs = s.events || [];
-    return `<div class="seg-row" data-i="${i}" style="border-left-color:${color}">
+  if (wb._focus == null || !wb.segments[wb._focus]) wb._focus = wb.segments.length - 1;
+  const i = wb._focus;
+  const s = wb.segments[i];
+  const color = SPK_COLORS[Math.max(0, speakers.indexOf(s.spk)) % SPK_COLORS.length];
+  const dur = Math.max(0, Number(s.end) - Number(s.start));
+  const evs = s.events || [];
+  const chips = wb.segments.map((x, k) => {
+    const c = SPK_COLORS[Math.max(0, speakers.indexOf(x.spk)) % SPK_COLORS.length];
+    return `<button class="seg-chip ${k === i ? 'on' : ''}" data-focus="${k}" title="${Number(x.start).toFixed(2)}s → ${Number(x.end).toFixed(2)}s">
+      <span class="seg-no">${String(k + 1).padStart(2, '0')}</span>
+      <i class="spk-dot" style="background:${c}"></i>
+      <span class="chip-txt">${esc((x.text || '（空）').slice(0, 14))}</span>
+      ${x.source === 'ai' ? '<span class="chip info">AI</span>' : ''}
+    </button>`;
+  }).join('');
+  const editor = `<div class="seg-row" data-i="${i}" style="border-left-color:${color}">
       <div class="seg-head">
         <span class="seg-no">${String(i + 1).padStart(2, '0')}</span>
         <span class="seg-spk"><span class="spk-dot" style="background:${color}"></span>
@@ -1478,20 +1628,22 @@ function segRows(wb) {
         </span>
         <span class="seg-dur">${dur.toFixed(2)}s</span>
         <span class="spacer"></span>
+        <button class="btn sm ghost" data-navseg="-1" title="上一段">↑</button>
+        <button class="btn sm ghost" data-navseg="1" title="下一段">↓</button>
         <select class="seg-lang" data-f="lang" title="语种">${['中文', '英文', '日语', '粤语', '混合', '其他'].map((x) => `<option ${(s.lang || '中文') === x ? 'selected' : ''}>${x}</option>`).join('')}</select>
         <select class="seg-emo" data-f="emotion" title="情绪">${emotions.map((x) => `<option ${x === s.emotion ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>
         <input class="seg-int" data-f="emo_intensity" type="number" min="1" max="5" value="${Number(s.emo_intensity) || 3}" title="情绪强度 1-5" />
         ${events.length ? `<select class="seg-evt" data-f="event" title="添加事件"><option value="">+ 事件</option>${events.filter((x) => !evs.includes(x)).map((x) => `<option>${esc(x)}</option>`).join('')}</select>` : ''}
         <button class="seg-del" data-del="${i}" title="删除该段">${icon('x')}</button>
       </div>
-      <textarea class="seg-text" data-f="text" rows="2" placeholder="转写文本…">${esc(s.text)}</textarea>
+      <textarea class="seg-text" data-f="text" rows="3" placeholder="转写文本…">${esc(s.text)}</textarea>
       <div class="seg-pron-row">
         <select data-f="pron_type" title="发音问题类型">${['无', '错读', '漏读', '多读', '声调错误'].map((x) => `<option ${(s.pron_type || '无') === x ? 'selected' : ''}>${x}</option>`).join('')}</select>
         <input data-f="pron_note" value="${esc(s.pron_note || '')}" placeholder="发音校对说明，如：声调应读二声" />
       </div>
       ${evs.length ? `<div class="seg-tags">${evs.map((x) => `<span class="seg-tag">${esc(x)}<button type="button" data-del-event="${esc(x)}" data-seg="${i}" title="移除">${icon('x')}</button></span>`).join('')}</div>` : ''}
     </div>`;
-  }).join('');
+  return `<div class="seg-chips">${chips}</div>${editor}`;
 }
 
 function renderSegs(wb) {
@@ -1504,12 +1656,12 @@ function renderSegs(wb) {
 
 function markActiveSegment(wb) {
   const list = $('#seg-list');
-  if (!list || !list.querySelector('.seg-row')) return;
+  if (!list || !list.querySelector('.seg-chip')) return;
   const t = wb.currentTime || 0;
   const idx = wb.segments.findIndex((s) => t >= Number(s.start) && t < Number(s.end));
   if (idx === wb._activeIdx) return;
   wb._activeIdx = idx;
-  list.querySelectorAll('.seg-row').forEach((el) => el.classList.toggle('playing', Number(el.dataset.i) === idx));
+  list.querySelectorAll('.seg-chip').forEach((el) => el.classList.toggle('playing', Number(el.dataset.focus) === idx));
 }
 
 function speakerList(wb) {
@@ -1631,20 +1783,34 @@ function drawWave(wb, playheadOnly = false) {
     ctx.beginPath(); ctx.moveTo(padL, midY); ctx.lineTo(w - padR, midY); ctx.stroke();
   }
 
-  // 分段轨道（视窗内）
-  const laneY = 132, laneH = 30;
+  // 分段轨道：区域块 + 编号 + 聚焦把手（可在波形上直接拖动/拉伸）
+  const laneY = 126, laneH = 34;
+  const speakers0 = speakerList(wb);
   wb.segments.forEach((s, i) => {
-    const speakers = speakerList(wb);
-    const color = SPK_COLORS[Math.max(0, speakers.indexOf(s.spk)) % SPK_COLORS.length];
-    const s0 = Math.max(vs, s.start), s1 = Math.min(ve, Math.max(s.end, s.start + 0.05));
+    const color = SPK_COLORS[Math.max(0, speakers0.indexOf(s.spk)) % SPK_COLORS.length];
+    const s0 = Math.max(vs, Number(s.start)), s1 = Math.min(ve, Math.max(Number(s.end), Number(s.start) + 0.05));
     if (s1 <= vs || s0 >= ve) return;
-    const x1 = tx(s0), x2 = tx(s1);
-    ctx.fillStyle = color + '33';
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 1;
+    const x1 = tx(s0), x2 = tx(Math.max(s1, s0 + 0.08));
+    const focused = wb._focus === i;
+    ctx.fillStyle = color + (focused ? '55' : '2E');
+    ctx.strokeStyle = focused ? '#fff' : color;
+    ctx.lineWidth = focused ? 1.6 : 1;
     ctx.beginPath();
-    ctx.roundRect(x1, laneY + (i % 2) * 15, Math.max(3, x2 - x1), 12, 3);
+    ctx.roundRect(x1, laneY, Math.max(4, x2 - x1), laneH, 4);
     ctx.fill(); ctx.stroke();
+    ctx.fillStyle = color;
+    ctx.font = '600 10px ui-monospace, monospace';
+    ctx.fillText(String(i + 1).padStart(2, '0'), x1 + 4, laneY + 13);
+    if (x2 - x1 > 60) {
+      ctx.fillStyle = 'rgba(226,232,240,.85)';
+      ctx.font = '10px ui-sans-serif, system-ui';
+      ctx.fillText((s.text || '').slice(0, Math.floor((x2 - x1) / 11)), x1 + 4, laneY + 27);
+    }
+    if (focused) {
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(x1 - 2.5, laneY + laneH / 2 - 5, 5, 10);
+      ctx.fillRect(x2 - 2.5, laneY + laneH / 2 - 5, 5, 10);
+    }
   });
 
   ctx.fillStyle = '#334155';
@@ -2777,7 +2943,27 @@ function bindWorkbench(wb, mediaName) {
   };
   $('#wave').onwheel = (e) => { e.preventDefault(); if (wb.duration) zoomWave(e); };
   let wDrag = null;
-  $('#wave').onmousedown = (e) => { wDrag = { x: e.clientX, moved: false }; };
+  // 命中检测：分段区域边缘=拉伸，区域内=移动，否则=视图平移
+  const hitSeg = (e) => {
+    if (!wb.segments.length) return null;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const dur = wb.duration || 1;
+    const vs = wb.viewStart || 0, span = Math.max(0.5, (wb.viewEnd || dur) - vs);
+    const t = vs + ((e.clientX - rect.left - 10) / Math.max(1, rect.width - 20)) * span;
+    const px = span / Math.max(1, rect.width - 20); // 秒/像素
+    for (let i = wb.segments.length - 1; i >= 0; i--) {
+      const s = wb.segments[i];
+      if (Math.abs(t - Number(s.start)) < Math.max(6 * px, 0.08)) return { i, mode: 'resize-l' };
+      if (Math.abs(t - Number(s.end)) < Math.max(6 * px, 0.08)) return { i, mode: 'resize-r' };
+      if (t > Number(s.start) && t < Number(s.end)) return { i, mode: 'move' };
+    }
+    return null;
+  };
+  $('#wave').onmousedown = (e) => {
+    const hit = hitSeg(e);
+    wDrag = { x: e.clientX, moved: false, seg: hit };
+    if (hit) { wb._focus = hit.i; renderSegs(wb); drawWave(wb); }
+  };
   window.addEventListener('mousemove', (e) => {
     if (!wDrag || !wb.duration) return;
     const dx = e.clientX - wDrag.x;
@@ -2787,12 +2973,37 @@ function bindWorkbench(wb, mediaName) {
     const rect = $('#wave').getBoundingClientRect();
     const span = Math.max(0.5, (wb.viewEnd || dur) - (wb.viewStart || 0));
     const dsec = (dx / Math.max(1, rect.width - 20)) * span;
+    if (wDrag.seg) {
+      const s = wb.segments[wDrag.seg.i];
+      if (!s) return;
+      if (wDrag.seg.mode === 'move') {
+        const len = Number(s.end) - Number(s.start);
+        let ns = Math.max(0, Number(s.start) + dsec);
+        if (ns + len > dur) ns = Math.max(0, dur - len);
+        s.start = Math.round(ns * 100) / 100;
+        s.end = Math.round((ns + len) * 100) / 100;
+      } else if (wDrag.seg.mode === 'resize-l') {
+        s.start = Math.round(Math.max(0, Math.min(Number(s.end) - 0.05, Number(s.start) + dsec)) * 100) / 100;
+      } else {
+        s.end = Math.round(Math.min(dur, Math.max(Number(s.start) + 0.05, Number(s.end) + dsec)) * 100) / 100;
+      }
+      wDrag.x = e.clientX;
+      markDirty(wb); drawWave(wb);
+      const si = $('#seg-list .seg-row input[data-f="start"]');
+      const ei = $('#seg-list .seg-row input[data-f="end"]');
+      if (si) si.value = Number(s.start).toFixed(2);
+      if (ei) ei.value = Number(s.end).toFixed(2);
+      return;
+    }
     const ns = Math.max(0, Math.min(dur - span, (wb.viewStart || 0) - dsec));
     wb.viewStart = ns; wb.viewEnd = ns + span;
     wDrag.x = e.clientX;
     drawWave(wb);
   });
-  window.addEventListener('mouseup', () => { if (wDrag) setTimeout(() => { wDrag = null; }, 0); });
+  window.addEventListener('mouseup', () => {
+    if (wDrag && wDrag.seg && wDrag.moved) { renderSegs(wb); drawWave(wb); }
+    if (wDrag) setTimeout(() => { wDrag = null; }, 0);
+  });
   $('#wave').onclick = (e) => {
     if (!audio || (wDrag && wDrag.moved)) return;
     const rect = e.currentTarget.getBoundingClientRect();
@@ -2824,6 +3035,7 @@ function bindWorkbench(wb, mediaName) {
     if (del) {
       const i = Number(del.dataset.del);
       wb.segments.splice(i, 1);
+      if (wb._focus >= wb.segments.length) wb._focus = wb.segments.length - 1;
       markDirty(wb);
       renderSegs(wb);
       drawWave(wb); return;
@@ -2834,6 +3046,24 @@ function bindWorkbench(wb, mediaName) {
       wb.segments[i].events = (wb.segments[i].events || []).filter((x) => x !== tag.dataset.delEvent);
       markDirty(wb);
       renderSegs(wb); return;
+    }
+    const chip = e.target.closest('.seg-chip');
+    if (chip) {
+      wb._focus = Number(chip.dataset.focus);
+      renderSegs(wb); drawWave(wb);
+      if (audio && wb.segments[wb._focus]) {
+        audio.currentTime = wb.segments[wb._focus].start;
+        wb.currentTime = audio.currentTime;
+        updateTimeLabel(wb);
+      }
+      return;
+    }
+    const nav = e.target.closest('[data-navseg]');
+    if (nav) {
+      const d = Number(nav.dataset.navseg);
+      const n = Math.max(0, Math.min(wb.segments.length - 1, (wb._focus || 0) + d));
+      wb._focus = n; renderSegs(wb); drawWave(wb);
+      return;
     }
     const row = e.target.closest('.seg-row');
     if (row && !e.target.closest('input,textarea,select') && audio) {
@@ -2867,6 +3097,7 @@ function bindWorkbench(wb, mediaName) {
   $('#btn-add-seg').onclick = () => {
     const start = Math.round((audio ? audio.currentTime : 0) * 100) / 100;
     wb.segments.push({ start, end: Math.min(wb.duration || start + 3, start + 3), text: '', spk: speakerList(wb)[0] || '说话人1', emotion: (wb.labels['情绪'] || ['中性'])[0], emo_intensity: 3, lang: '中文', pron_type: '无', pron_note: '', events: [] });
+    wb._focus = wb.segments.length - 1;
     markDirty(wb);
     renderSegs(wb); drawWave(wb);
   };
@@ -2899,7 +3130,8 @@ function bindWorkbench(wb, mediaName) {
     try {
       const r = await api(`/api/tasks/${wb.task.id}/prelabel`, { method: 'POST', body: { emotion: withEmotion } });
       const pre = r.prelabel;
-      wb.segments = (pre.segments || []).map((s) => ({ ...s, events: s.events || [] }));
+      wb.segments = (pre.segments || []).map((s) => ({ ...s, events: s.events || [], source: 'ai' }));
+      wb._focus = 0;
       wb.duration = pre.duration || wb.duration;
       if (wb.audio) { /* 保持当前媒体 */ }
       wb.prelabel = pre;
@@ -3341,6 +3573,125 @@ async function pageAppeals() {
       };
     };
   });
+}
+
+
+/* ---------------- 模态工作台（生产台：继续生产 + 我的队列 + 返修） ---------------- */
+async function pageBench(query) {
+  const mod = query.get('m') || 'audio';
+  const modLabel = { audio: T('mod.audio'), image: T('mod.image'), video: T('mod.video'), text: T('mod.text'), pointcloud: T('mod.pointcloud') }[mod] || mod;
+  const [tasksData, projects] = await Promise.all([
+    api(`/api/tasks?modality=${mod}&limit=200`),
+    api('/api/projects'),
+  ]);
+  const mine = (tasksData.tasks || []).filter((t) =>
+    ['annotating', 'pending'].includes(t.status) || (t.assignee_name === state.user.name));
+  const doing = mine.filter((t) => t.status === 'annotating');
+  const todo = mine.filter((t) => t.status === 'pending');
+  const rework = mine.filter((t) => t.rework_count > 0 && ['annotating', 'pending'].includes(t.status));
+  const inQc = mine.filter((t) => ['submitted', 'review'].includes(t.status));
+  const done = mine.filter((t) => t.status === 'done');
+  const next = doing[0] || todo[0];
+  const modIcon = { audio: 'audio', image: 'image', pointcloud: 'cloud', video: 'video', text: 'tasks' }[mod] || 'tasks';
+  const projName = (id) => (projects.projects || []).find((p) => p.id === id)?.name || '';
+  const content = `
+    <div class="page-head">
+      <div><h1 class="page-title">${esc(modLabel)}${lang() === 'zh' ? '工作台' : ' ' + T('nav.dashboard')}</h1>
+        <p class="page-sub">${lang() === 'zh' ? '我的' + esc(modLabel) + '生产队列：继续未完成任务、处理返修、跟踪质检进度' : 'My ' + esc(modLabel) + ' production queue'}</p></div>
+      <div class="page-actions">
+        <a class="btn" href="${hrefFor('hall')}">${icon('tasks')} ${T('nav.hall')}</a>
+        <a class="btn" href="#/tasks?modality=${mod}">${T('task.center')}</a>
+      </div>
+    </div>
+    <div class="grid kpi-grid" style="margin-bottom:14px">
+      <div class="kpi"><div class="kpi-label">${T('dash.doing')}</div><div class="kpi-value">${doing.length}</div></div>
+      <div class="kpi"><div class="kpi-label">${T('task.rework')}</div><div class="kpi-value" style="color:${rework.length ? '#F87171' : 'inherit'}">${rework.length}</div></div>
+      <div class="kpi"><div class="kpi-label">${T('task.submitted')}/${T('task.review')}</div><div class="kpi-value">${inQc.length}</div></div>
+      <div class="kpi"><div class="kpi-label">${T('dash.done')}</div><div class="kpi-value">${done.length}</div></div>
+    </div>
+    ${next ? `<div class="card" style="margin-bottom:14px;border-color:rgba(59,130,246,.4)"><div class="card-body" style="display:flex;align-items:center;gap:14px">
+        <div style="flex:1;min-width:0"><b style="font-size:14px">${esc(next.name)}</b>
+          <div class="sub">${esc(projName(next.project_id))} · ${esc(next.batch || '—')} · ${statusChip(next.status)}</div></div>
+        ${next.status === 'annotating'
+          ? `<a class="btn primary" href="#/annotate/${next.id}">${icon('play')} ${lang() === 'zh' ? '继续标注' : 'Continue'}</a>`
+          : `<button class="btn primary" id="bench-claim">${icon('spark')} ${lang() === 'zh' ? '领取并标注' : 'Claim & label'}</button>`}
+      </div></div>`
+    : `<div class="empty" style="margin-bottom:14px">${lang() === 'zh' ? '当前没有可生产的' + esc(modLabel) + '任务，去任务大厅领取吧' : 'No tasks, visit the hall'}</div>`}
+    ${rework.length ? `<div class="card" style="margin-bottom:14px;border-color:rgba(239,68,68,.4)"><div class="card-head"><h3 class="card-title">${T('task.rework')}</h3><span class="card-sub">${rework.length}</span></div>
+      <div class="card-body">${rework.map((t) => `<div style="display:flex;gap:10px;align-items:center;padding:6px 0;border-bottom:1px solid rgba(30,42,63,.4)">
+        <b style="font-size:12.5px">${esc(t.name)}</b><span class="chip danger">${lang() === 'zh' ? '返修×' : 'R'}${t.rework_count}</span>
+        <span class="sub">${esc(t.batch || '')}</span><a class="btn sm primary" style="margin-left:auto" href="#/annotate/${t.id}">${T('task.annotate')}</a></div>`).join('')}</div></div>` : ''}
+    <div class="card"><div class="card-head"><h3 class="card-title">${T('nav.tasks')}</h3><span class="card-sub">${mine.length}</span></div>
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th>${lang() === 'zh' ? '任务' : 'Task'}</th><th>${T('wb.project')}</th><th>${T('wb.batch')}</th><th>${T('dash.dist').replace(/分布|distribution/ig, '')}</th><th class="right">${lang() === 'zh' ? '操作' : 'Action'}</th></tr></thead>
+        <tbody>${mine.slice(0, 12).map((t) => `<tr>
+          <td><div class="name">${esc(t.name)}</div>${t.rework_count > 0 ? `<span class="chip danger">返修×${t.rework_count}</span>` : ''}</td>
+          <td>${esc(projName(t.project_id))}</td><td class="mono">${esc(t.batch || '—')}</td>
+          <td>${statusChip(t.status)}</td>
+          <td class="right"><a class="btn sm ${t.status === 'pending' ? '' : 'primary'}" href="#/annotate/${t.id}">${t.status === 'pending' ? (lang() === 'zh' ? '领取' : 'Claim') : T('task.annotate')}</a></td></tr>`).join('') || `<tr><td colspan="5" class="empty">${T('common.empty')}</td></tr>`}</tbody>
+      </table></div></div>`;
+  mount('bench', modLabel + ' ' + T('nav.dashboard'), content);
+  const claimBtn = $('#bench-claim');
+  if (claimBtn && next) claimBtn.onclick = async () => {
+    try {
+      const r = await api('/api/task-hall/claim', { method: 'POST', body: { task_ids: [next.id] } });
+      if (r.count > 0) location.hash = `#/annotate/${next.id}`;
+      else toast(r.skipped && r.skipped[0] ? r.skipped[0].reason : '领取失败', 'warn');
+    } catch (e) { toast(e.message, 'err'); }
+  };
+}
+
+/* ---------------- 数据管理（项目级：上传入口 + 数据资产） ---------------- */
+async function pageDataHub() {
+  const [tasksData, projects, pkgs] = await Promise.all([
+    api('/api/tasks?limit=300'),
+    api('/api/projects'),
+    api('/api/task-packages'),
+  ]);
+  const rows = tasksData.tasks || [];
+  const totalMin = rows.reduce((a, t) => a + (t.est_minutes || 0), 0);
+  const content = `
+    <div class="page-head">
+      <div><h1 class="page-title">${T('nav.datahub')}</h1><p class="page-sub">${lang() === 'zh' ? '项目数据资产的统一入口：上传、切分、导入与追踪' : 'Unified entry for project data assets'}</p></div>
+      <div class="page-actions"><a class="btn primary" href="#/jobs?tab=import">${icon('upload')} ${lang() === 'zh' ? '上传数据' : 'Upload'}</a></div>
+    </div>
+    <div class="grid kpi-grid" style="margin-bottom:14px">
+      <div class="kpi"><div class="kpi-label">${lang() === 'zh' ? '数据条目' : 'Items'}</div><div class="kpi-value">${rows.length}</div></div>
+      <div class="kpi"><div class="kpi-label">${lang() === 'zh' ? '总时长' : 'Duration'}</div><div class="kpi-value">${Math.round(totalMin * 10) / 10}<small style="font-size:13px">h</small></div></div>
+      <div class="kpi"><div class="kpi-label">${lang() === 'zh' ? '任务包' : 'Packages'}</div><div class="kpi-value">${(pkgs.packages || []).length}</div></div>
+      <div class="kpi"><div class="kpi-label">${lang() === 'zh' ? '覆盖项目' : 'Projects'}</div><div class="kpi-value">${(projects.projects || []).length}</div></div>
+    </div>
+    <div class="grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:14px">
+      ${[
+        ['import', lang() === 'zh' ? '本地上传' : 'Local files', lang() === 'zh' ? '文件 / ZIP 批量导入，自动识别模态' : 'File / ZIP batch import'],
+        ['chunk', lang() === 'zh' ? '大文件续传' : 'Chunked upload', lang() === 'zh' ? '4MB 分片断点续传' : 'Resumable 4MB chunks'],
+        ['split', lang() === 'zh' ? '长音频切分' : 'Audio split', lang() === 'zh' ? '按固定时长切成子任务' : 'Split into fixed-length tasks'],
+        ['queue', lang() === 'zh' ? '作业队列' : 'Job queue', lang() === 'zh' ? '异步导入/导出进度' : 'Async job progress'],
+      ].map(([tab, title, sub]) => `<a class="card quick-link" href="#/jobs?tab=${tab}"><div class="q-text"><b>${title}</b><span class="sub">${sub}</span></div><span class="chip plain">→</span></a>`).join('')}
+    </div>
+    <div class="card"><div class="card-head"><h3 class="card-title">${lang() === 'zh' ? '数据资产' : 'Data assets'}</h3>
+      <span class="card-sub">${rows.length}</span>
+      <input class="input" id="dh-q" placeholder="${T('task.filterph')}" style="margin-left:auto;width:220px;height:28px" /></div>
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th>ID</th><th>${lang() === 'zh' ? '名称' : 'Name'}</th><th>${lang() === 'zh' ? '类型' : 'Type'}</th><th>${lang() === 'zh' ? '时长' : 'Duration'}</th><th>${T('dash.dist').replace(/分布|distribution/ig, '')}</th><th>${T('wb.annotator')}</th><th>${lang() === 'zh' ? '更新时间' : 'Updated'}</th></tr></thead>
+        <tbody id="dh-body">${dataHubRows(rows)}</tbody>
+      </table></div></div>`;
+  mount('datahub', T('nav.datahub'), content);
+  $('#dh-q').oninput = (e) => {
+    const q = e.target.value.trim().toLowerCase();
+    $('#dh-body').innerHTML = dataHubRows(rows.filter((t) => !q || t.name.toLowerCase().includes(q) || String(t.id).includes(q)));
+  };
+}
+function dataHubRows(rows) {
+  return rows.map((t) => `<tr>
+    <td class="mono">#${t.id}</td>
+    <td><div class="name">${esc(t.name)}</div><div class="sub">${esc(t.batch || '')}</div></td>
+    <td><span class="tag">${T('mod.' + (t.media_type || 'audio')) !== 'mod.' + (t.media_type || 'audio') ? T('mod.' + t.media_type) : esc(t.modality_label || t.media_type)}</span></td>
+    <td class="mono">${t.duration ? fmtShort(t.duration) : (t.est_minutes ? t.est_minutes + 'h' : '—')}</td>
+    <td>${statusChip(t.status)}</td>
+    <td>${esc(t.assignee_name || T('task.unassigned'))}</td>
+    <td class="mono">${esc((t.updated_at || '').slice(5, 16))}</td></tr>`).join('')
+    || `<tr><td colspan="7" class="empty">${T('common.empty')}</td></tr>`;
 }
 
 /* ---------------- 验收中心 ---------------- */

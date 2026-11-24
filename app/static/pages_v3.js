@@ -3260,6 +3260,7 @@
   window.CK_NAV = [
     ['hall', '任务大厅', 'tasks', 'task.read'],
     ['jobs', '作业中心', 'upload', 'task.write'],
+    ['datahub', '数据管理', 'database', 'task.write'],
     ['components', '组件与资产库', 'layers', 'template.read'],
     ['operators', '算子中心', 'spark', 'template.read'],
     ['quality', '规则质检', 'shield', 'task.review'],

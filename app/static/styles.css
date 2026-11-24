@@ -591,3 +591,20 @@ table.table{width:100%;border-collapse:collapse;font-size:12.5px}
 #tool-hint{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px}
 .image-toolbar{align-items:center}
 #img-tools{display:flex;width:min(430px,100%);flex:none;flex-wrap:wrap}
+
+/* ---------- 音频分段 chips + 聚焦编辑 ---------- */
+.seg-chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;max-height:96px;overflow:auto}
+.seg-chip{display:inline-flex;align-items:center;gap:5px;padding:4px 8px;border-radius:7px;border:1px solid var(--border);background:rgba(13,21,36,.6);color:var(--text);font-size:11.5px;cursor:pointer;max-width:210px}
+.seg-chip:hover{border-color:rgba(59,130,246,.5)}
+.seg-chip.on{border-color:rgba(59,130,246,.8);background:rgba(59,130,246,.14)}
+.seg-chip.playing{border-color:#EF4444;box-shadow:0 0 0 1px rgba(239,68,68,.4)}
+.seg-chip .chip-txt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:110px;color:var(--muted)}
+.seg-chip .seg-no{color:var(--muted);font-family:ui-monospace,monospace;font-size:10px}
+.wave-panel .seg-row{border-left-width:3px}
+
+/* ---------- UX 统一：吸顶页头 / 表格悬浮 / 卡片一致 ---------- */
+.page-head{position:sticky;top:0;z-index:5;background:linear-gradient(180deg,var(--bg,#0A101E) 78%,transparent);padding-top:4px}
+.table tbody tr{transition:background .12s}
+.table tbody tr:hover{background:rgba(59,130,246,.05)}
+.card{border-radius:12px}
+.kpi{border-radius:12px}
