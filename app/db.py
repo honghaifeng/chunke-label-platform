@@ -377,6 +377,23 @@ CREATE TABLE IF NOT EXISTS notifications(
   read_at TEXT,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS sessions(
+  token TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL,
+  tenant_id INTEGER,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS spec_templates(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  modality TEXT NOT NULL DEFAULT '',
+  content TEXT NOT NULL DEFAULT '',
+  samples TEXT NOT NULL DEFAULT '[]',
+  created_by INTEGER,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS annotation_versions(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   annotation_id INTEGER NOT NULL,
@@ -629,6 +646,11 @@ MODALITY_LABEL = {
     "video": "视频",
     "pointcloud": "3D 点云",
     "editing": "图像编辑指令",
+    "text": "文本",
+    "llm": "大模型",
+    "pdf": "PDF 文档",
+    "multimodal": "多模态",
+    "timeseries": "时序",
 }
 
 DEFAULT_LABELS = {
@@ -638,7 +660,7 @@ DEFAULT_LABELS = {
         "事件": ["笑声", "静音", "重叠发言", "噪音", "打断"],
         "说话人": ["坐席", "客户", "第三方"],
     },
-    "image": {"目标类别": ["商品主体", "价签", "货架", "遮挡"], "质量": ["清晰", "模糊", "过曝"]},
+    "image": {"目标类别": ["行人", "骑行者", "轿车", "货车", "公交车"]},
     "pointcloud": {"目标类别": ["轿车", "卡车", "行人", "骑行者"], "属性": ["静止", "运动", "遮挡"]},
     "video": {"行为": ["正常", "异常"], "事件": ["进入", "离开"]},
     "editing": {
@@ -676,6 +698,7 @@ def init_db() -> None:
         _ensure_column(conn, "users", "team_id", "INTEGER")
         _ensure_column(conn, "projects", "tenant_id", "INTEGER")
         _ensure_column(conn, "projects", "template_id", "INTEGER")
+        _ensure_column(conn, "projects", "spec_id", "INTEGER")
         _ensure_column(conn, "tasks", "workflow_id", "INTEGER")
         _ensure_column(conn, "tasks", "dataset_id", "INTEGER")
         _ensure_column(conn, "tasks", "qc_required", "INTEGER NOT NULL DEFAULT 1")
@@ -709,6 +732,7 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at);
             CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status,created_at);
             CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id,read_at);
+            CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expires_at);
             CREATE INDEX IF NOT EXISTS idx_issues_task ON issues(task_id,status);
             CREATE INDEX IF NOT EXISTS idx_operator_runs ON operator_runs(operator_id,created_at);
             CREATE INDEX IF NOT EXISTS idx_dataset_items_version ON dataset_items(version_id,name);
@@ -725,6 +749,8 @@ def init_db() -> None:
         _seed_v2()
         _seed_v3()
         _migrate_accept_perm()
+        _migrate_v7()
+        _migrate_v8()
         normalize_media_paths()
         return
 
@@ -768,9 +794,9 @@ def init_db() -> None:
         ),
         (
             "retail-img",
-            "零售-商品图检测",
+            "城市治理-人车流量检测",
             "image",
-            "货架商品检测与遮挡判定，复用 labelU 图像标注能力。",
+            "路口、广场、高架等城市场景的人与车辆目标检测，支撑人车流量统计与事件分析。",
             uids["liuxiao"],
             "labelU",
             "http://127.0.0.1:8001",
@@ -808,8 +834,8 @@ def init_db() -> None:
         ("voice-cs", "客服来电-20261108-014", "call-001.wav", "audio", 10.6, "submitted", "liqiang", "zhoulan", "high", "1108 批次"),
         ("adas-3d", "城市场景-帧段-0031", "", "pointcloud", 0, "pending", "liqiang", "zhoulan", "normal", "点云批次 A"),
         ("adas-3d", "高速场景-帧段-0077", "", "pointcloud", 0, "pending", "liqiang", "zhoulan", "high", "点云批次 A"),
-        ("retail-img", "货架巡检-门店-021", "", "image", 0, "pending", "wangmin", "zhoulan", "normal", "巡检 11 月"),
-        ("retail-img", "货架巡检-门店-022", "", "image", 0, "pending", "wangmin", "zhoulan", "low", "巡检 11 月"),
+        ("retail-img", "路口抓拍-021", "", "image", 0, "pending", "wangmin", "zhoulan", "normal", "巡检 11 月"),
+        ("retail-img", "路口抓拍-022", "", "image", 0, "pending", "wangmin", "zhoulan", "low", "巡检 11 月"),
     ]
     base = datetime.now()
     for i, (code, name, mf, mt, dur, status, assignee, reviewer, prio, batch) in enumerate(tasks):
@@ -860,6 +886,8 @@ def init_db() -> None:
     _seed_v2()
     _seed_v3()
     _migrate_accept_perm()
+    _migrate_v7()
+    _migrate_v8()
     normalize_media_paths()
     log(uids["admin"], "init", "system", "初始化平台数据与演示任务")
 
@@ -1133,6 +1161,237 @@ def _migrate_accept_perm() -> None:
     execute(
         "INSERT OR IGNORE INTO schema_migrations(version,name,applied_at) VALUES(?,?,?)",
         (6, "验收阶段与 task.accept 权限", ts),
+    )
+
+
+def _migrate_v7() -> None:
+    """v7：验收员演示账号 + 修复历史数据中质检员角色不合法的指派。"""
+    if row("SELECT 1 ok FROM schema_migrations WHERE version=7"):
+        return
+    ts = now()
+    # 1) 预置验收员演示账号（项目角色 acceptor，便于走通验收闭环）
+    if not row("SELECT id FROM users WHERE username='acceptor'"):
+        uid = execute(
+            "INSERT INTO users(username,name,password_hash,platform_role,status,created_at) VALUES(?,?,?,?,?,?)",
+            ("acceptor", "陈静", hash_password(DEFAULT_PASSWORD), "acceptor", "active", ts),
+        )
+        tenant = row("SELECT id FROM tenants ORDER BY id LIMIT 1")
+        if tenant:
+            execute("UPDATE users SET tenant_id=? WHERE id=?", (tenant["id"], uid))
+        for code in ("voice-cs", "demo-v4-multi"):
+            p = row("SELECT id FROM projects WHERE code=?", (code,))
+            if p:
+                execute(
+                    "INSERT OR IGNORE INTO project_members(project_id,user_id,project_role) VALUES(?,?,?)",
+                    (p["id"], uid, "acceptor"),
+                )
+    # 2) 清理质检员指派：当前质检员不是本项目的 reviewer/manager 时，改派本项目首位质检员
+    execute(
+        "UPDATE tasks SET reviewer_id=(SELECT pm.user_id FROM project_members pm"
+        " WHERE pm.project_id=tasks.project_id AND pm.project_role='reviewer' ORDER BY pm.user_id LIMIT 1)"
+        " WHERE reviewer_id IS NOT NULL AND reviewer_id NOT IN ("
+        " SELECT pm.user_id FROM project_members pm"
+        " WHERE pm.project_id=tasks.project_id AND pm.project_role IN ('reviewer','manager'))"
+    )
+    execute(
+        "INSERT OR IGNORE INTO schema_migrations(version,name,applied_at) VALUES(?,?,?)",
+        (7, "验收员演示账号与质检员指派清理", ts),
+    )
+
+
+def _migrate_v8() -> None:
+    """v8：语音 / 图片 / 文本三大基础场景演示数据升级。
+
+    图片：零售商品图 → 城市治理人车流量检测（真实街景图 + 行人/车辆标注）；
+    语音：补充新的客服来电演示语料；文本：新增用户评论情感与实体标注项目。
+    """
+    if row("SELECT 1 ok FROM schema_migrations WHERE version=8"):
+        return
+    ts = now()
+    uids = {u["username"]: u["id"] for u in rows("SELECT id,username FROM users")}
+
+    def _media(name: str) -> str:
+        p = os.path.join(MEDIA_DIR, name)
+        return p if os.path.exists(p) else ""
+
+    # ---------- 图片：人车流量检测 ----------
+    img_labels = json.dumps({"目标类别": ["行人", "骑行者", "轿车", "货车", "公交车"]}, ensure_ascii=False)
+    execute(
+        "UPDATE projects SET name='城市治理-人车流量检测',"
+        " description='路口、广场、高架等城市场景的人与车辆目标检测，支撑人车流量统计与事件分析。',"
+        " label_config=? WHERE code IN ('retail-img','traffic-detect')"
+        " OR name IN ('零售-商品图检测','城市治理-人车流量检测')",
+        (img_labels,),
+    )
+    execute("UPDATE workflows SET name='城市治理-人车流量检测 · 标准流程' WHERE name LIKE '零售-商品图检测%'")
+    proj = row("SELECT id FROM projects WHERE name='城市治理-人车流量检测' LIMIT 1")
+    if proj:
+        pid = proj["id"]
+        # 清掉旧商品图任务的标注/质检/验收记录，重新挂载街景图
+        old_tasks = rows("SELECT id FROM tasks WHERE project_id=? AND name LIKE '货架巡检-%'", (pid,))
+        for t in old_tasks:
+            execute("DELETE FROM annotations WHERE task_id=?", (t["id"],))
+            execute("DELETE FROM qc_records WHERE task_id=?", (t["id"],))
+            execute("DELETE FROM acceptance_records WHERE task_id=?", (t["id"],))
+            execute("DELETE FROM annotation_versions WHERE task_id=?", (t["id"],))
+        demos = [
+            # (新名称, 图片, 状态, 标注员, 预识别框, 人工框)
+            (
+                "路口抓拍-曼哈顿-001", "traffic-demo-1.jpg", "annotating", "wangmin",
+                [
+                    {"cls": "轿车", "auto_cls": "出租车", "conf": 0.91, "x": 0.469, "y": 0.659, "w": 0.047, "h": 0.052},
+                    {"cls": "轿车", "auto_cls": "出租车", "conf": 0.87, "x": 0.538, "y": 0.661, "w": 0.045, "h": 0.048},
+                    {"cls": "行人", "auto_cls": "行人", "conf": 0.78, "x": 0.247, "y": 0.681, "w": 0.015, "h": 0.058},
+                    {"cls": "行人", "auto_cls": "行人", "conf": 0.74, "x": 0.273, "y": 0.679, "w": 0.016, "h": 0.060},
+                    {"cls": "轿车", "auto_cls": "私家车", "conf": 0.83, "x": 0.756, "y": 0.658, "w": 0.094, "h": 0.075},
+                    {"cls": "轿车", "auto_cls": "私家车", "conf": 0.81, "x": 0.817, "y": 0.664, "w": 0.116, "h": 0.083},
+                ],
+                [
+                    {"cls": "轿车", "name": "出租车", "x": 0.358, "y": 0.656, "w": 0.064, "h": 0.056},
+                    {"cls": "行人", "name": "过街行人", "x": 0.444, "y": 0.662, "w": 0.016, "h": 0.062},
+                ],
+            ),
+            (
+                "路口抓拍-芝加哥-002", "traffic-demo-2.jpg", "annotating", "wangmin",
+                [
+                    {"cls": "公交车", "auto_cls": "公交车", "conf": 0.93, "x": 0.244, "y": 0.627, "w": 0.166, "h": 0.092},
+                    {"cls": "轿车", "auto_cls": "出租车", "conf": 0.89, "x": 0.353, "y": 0.684, "w": 0.148, "h": 0.080},
+                    {"cls": "轿车", "auto_cls": "SUV", "conf": 0.85, "x": 0.018, "y": 0.671, "w": 0.166, "h": 0.080},
+                    {"cls": "轿车", "auto_cls": "私家车", "conf": 0.86, "x": 0.586, "y": 0.689, "w": 0.138, "h": 0.071},
+                    {"cls": "轿车", "auto_cls": "私家车", "conf": 0.72, "x": 0.545, "y": 0.688, "w": 0.056, "h": 0.038},
+                ],
+                [],
+            ),
+            (
+                "高架俯瞰-车流-003", "traffic-demo-3.jpg", "annotating", "wangmin", [], [],
+            ),
+            (
+                "广场人流-004", "traffic-demo-4.jpg", "pending", "", [], [],
+            ),
+        ]
+        seq = 21
+        for name, img, status, assignee, pre_boxes, human_boxes in demos:
+            media = _media(img)
+            t = row("SELECT id,media_path FROM tasks WHERE project_id=? AND name=?", (pid, name))
+            payload_boxes = [
+                {**b, "source": "ai", "name": ""} for b in pre_boxes
+            ] + [
+                {**b, "source": "manual"} for b in human_boxes
+            ]
+            prelabel = {"engine": "Grounding DINO", "boxes": [{**b, "name": ""} for b in pre_boxes]}
+            if t:
+                tid = t["id"]
+                execute(
+                    "UPDATE tasks SET media_path=?,media_type='image',status=?,assignee_id=?,"
+                    "reviewer_id=?,priority='normal',batch='交通 11 月',updated_at=? WHERE id=?",
+                    (media or t["media_path"], status, uids.get(assignee), uids.get("zhoulan"), ts, tid),
+                )
+                execute("DELETE FROM annotations WHERE task_id=?", (tid,))
+            else:
+                tid = execute(
+                    "INSERT INTO tasks(project_id,name,media_path,media_type,duration,status,assignee_id,"
+                    "reviewer_id,priority,batch,created_at,updated_at) VALUES(?,?,?,?,0,?,?,?,?,?,?,?)",
+                    (pid, name, media, "image", status, uids.get(assignee), uids.get("zhoulan"),
+                     "normal", "交通 11 月", ts, ts),
+                )
+            if payload_boxes or pre_boxes:
+                execute(
+                    "INSERT INTO annotations(task_id,user_id,payload,prelabel,status,version,created_at,updated_at)"
+                    " VALUES(?,?,?,?,?,?,?,?)",
+                    (tid, uids.get(assignee) or uids.get("admin"),
+                     json.dumps({"boxes": payload_boxes}, ensure_ascii=False),
+                     json.dumps(prelabel, ensure_ascii=False), "draft", 1, ts, ts),
+                )
+            seq += 1
+        # 多余的旧巡检任务改名接入任务大厅（待领取）
+        extras = rows(
+            "SELECT id FROM tasks WHERE project_id=? AND name LIKE '货架巡检-%' ORDER BY id", (pid,))
+        for i, t in enumerate(extras):
+            execute(
+                "UPDATE tasks SET name=?, status='pending', assignee_id=NULL, media_path='', updated_at=? WHERE id=?",
+                (f"路口抓拍-待补采-{seq + i:03d}", ts, t["id"]),
+            )
+
+    # ---------- 语音：补充客服来电演示语料 ----------
+    voice = row("SELECT id FROM projects WHERE code='voice-cs'")
+    if voice:
+        pid = voice["id"]
+        for name, wav, dur, status in [
+            ("客服来电-20261123-001", "call-003.wav", 10.6, "pending"),
+            ("客服来电-20261123-002", "call-004.wav", 13.9, "annotating"),
+        ]:
+            if row("SELECT 1 ok FROM tasks WHERE project_id=? AND name=?", (pid, name)):
+                continue
+            execute(
+                "INSERT INTO tasks(project_id,name,media_path,media_type,duration,status,assignee_id,"
+                "reviewer_id,priority,batch,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (pid, name, _media(wav), "audio", dur, status, uids.get("wangmin"), uids.get("zhoulan"),
+                 "normal", "1123 批次", ts, ts),
+            )
+
+    # ---------- 文本：用户评论情感与实体标注 ----------
+    if not row("SELECT 1 ok FROM projects WHERE code='text-review'"):
+        text_labels = json.dumps({"实体": ["产品", "人名", "地名", "机构名", "时间", "数字"]}, ensure_ascii=False)
+        pid = execute(
+            "INSERT INTO projects(code,name,modality,description,owner_id,engine,engine_url,label_config,created_at)"
+            " VALUES(?,?,?,?,?,?,?,?,?)",
+            ("text-review", "文本-用户评论标注", "text",
+             "电商与本地生活用户评论的情感倾向、实体与分类标注，支撑口碑分析与舆情监控。",
+             uids.get("liuxiao"), "", "", text_labels, ts),
+        )
+        for username, prole in [("liuxiao", "manager"), ("wangmin", "annotator"), ("zhoulan", "reviewer")]:
+            execute(
+                "INSERT OR IGNORE INTO project_members(project_id,user_id,project_role) VALUES(?,?,?)",
+                (pid, uids.get(username), prole),
+            )
+        t1 = execute(
+            "INSERT INTO tasks(project_id,name,media_path,media_type,duration,status,assignee_id,"
+            "reviewer_id,priority,batch,created_at,updated_at) VALUES(?,?,?,?,0,?,?,?,?,?,?,?)",
+            (pid, "评论标注-0001", _media("text-review-0001.txt"), "text", "annotating",
+             uids.get("wangmin"), uids.get("zhoulan"), "normal", "评论 11 月", ts, ts),
+        )
+        execute(
+            "INSERT INTO tasks(project_id,name,media_path,media_type,duration,status,assignee_id,"
+            "reviewer_id,priority,batch,created_at,updated_at) VALUES(?,?,?,?,0,?,?,?,?,?,?,?)",
+            (pid, "评论标注-0002", _media("text-review-0002.txt"), "text", "pending",
+             uids.get("wangmin"), uids.get("zhoulan"), "normal", "评论 11 月", ts, ts),
+        )
+        # 评论-0001 预填一份草稿，打开工作台即可看到完整标注效果
+        review1 = _media("text-review-0001.txt")
+        text1 = ""
+        if review1 and os.path.exists(review1):
+            with open(review1, encoding="utf-8") as f:
+                text1 = f.read().strip()
+
+        def _span(entity, label):
+            start = text1.find(entity)
+            return {"start": start, "end": start + len(entity), "label": label} if start >= 0 else None
+
+        spans = [
+            s for s in (
+                _span("智能手环", "产品"), _span("春科商城", "机构名"), _span("2026年11月12日", "时间"),
+                _span("13号", "时间"), _span("杭州", "地名"), _span("小周", "人名"),
+            ) if s
+        ]
+        # 第二处“智能手环”
+        second = text1.find("智能手环", text1.find("智能手环") + 1) if text1 else -1
+        if second >= 0:
+            spans.append({"start": second, "end": second + 4, "label": "产品"})
+        payload = {
+            "media_type": "text", "text": text1, "spans": spans, "pos": [],
+            "matches": [],
+            "sentiment": {"polarity": "正面", "intensity": 4, "keywords": ["超预期", "清晰", "耐心", "值得推荐"]},
+            "category": "评论/数码/智能穿戴",
+        }
+        execute(
+            "INSERT INTO annotations(task_id,user_id,payload,prelabel,status,version,created_at,updated_at)"
+            " VALUES(?,?,?,?,?,?,?,?)",
+            (t1, uids.get("wangmin"), json.dumps(payload, ensure_ascii=False), "{}", "draft", 1, ts, ts),
+        )
+
+    execute(
+        "INSERT OR IGNORE INTO schema_migrations(version,name,applied_at) VALUES(?,?,?)",
+        (8, "语音/图片/文本场景演示数据升级", ts),
     )
 
 

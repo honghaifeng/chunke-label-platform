@@ -90,13 +90,17 @@
       const ids = $$v('.hall-ck:checked').map((x) => Number(x.value));
       if (!ids.length) return toast('请先勾选任务', 'err');
       const r = await api('/api/task-hall/claim', { method: 'POST', body: { task_ids: ids } });
-      toast(`已领取 ${r.count} 个任务`, 'ok');
+      if (r.count > 0) toast(`已领取 ${r.count} 个任务`, 'ok');
+      if (r.skipped && r.skipped.length) {
+        toast(`${r.skipped.length} 个未领取：${r.skipped.slice(0, 3).map((s) => s.reason).join('；')}`, 'warn');
+      }
       await route();
     };
     $$v('[data-pkg]').forEach((b) => {
       b.onclick = async () => {
         const r = await api('/api/task-hall/claim', { method: 'POST', body: { package_id: Number(b.dataset.pkg) } });
-        toast(`已整包领取 ${r.count} 个任务`, 'ok');
+        if (r.count > 0) toast(`已整包领取 ${r.count} 个任务`, 'ok');
+        else toast(r.skipped && r.skipped.length ? `未领取：${r.skipped[0].reason}` : '任务包暂无可领取任务', 'warn');
         await route();
       };
     });
@@ -734,11 +738,37 @@
         <b style="font-size:12px">${esc(tr.label || '目标')}</b><span class="tag">${(tr.keyframes || []).length} 帧</span>
         <button class="btn ghost" data-kf="${i}" style="margin-left:auto">打关键帧</button>
         <button class="btn ghost" data-copy="${i}">复制上一帧</button>
+        <button class="btn ghost" data-auto="${i}" title="按前两关键帧运动估计把目标传播到当前帧">自动跟踪</button>
         <button class="btn ghost danger" data-del-tr="${i}">删除</button></div>`).join('') || '<div class="empty">暂无轨迹</div>';
       $$v('[data-del-tr]').forEach((b) => { b.onclick = () => { tracks.splice(Number(b.dataset.delTr), 1); draw(); markDirty(wb); }; });
       $$v('[data-kf]').forEach((b) => { b.onclick = () => addKeyframe(Number(b.dataset.kf)); });
       $$v('[data-copy]').forEach((b) => { b.onclick = () => copyPrevKeyframe(Number(b.dataset.copy)); });
+      $$v('[data-auto]').forEach((b) => { b.onclick = () => autoTrack(Number(b.dataset.auto)); });
       drawSegs();
+    };
+    // 内置自动跟踪降级：用最近两个关键帧做匀速运动估计，把框传播到当前帧（可接 operator.track.url 换真实模型）
+    const autoTrack = (i) => {
+      const tr = tracks[i];
+      const list = (tr.keyframes || []).filter((k) => k.t < current).sort((a, b) => b.t - a.t);
+      if (!list.length) return toast('当前帧之前没有关键帧', 'warn');
+      let added;
+      if (list.length >= 2) {
+        const [k1, k2] = list; // k1 最新，k2 次新
+        const dt = k1.t - k2.t || 0.04;
+        const gap = current - k1.t;
+        added = {
+          t: current,
+          x: Math.min(0.98, Math.max(0, k1.x + ((k1.x - k2.x) / dt) * gap)),
+          y: Math.min(0.98, Math.max(0, k1.y + ((k1.y - k2.y) / dt) * gap)),
+          w: Math.max(0.01, k1.w + ((k1.w - k2.w) / dt) * gap),
+          h: Math.max(0.01, k1.h + ((k1.h - k2.h) / dt) * gap),
+        };
+      } else {
+        added = { ...list[0], t: current };
+      }
+      tr.keyframes = [...(tr.keyframes || []), added].sort((a, b) => a.t - b.t);
+      draw(); markDirty(wb);
+      toast(`已把「${tr.label || '目标'}」传播到 ${current.toFixed(2)}s`, 'ok');
     };
     const addKeyframe = (i) => {
       const tr = tracks[i];
@@ -835,7 +865,8 @@
 
   WB.text = (wb) => {
     const payload = (state.current.annotation && state.current.annotation.payload) || {};
-    let text = payload.text || state.current.task.name || '';
+    // 不从任务名兜底：文本任务打开时自动加载媒体语料文件，无媒体时再手动粘贴
+    let text = payload.text || '';
     const spans = (payload.spans || []).filter((s) => s && s.start < s.end);
     const posList = payload.pos || [];
     const matches = payload.matches || [];
@@ -867,6 +898,7 @@
       drawText();
       $v('#t-spans').innerHTML = spans.map((s, i) => `<div style="display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid rgba(30,42,63,.5)">
         <span class="tag">${esc(s.label)}</span><span class="sub">L${spanDepth(s) + 1}</span>
+        ${s.source === 'ai' ? '<span class="chip info">AI</span>' : ''}
         <span style="font-size:12px">${esc(text.slice(s.start, s.end))}</span>
         <button class="btn ghost danger" data-del-span="${i}" style="margin-left:auto">删除</button></div>`).join('') || '<div class="empty">暂无实体</div>';
       $v('#t-pos').innerHTML = posList.map((p, i) => `<div style="display:flex;gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid rgba(30,42,63,.5)">
@@ -898,6 +930,7 @@
           <datalist id="t-label-list">${labels.map((x) => `<option value="${esc(x)}">`).join('')}</datalist>
           <select class="select" id="t-span-parent" style="width:150px"><option value="">顶层实体</option>${spans.map((s, i) => `<option value="${i}">嵌套于：${esc(text.slice(s.start, s.end).slice(0, 12))}</option>`).join('')}</select>
           <button class="btn primary" id="t-span">标注选中文本</button>
+          <button class="btn ghost" id="t-prelabel" title="内置词典预识别实体，供确认/删除">预识别实体</button>
         </div>
         <div class="hint" style="margin-top:6px">数字键 1–9 快速切换实体类型，Ctrl/Cmd+D 复制上一实体类型</div>
         <div class="card" style="margin-top:12px"><div class="card-head"><h3 class="card-title">标注预览</h3></div><div class="card-body" id="t-preview" style="line-height:2;font-size:13.5px"></div></div>
@@ -936,6 +969,43 @@
       spans.push({ start, end, label: $v('#t-label').value.trim() || labels[0], parent: parentSpan ? text.slice(parentSpan.start, parentSpan.end) : null });
       draw();
     };
+    // 内置实体预识别（词典+规则，供确认/删除；配置外部 NER 后可在此替换）
+    $v('#t-prelabel').onclick = () => {
+      if (!text.trim()) return toast('请先输入或加载文本', 'warn');
+      const rules = [
+        ['机构名', /[一-龥A-Za-z0-9]{2,14}(公司|集团|大学|学院|医院|银行|政府|公安局|学校|火锅店|奶茶店|餐厅|商城|平台|旗舰店)/g],
+        ['产品', /[一-龥A-Za-z0-9]{1,8}(手机|手环|耳机|电脑|笔记本|平板|手表|电视|空调|冰箱|洗衣机|运动鞋|包|口红|面膜|精华|奶粉|咖啡|毛肚|酥肉|锅底)/g],
+        ['时间', /\d{4}年\d{1,2}月\d{1,2}日|\d{4}年\d{1,2}月|\d{1,2}月\d{1,2}[日号]|\d{1,2}号|周[一二三四五六日天]|[早晚]上|凌晨|中午|下午/g],
+        ['数字', /\d+(\.\d+)?(%|个|只|条|次|款|台|件|小时|分钟|天|周|月|年|元|块|斤|公里)?/g],
+        ['地名', /(北京|上海|广州|深圳|杭州|南京|苏州|成都|重庆|武汉|西安|长沙|天津|青岛|厦门|合肥|郑州|宁波|佛山|东莞)|[一-龥]{2,6}(省|市|区|县|州|路|街|站|机场)/g],
+        ['人名', /(?:客服|店员|经理|服务员|老师|医生|教练|老板|技师)([一-龥]{1,2})/g],
+      ];
+      const found = [];
+      rules.forEach(([label, re]) => {
+        let m;
+        while ((m = re.exec(text))) {
+          const seg = m[1] && label === '人名' ? m[1] : m[0];
+          const start = m.index + (label === '人名' ? m[0].indexOf(seg) : 0);
+          found.push({ start, end: start + seg.length, label, source: 'ai' });
+          if (m.index === re.lastIndex) re.lastIndex++;
+        }
+      });
+      // 去重 + 去除与已有 span 重叠的部分
+      const occupied = Array.from({ length: text.length }, () => false);
+      spans.filter(inRange).forEach((s) => { for (let i = s.start; i < s.end; i++) occupied[i] = true; });
+      const accepted = [];
+      found.sort((a, b) => a.start - b.start || (b.end - b.start) - (a.end - a.start));
+      found.forEach((f) => {
+        if (f.end <= f.start || f.end > text.length) return;
+        for (let i = f.start; i < f.end; i++) if (occupied[i]) return;
+        for (let i = f.start; i < f.end; i++) occupied[i] = true;
+        accepted.push({ start: f.start, end: f.end, label: f.label, parent: null, source: 'ai' });
+      });
+      if (!accepted.length) return toast('未识别到新实体（可能与已有标注重叠）', 'warn');
+      spans.push(...accepted);
+      draw();
+      toast(`预识别 ${accepted.length} 个实体，请在列表中确认或删除`, 'ok');
+    };
     $v('#t-pos-add').onclick = () => {
       const ta = $v('#t-text');
       const start = ta.selectionStart, end = ta.selectionEnd;
@@ -964,6 +1034,8 @@
       }
     };
     draw();
+    // 文本任务且尚无保存内容时，自动加载媒体语料文件
+    if (!payload.text && wb.mediaName && state.current.task.media_type === 'text') $v('#t-load').click();
   };
 
   WB.llm = (wb) => {
@@ -1047,184 +1119,1003 @@
     draw();
   };
 
-  WB.pointcloud = (wb) => {
+  WB.pointcloud = async (wb) => {
     const payload = (state.current.annotation && state.current.annotation.payload) || {};
-    let points = payload.sample || [];
-    const boxes = payload.boxes || [];
-    const keypoints = payload.keypoints || [];
-    const lanes = payload.lanes || [];
-    const frames = payload.frames || [];
+    const classes = (wb.labels && wb.labels['目标类别']) || ['轿车', '行人', '骑行者', '货车'];
+    let points = (payload.sample || []).map((p) => [Number(p[0]) || 0, Number(p[1]) || 0, Number(p[2]) || 0]);
+    let intensity = (payload.intensity || []).slice(0, points.length);
+    let boxes = payload.boxes || [];
+    let keypoints = payload.keypoints || [];
+    let lanes = payload.lanes || [];
+    let frames = payload.frames || [];
+    let segs = payload.seg || [];            // [{label, ranges:[start,count,...] (RLE over points)}]
     let category = payload.category || '';
     let attrs = payload.attrs || '';
-    let yaw = 0.6, scale = 1, minD = 0, maxD = 80, colorMode = 'depth';
-    const draw = () => {
-      const cvs = $v('#pc-canvas');
-      if (!cvs) return;
-      const ctx = cvs.getContext('2d');
-      const w = (cvs.width = cvs.clientWidth * devicePixelRatio);
-      const h = (cvs.height = 420 * devicePixelRatio);
-      ctx.fillStyle = '#050912'; ctx.fillRect(0, 0, w, h);
-      const cx = w / 2, cy = h / 2;
-      const proj = (p) => {
-        const [x, y, z] = p;
-        const rx = x * Math.cos(yaw) - y * Math.sin(yaw);
-        const ry = x * Math.sin(yaw) + y * Math.cos(yaw);
-        return [cx + rx * 18 * scale + ry * 6 * scale, cy - z * 18 * scale + ry * 5 * scale, ry];
-      };
-      points.forEach((p) => {
-        const dist = Math.hypot(p[0], p[1]);
-        if (dist < minD || dist > maxD) return;
-        const [px, py, depth] = proj(p);
-        if (px < 0 || px > w || py < 0 || py > h) return;
-        if (colorMode === 'height') {
-          const t = Math.max(0, Math.min(1, (p[2] + 2) / 6));
-          ctx.fillStyle = `hsl(${210 - t * 190},90%,${45 + t * 20}%)`;
-        } else if (colorMode === 'distance') {
-          const t = Math.max(0, Math.min(1, dist / Math.max(1, maxD)));
-          ctx.fillStyle = `hsl(${180 + t * 120},85%,60%)`;
+    const calib = payload.calib || null;   // {P2[12], Tr[12], R0[9]} 用于 3D→2D 投影
+    let selBox = -1, tool = 'select', segCls = classes[0], laneDraft = null, groundZ = -1.7;
+    let playing = false, playTimer = null;
+
+    /* ---------- three.js 场景 ---------- */
+    let THREE;
+    try {
+      THREE = await import('/static/vendor/three.module.js');
+    } catch (e) {
+      toast('three.js 加载失败：请确认 app/static/vendor/three.module.js 存在', 'err');
+      return;
+    }
+    const canvas = () => $v('#pc-canvas');
+    const overlay = () => $v('#pc-overlay');
+    // 渲染器延迟到画布挂载后创建（WB.pointcloud 先于 wbShell 执行）
+    let renderer = null;
+    const getRenderer = () => {
+      if (!renderer) {
+        renderer = new THREE.WebGLRenderer({ canvas: canvas(), antialias: true });
+        renderer.setPixelRatio(devicePixelRatio || 1);
+      }
+      return renderer;
+    };
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x050912);
+    const camera = new THREE.PerspectiveCamera(55, 1.5, 0.1, 600);
+    camera.up.set(0, 0, 1); // 世界坐标：x 前 y 左 z 上
+    // 默认与 2D 相机同向：从车尾上方俯视前方道路（x 前 y 左 z 上）
+    const DEFAULT_CAM = { yaw: Math.PI, pitch: 0.4, dist: 42, tx: 14, ty: 0, tz: -0.8 };
+    const cam = { ...DEFAULT_CAM };
+    const updateCamera = () => {
+      const cp = Math.cos(cam.pitch), sp = Math.sin(cam.pitch);
+      camera.position.set(
+        cam.tx + cam.dist * cp * Math.cos(cam.yaw),
+        cam.ty + cam.dist * cp * Math.sin(cam.yaw),
+        cam.tz + cam.dist * sp,
+      );
+      camera.lookAt(cam.tx, cam.ty, cam.tz);
+    };
+    // 地面网格（XY 平面，法线 Z）
+    const grid = new THREE.GridHelper(160, 16, 0x334155, 0x1e2a3f);
+    grid.rotation.x = Math.PI / 2;
+    scene.add(grid);
+    const segColorOf = {};
+    classes.forEach((c, i) => { segColorOf[c] = new THREE.Color(`hsl(${(i * 67 + 20) % 360},85%,60%)`); });
+    const BOX_EDGES = [
+      [0, 1], [1, 3], [3, 2], [2, 0],
+      [4, 5], [5, 7], [7, 6], [6, 4],
+      [0, 4], [1, 5], [2, 6], [3, 7],
+    ];
+    const geoEdges = (l, w, h) => {
+      const c = [
+        [-l / 2, -w / 2, 0], [l / 2, -w / 2, 0], [-l / 2, w / 2, 0], [l / 2, w / 2, 0],
+        [-l / 2, -w / 2, h], [l / 2, -w / 2, h], [-l / 2, w / 2, h], [l / 2, w / 2, h],
+      ];
+      const pos = [];
+      BOX_EDGES.forEach(([a, b]) => pos.push(...c[a], ...c[b]));
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      return g;
+    };
+    const makeLabel = (text, color) => {
+      const cv = document.createElement('canvas');
+      cv.width = 256; cv.height = 64;
+      const x = cv.getContext('2d');
+      x.fillStyle = 'rgba(5,9,18,.75)';
+      x.fillRect(0, 8, 256, 44);
+      x.fillStyle = color;
+      x.font = 'bold 30px ui-sans-serif, system-ui';
+      x.fillText(text, 10, 40);
+      const tex = new THREE.CanvasTexture(cv);
+      const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false }));
+      sp.scale.set(4.4, 1.1, 1);
+      return sp;
+    };
+
+    /* 点云对象 */
+    let pointsObj = null;
+    const rebuildPointGeometry = () => {
+      if (pointsObj) { scene.remove(pointsObj); pointsObj.geometry.dispose(); pointsObj.material.dispose(); }
+      if (!points.length) { pointsObj = null; render(); return; }
+      const pos = new Float32Array(points.length * 3);
+      points.forEach((p, i) => { pos[i * 3] = p[0]; pos[i * 3 + 1] = p[1]; pos[i * 3 + 2] = p[2]; });
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(points.length * 3), 3));
+      pointsObj = new THREE.Points(g, new THREE.PointsMaterial({
+        size: 0.16, vertexColors: true, sizeAttenuation: true,
+      }));
+      pointsObj.frustumCulled = false;
+      scene.add(pointsObj);
+      rebuildColors();
+    };
+    const bgColor = new THREE.Color(0x050912);
+    const tmpColor = new THREE.Color();
+    const rebuildColors = () => {
+      if (!pointsObj) return;
+      const col = pointsObj.geometry.getAttribute('color');
+      const intenOn = intensity.length === points.length;
+      const [i0, i1] = intenRange;
+      const mode = ($v('#pc-color') || {}).value || 'height';
+      for (let i = 0; i < points.length; i++) {
+        const [x, y, z] = points[i];
+        const inRoi = x >= roi.x0 && x <= roi.x1 && y >= roi.y0 && y <= roi.y1 && z >= roi.z0 && z <= roi.z1;
+        const inInten = !intenOn || (intensity[i] >= i0 && intensity[i] <= i1);
+        if (!inRoi || !inInten) {
+          col.setXYZ(i, bgColor.r, bgColor.g, bgColor.b);
+          continue;
+        }
+        if (mode === 'distance') {
+          const t = Math.min(1, Math.hypot(x, y) / 70);
+          tmpColor.setHSL(0.5 + t * 0.33, 0.85, 0.6);
         } else {
-          const a = Math.max(0.15, Math.min(1, 1 - (depth + 40) / 80));
-          ctx.fillStyle = `rgba(96,165,250,${a.toFixed(2)})`;
+          const t = Math.max(0, Math.min(1, (z + 2.5) / 7));
+          tmpColor.setHSL((1 - t) * 0.47, 0.8, 0.52 + Math.min(1, Math.hypot(x, y) / 70) * 0.14);
         }
-        ctx.fillRect(px, py, 1.6 * devicePixelRatio, 1.6 * devicePixelRatio);
+        col.setXYZ(i, tmpColor.r, tmpColor.g, tmpColor.b);
+      }
+      segs.forEach((sg) => {
+        const c = segColorOf[sg.label] || new THREE.Color('#F59E0B');
+        rleDecode(sg.ranges || []).forEach((i) => {
+          if (i < points.length) col.setXYZ(i, c.r, c.g, c.b);
+        });
       });
-      lanes.forEach((ln) => {
-        const pts = (ln.points || []).map(proj);
-        if (pts.length < 2) return;
-        ctx.strokeStyle = ln.style === '虚线' ? '#22D3EE' : '#06B6D4';
-        ctx.lineWidth = 2 * devicePixelRatio;
-        ctx.setLineDash(ln.style === '虚线' ? [6 * devicePixelRatio, 4 * devicePixelRatio] : []);
-        ctx.beginPath();
-        pts.forEach((p, i) => { i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]); });
-        ctx.stroke(); ctx.setLineDash([]);
-        ctx.fillStyle = '#67E8F9'; ctx.font = `${10 * devicePixelRatio}px sans-serif`;
-        ctx.fillText(`${ln.type || '车道线'}·${ln.style || '实线'}`, pts[0][0], pts[0][1] - 5);
+      col.needsUpdate = true;
+      render();
+    };
+
+    /* 3D 框对象 */
+    let boxObjs = [];     // {group, fill, label(sprite)}
+    let handlesGroup = null;
+    const clearGroup = (g) => {
+      if (!g) return;
+      g.traverse((o) => {
+        if (o.geometry) o.geometry.dispose();
+        if (o.material) { if (o.material.map) o.material.map.dispose(); o.material.dispose(); }
       });
-      boxes.forEach((b) => {
-        const corners = [];
-        for (const dx of [-b.l / 2, b.l / 2]) for (const dy of [-b.w / 2, b.w / 2]) for (const dz of [0, b.h]) {
-          const ca = Math.cos(b.yaw || 0), sa = Math.sin(b.yaw || 0);
-          corners.push(proj([b.x + dx * ca - dy * sa, b.y + dx * sa + dy * ca, b.z + dz]));
-        }
-        ctx.strokeStyle = '#F59E0B'; ctx.lineWidth = 1.5 * devicePixelRatio;
-        const edges = [[0, 1], [1, 3], [3, 2], [2, 0], [4, 5], [5, 7], [7, 6], [6, 4], [0, 4], [1, 5], [2, 6], [3, 7]];
-        ctx.beginPath();
-        edges.forEach(([a, b2]) => { ctx.moveTo(corners[a][0], corners[a][1]); ctx.lineTo(corners[b2][0], corners[b2][1]); });
-        ctx.stroke();
-        const c = proj([b.x, b.y, b.z + b.h]);
-        ctx.fillStyle = '#FCD34D'; ctx.font = `${11 * devicePixelRatio}px sans-serif`;
-        ctx.fillText(b.label || '3D 框', c[0], c[1] - 6);
+      scene.remove(g);
+    };
+    let boxLabels = [];
+    const rebuildBoxes = () => {
+      boxObjs.forEach((o) => clearGroup(o.group));
+      boxLabels.forEach((o) => clearGroup(o));
+      boxObjs = [];
+      boxLabels = [];
+      boxes.forEach((b, i) => {
+        const group = new THREE.Group();
+        const col = segColorOf[b.label] || new THREE.Color('#F59E0B');
+        const lb = makeLabel(`${i + 1}·${b.label}`, col.getStyle());
+        lb.position.set(b.x, b.y, b.z + b.h + 0.7);
+        scene.add(lb);
+        boxLabels.push(lb);
+        const fillGeo = new THREE.BoxGeometry(Math.max(0.1, b.l), Math.max(0.1, b.w), Math.max(0.1, b.h));
+        const fill = new THREE.Mesh(fillGeo, new THREE.MeshBasicMaterial({
+          color: col, transparent: true, opacity: selBox === i ? 0.28 : 0.1, depthWrite: false,
+        }));
+        fill.position.z = b.h / 2;
+        fill.userData = { boxIndex: i };
+        const edges = new THREE.LineSegments(
+          geoEdges(b.l, b.w, b.h),
+          new THREE.LineBasicMaterial({ color: selBox === i ? 0xfcd34d : (b.source === 'ai' ? 0x22d3ee : col) }),
+        );
+        edges.position.z = 0;
+        group.add(fill); group.add(edges);
+        group.position.set(b.x, b.y, b.z);
+        group.rotation.z = b.yaw || 0;
+        scene.add(group);
+        boxObjs.push({ group, fill });
       });
+      rebuildHandles();
+      render();
+    };
+    const rebuildHandles = () => {
+      if (handlesGroup) { clearGroup(handlesGroup); handlesGroup = null; }
+      if (selBox < 0 || !boxes[selBox]) return;
+      const b = boxes[selBox];
+      handlesGroup = new THREE.Group();
+      const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false });
+      const mk = (px, py, pz, kind, corner) => {
+        const s = new THREE.Mesh(new THREE.SphereGeometry(0.24, 12, 12), mat.clone());
+        s.position.set(px, py, pz);
+        s.userData = { handle: kind, corner };
+        handlesGroup.add(s);
+        return s;
+      };
+      const l2 = b.l / 2, w2 = b.w / 2;
+      mk(-l2, -w2, 0, 'resize', 0); mk(l2, -w2, 0, 'resize', 1);
+      mk(-l2, w2, 0, 'resize', 2); mk(l2, w2, 0, 'resize', 3);
+      mk(0, 0, b.h, 'height', -1);
+      mk(l2 + 1.6, 0, b.h / 2, 'rotate', -1);
+      handlesGroup.traverse((o) => { o.renderOrder = 999; });
+      scene.add(handlesGroup);
+      render();
+    };
+
+    /* 车道线 / 关键点 / 车道线草稿 */
+    let laneObjs = [], kpObjs = [], laneDraftObj = null;
+    const lineMat = (style, highlighted) => style === '虚线'
+      ? new THREE.LineDashedMaterial({ color: highlighted ? 0xfcd34d : 0x22d3ee, dashSize: 0.8, gapSize: 0.5 })
+      : new THREE.LineBasicMaterial({ color: highlighted ? 0xfcd34d : 0x06b6d4 });
+    const lineFromPts = (pts, mat) => {
+      const g = new THREE.BufferGeometry().setFromPoints(pts.map((p) => new THREE.Vector3(p[0], p[1], p[2] || groundZ)));
+      const ln = new THREE.Line(g, mat);
+      if (ln.computeLineDistances) ln.computeLineDistances();
+      return ln;
+    };
+    const rebuildLanes = () => {
+      laneObjs.forEach((o) => clearGroup(o));
+      laneObjs = [];
+      lanes.forEach((ln, i) => {
+        const obj = lineFromPts(ln.points || [], lineMat(ln.style, i === selLane));
+        scene.add(obj);
+        laneObjs.push(obj);
+      });
+      render();
+    };
+    const rebuildKPs = () => {
+      kpObjs.forEach((o) => clearGroup(o));
+      kpObjs = [];
       keypoints.forEach((k) => {
-        const [px, py] = proj([k.x, k.y, k.z]);
-        ctx.strokeStyle = '#22C55E'; ctx.lineWidth = 2 * devicePixelRatio;
-        ctx.beginPath(); ctx.moveTo(px - 4 * devicePixelRatio, py); ctx.lineTo(px + 4 * devicePixelRatio, py);
-        ctx.moveTo(px, py - 4 * devicePixelRatio); ctx.lineTo(px, py + 4 * devicePixelRatio); ctx.stroke();
-        ctx.fillStyle = '#86EFAC'; ctx.font = `${10 * devicePixelRatio}px sans-serif`;
-        ctx.fillText(k.label || '关键点', px + 6 * devicePixelRatio, py - 4 * devicePixelRatio);
+        const g = new THREE.Group();
+        const s = new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 10), new THREE.MeshBasicMaterial({ color: 0x22c55e }));
+        const core = new THREE.Mesh(new THREE.SphereGeometry(0.07, 8, 8), new THREE.MeshBasicMaterial({ color: 0x050912 }));
+        g.add(s); g.add(core);
+        g.position.set(k.x, k.y, k.z);
+        const lb = makeLabel(k.label || '关键点', '#86EFAC');
+        lb.scale.set(2.2, 0.55, 1);
+        lb.position.set(k.x, k.y, k.z + 0.55);
+        scene.add(g); scene.add(lb);
+        kpObjs.push(g, lb);
+      });
+      render();
+    };
+    const rebuildLaneDraft = () => {
+      if (laneDraftObj) { clearGroup(laneDraftObj); laneDraftObj = null; }
+      if (laneDraft && laneDraft.length >= 2) {
+        laneDraftObj = lineFromPts(laneDraft, new THREE.LineBasicMaterial({ color: 0xfcd34d }));
+        scene.add(laneDraftObj);
+      }
+      render();
+    };
+
+    /* ---------- 分割 RLE ---------- */
+    const rleEncode = (idxs) => {
+      const s = Array.from(idxs).sort((a, b) => a - b);
+      const out = [];
+      let i = 0;
+      while (i < s.length) {
+        let j = i;
+        while (j + 1 < s.length && s[j + 1] === s[j] + 1) j++;
+        out.push(s[i], j - i + 1);
+        i = j + 1;
+      }
+      return out;
+    };
+    const rleDecode = (ranges) => {
+      const out = [];
+      for (let i = 0; i < ranges.length; i += 2) {
+        for (let k = 0; k < ranges[i + 1]; k++) out.push(ranges[i] + k);
+      }
+      return out;
+    };
+
+    /* ---------- 2D 覆盖层（屏幕空间草稿/选区） ---------- */
+    const drawOverlay = () => {
+      const ov = overlay();
+      if (!ov) return;
+      const dpr = devicePixelRatio || 1;
+      const w = ov.clientWidth, h = ov.clientHeight;
+      if (ov.width !== w * dpr) { ov.width = w * dpr; ov.height = h * dpr; }
+      const x = ov.getContext('2d');
+      x.setTransform(dpr, 0, 0, dpr, 0, 0);
+      x.clearRect(0, 0, w, h);
+      const css = getComputedStyle(document.documentElement).getPropertyValue('--pc-seg') || '#F59E0B';
+      if (segDraft && segDraft.length) {
+        x.strokeStyle = css;
+        x.setLineDash([5, 3]);
+        x.beginPath();
+        segDraft.forEach(([sx, sy], i) => (i ? x.lineTo(sx, sy) : x.moveTo(sx, sy)));
+        x.stroke();
+        x.setLineDash([]);
+      }
+      if (segRect) {
+        x.strokeStyle = css;
+        x.setLineDash([5, 3]);
+        x.strokeRect(segRect[0], segRect[1], segRect[2], segRect[3]);
+        x.setLineDash([]);
+      }
+    };
+    const toScreen = (v3) => {
+      const v = v3.clone().project(camera);
+      const ov = overlay();
+      return [(v.x + 1) / 2 * ov.clientWidth, (1 - v.y) / 2 * ov.clientHeight];
+    };
+
+    // 3D 框 → 2D 相机画面投影（KITTI 标定：lidar→cam→pixel）
+    const drawCamOverlay = () => {
+      const img = $v('#pc-cam'), ov = $v('#pc-cam-overlay');
+      if (!img || !ov || !img.naturalWidth || !calib) return;
+      const rect = img.getBoundingClientRect();
+      if (!rect.width) return;
+      const dpr = devicePixelRatio || 1;
+      if (ov.width !== Math.floor(rect.width * dpr)) { ov.width = rect.width * dpr; ov.height = rect.height * dpr; }
+      const x = ov.getContext('2d');
+      x.setTransform(dpr, 0, 0, dpr, 0, 0);
+      x.clearRect(0, 0, rect.width, rect.height);
+      const { P2, Tr, R0 } = calib;
+      const proj = (p) => {
+        // lidar -> cam
+        const cx = Tr[0] * p[0] + Tr[1] * p[1] + Tr[2] * p[2] + Tr[3];
+        const cy = Tr[4] * p[0] + Tr[5] * p[1] + Tr[6] * p[2] + Tr[7];
+        const cz = Tr[8] * p[0] + Tr[9] * p[1] + Tr[10] * p[2] + Tr[11];
+        const rx = R0[0] * cx + R0[1] * cy + R0[2] * cz;
+        const ry = R0[3] * cx + R0[4] * cy + R0[5] * cz;
+        const rz = R0[6] * cx + R0[7] * cy + R0[8] * cz;
+        if (rz < 0.6) return null;
+        const u = (P2[0] * rx + P2[1] * ry + P2[2] * rz + P2[3]) / rz;
+        const v = (P2[4] * rx + P2[5] * ry + P2[6] * rz + P2[7]) / rz;
+        return [u / img.naturalWidth * rect.width, v / img.naturalHeight * rect.height];
+      };
+      // 点云投影：近红远蓝，验证点云与图像同帧
+      const projPts = $v('#pc-proj-pts');
+      if (projPts && projPts.checked && points.length) {
+        for (let i = 0; i < points.length; i++) {
+          const s = proj(points[i]);
+          if (!s || s[0] < 0 || s[0] > rect.width || s[1] < 0 || s[1] > rect.height) continue;
+          const t = Math.max(0, Math.min(1, (points[i][0] - 2) / 55));
+          x.fillStyle = `rgb(${Math.round(255 * (1 - t))},60,${Math.round(255 * t)})`;
+          x.fillRect(s[0], s[1], 1.4, 1.4);
+        }
+      }
+      const edges = [[0, 1], [1, 3], [3, 2], [2, 0], [4, 5], [5, 7], [7, 6], [6, 4], [0, 4], [1, 5], [2, 6], [3, 7]];
+      boxes.forEach((b, i) => {
+        const ca = Math.cos(b.yaw || 0), sa = Math.sin(b.yaw || 0);
+        const cs = [];
+        for (const dx of [-b.l / 2, b.l / 2]) for (const dy of [-b.w / 2, b.w / 2]) for (const dz of [0, b.h]) {
+          cs.push(proj([b.x + dx * ca - dy * sa, b.y + dx * sa + dy * ca, b.z + dz]));
+        }
+        const col = selBox === i ? '#FCD34D' : (b.source === 'ai' ? '#22D3EE' : '#FB923C');
+        x.strokeStyle = col;
+        x.lineWidth = selBox === i ? 2.2 : 1.5;
+        x.beginPath();
+        edges.forEach(([a, c2]) => {
+          if (!cs[a] || !cs[c2]) return;
+          x.moveTo(cs[a][0], cs[a][1]);
+          x.lineTo(cs[c2][0], cs[c2][1]);
+        });
+        x.stroke();
+        const top = cs[4] || cs[5] || cs[6] || cs[7];
+        if (top) {
+          x.fillStyle = col;
+          x.font = '600 11px ui-sans-serif, system-ui';
+          x.fillText(`${i + 1}·${b.label}${typeof b.conf === 'number' ? ' ' + b.conf : ''}`, Math.max(2, top[0] + 3), Math.max(12, top[1] - 3));
+        }
       });
     };
+    const render = () => {
+      const c = canvas();
+      if (!c) return;
+      const w = c.clientWidth, h = c.clientHeight;
+      if (!w) return;
+      const r = getRenderer();
+      if (c.width !== Math.floor(w * (devicePixelRatio || 1))) r.setSize(w, h, false);
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+      updateCamera();
+      r.render(scene, camera);
+      grid.position.z = groundZ;
+      drawOverlay();
+      drawCamOverlay();
+      drawHud();
+    };
+
+    const drawHud = () => {
+      const el = $v('#pc-hud');
+      if (!el) return;
+      const segCounts = segs.map((sg) => `${sg.label} ${rleDecode(sg.ranges || []).length}点`).join(' · ');
+      el.textContent = `点 ${points.length.toLocaleString()} · 框 ${boxes.length} · 分割 ${segs.length} 类${segCounts ? '（' + segCounts + '）' : ''} · 帧 ${frames.length} · three.js r${THREE.REVISION}`;
+    };
+
+    /* ---------- 交互 ---------- */
+    const raycaster = new THREE.Raycaster();
+    const ndc = (sx, sy) => {
+      const c = canvas();
+      const r = c.getBoundingClientRect();
+      return new THREE.Vector2(((sx - r.left) / r.width) * 2 - 1, -((sy - r.top) / r.height) * 2 + 1);
+    };
+    const groundPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), -groundZ);
+    const groundHit = (sx, sy) => {
+      raycaster.setFromCamera(ndc(sx, sy), camera);
+      const pt = new THREE.Vector3();
+      return raycaster.ray.intersectPlane(groundPlane, pt) ? pt : null;
+    };
+    let drag = null;
+    let selLane = -1, segRect = null, segDraft = null;
+    const roi = { x0: -60, x1: 60, y0: -60, y1: 60, z0: -3, z1: 5 };
+    let intenRange = [0, 1];
+
+    const bindCanvas = () => {
+      const cvs = canvas();
+      if (!cvs || cvs._pcBound) return;
+      cvs._pcBound = true;
+      cvs.addEventListener('contextmenu', (e) => e.preventDefault());
+      cvs.addEventListener('mousedown', (e) => {
+        if (!wb.canEdit && tool !== 'select' && tool !== 'pan') return;
+        const sx = e.clientX, sy = e.clientY;
+        if (e.button === 2 || e.button === 1 || tool === 'pan') {
+          drag = { mode: 'pan', sx, sy };
+          return;
+        }
+        if (tool === 'select') {
+          raycaster.setFromCamera(ndc(sx, sy), camera);
+          // 把手优先
+          if (handlesGroup) {
+            const hits = raycaster.intersectObjects(handlesGroup.children, false);
+            if (hits.length) {
+              const ud = hits[0].object.userData;
+              drag = { mode: ud.handle, i: selBox, corner: ud.corner };
+              return;
+            }
+          }
+          const fills = boxObjs.map((o) => o.fill);
+          const hits = raycaster.intersectObjects(fills, false);
+          if (hits.length) {
+            selBox = hits[0].object.userData.boxIndex;
+            const g = groundHit(sx, sy);
+            if (g) drag = { mode: 'boxmove', i: selBox, dx: boxes[selBox].x - g.x, dy: boxes[selBox].y - g.y };
+            rebuildBoxes(); drawLists();
+            return;
+          }
+          selBox = -1;
+          rebuildBoxes(); drawLists();
+          drag = { mode: 'orbit', sx, sy };
+          return;
+        }
+        if (tool === 'box') {
+          const g = groundHit(sx, sy);
+          if (g) {
+            boxes.push({
+              x: Math.round(g.x * 10) / 10, y: Math.round(g.y * 10) / 10, z: groundZ,
+              l: Number($v('#pc-l').value) || 4, w: Number($v('#pc-w').value) || 1.8,
+              h: Number($v('#pc-h').value) || 1.6, yaw: 0, label: $v('#pc-label').value || segCls,
+            });
+            selBox = boxes.length - 1;
+            markDirty(wb); drawLists(); rebuildBoxes();
+          }
+          return;
+        }
+        if (tool === 'lane') {
+          const g = groundHit(sx, sy);
+          if (g) { laneDraft = laneDraft || []; laneDraft.push([Math.round(g.x * 10) / 10, Math.round(g.y * 10) / 10, groundZ]); rebuildLaneDraft(); }
+          return;
+        }
+        if (tool === 'keypoint') {
+          const g = groundHit(sx, sy);
+          if (g) {
+            keypoints.push({ x: Math.round(g.x * 10) / 10, y: Math.round(g.y * 10) / 10, z: groundZ, label: $v('#kp-label').value.trim() || '关键点' });
+            markDirty(wb); drawLists(); rebuildKPs();
+          }
+          return;
+        }
+        if (tool === 'segrect') { segRect = [sx - cvs.getBoundingClientRect().left, sy - cvs.getBoundingClientRect().top, 0, 0]; return; }
+        if (tool === 'segpoly') { segDraft = segDraft || []; segDraft.push([sx - cvs.getBoundingClientRect().left, sy - cvs.getBoundingClientRect().top]); drawOverlay(); return; }
+      });
+      cvs.addEventListener('dblclick', () => {
+        if (tool === 'lane' && laneDraft && laneDraft.length >= 2) {
+          lanes.push({ type: $v('#ln-type').value, style: $v('#ln-style').value, points: laneDraft });
+          laneDraft = null;
+          markDirty(wb); drawLists(); rebuildLanes(); rebuildLaneDraft();
+        }
+        if (tool === 'segpoly' && segDraft && segDraft.length >= 3) {
+          applySegPolygon(segDraft);
+          segDraft = null;
+          drawOverlay();
+        }
+      });
+      cvs.addEventListener('mousemove', (e) => {
+        if (!drag && tool !== 'select') return;
+        const sx = e.clientX, sy = e.clientY;
+        if (!drag) return;
+        if (drag.mode === 'orbit') {
+          cam.yaw += (sx - drag.sx) * 0.008;
+          cam.pitch = Math.max(0.05, Math.min(1.45, cam.pitch + (sy - drag.sy) * 0.006));
+          drag.sx = sx; drag.sy = sy;
+          render();
+        } else if (drag.mode === 'pan') {
+          const k = cam.dist / 620;
+          const dx = (sx - drag.sx) * k, dy = (sy - drag.sy) * k;
+          const fwd = new THREE.Vector3();
+          camera.getWorldDirection(fwd);
+          const right = new THREE.Vector3().crossVectors(fwd, camera.up).normalize();
+          const up = new THREE.Vector3().crossVectors(right, fwd).normalize();
+          cam.tx -= right.x * dx - up.x * dy;
+          cam.ty -= right.y * dx - up.y * dy;
+          cam.tz -= right.z * dx - up.z * dy;
+          drag.sx = sx; drag.sy = sy;
+          render();
+        } else if (drag.mode === 'boxmove') {
+          const g = groundHit(sx, sy);
+          if (g) { boxes[drag.i].x = Math.round((g.x + drag.dx) * 10) / 10; boxes[drag.i].y = Math.round((g.y + drag.dy) * 10) / 10; rebuildBoxes(); }
+        } else if (drag.mode === 'resize') {
+          const b = boxes[drag.i];
+          const g = groundHit(sx, sy);
+          if (g) {
+            const ca = Math.cos(b.yaw || 0), sa = Math.sin(b.yaw || 0);
+            const dx = g.x - b.x, dy = g.y - b.y;
+            const lx = Math.abs(dx * ca + dy * sa) * 2;
+            const ly = Math.abs(-dx * sa + dy * ca) * 2;
+            if (drag.corner === 0 || drag.corner === 3) b.l = Math.max(0.4, Math.round(lx * 10) / 10);
+            if (drag.corner === 1 || drag.corner === 2) b.l = Math.max(0.4, Math.round(lx * 10) / 10);
+            if (drag.corner === 0 || drag.corner === 1) b.w = Math.max(0.4, Math.round(ly * 10) / 10);
+            if (drag.corner === 2 || drag.corner === 3) b.w = Math.max(0.4, Math.round(ly * 10) / 10);
+            rebuildBoxes();
+          }
+        } else if (drag.mode === 'height') {
+          const b = boxes[drag.i];
+          // 与过框中心、面向相机的竖直平面求交
+          raycaster.setFromCamera(ndc(sx, sy), camera);
+          const fwd = new THREE.Vector3();
+          camera.getWorldDirection(fwd);
+          const n = new THREE.Vector3(fwd.x, fwd.y, 0).normalize();
+          const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(n, new THREE.Vector3(b.x, b.y, 0));
+          const pt = new THREE.Vector3();
+          if (raycaster.ray.intersectPlane(plane, pt)) {
+            b.h = Math.max(0.3, Math.round((pt.z - b.z) * 10) / 10);
+            rebuildBoxes();
+          }
+        } else if (drag.mode === 'rotate') {
+          const b = boxes[drag.i];
+          const g = groundHit(sx, sy);
+          if (g) { b.yaw = Math.round(Math.atan2(g.y - b.y, g.x - b.x) * 100) / 100; rebuildBoxes(); }
+        } else if (drag.mode === 'segrect') {
+          const r = canvas().getBoundingClientRect();
+          segRect[2] = sx - r.left - segRect[0];
+          segRect[3] = sy - r.top - segRect[1];
+          drawOverlay();
+        }
+      });
+      window.addEventListener('mouseup', () => {
+        if (!drag) return;
+        if (drag.mode === 'segrect' && segRect) {
+          const r = normRect(segRect);
+          if (r[2] > 6 && r[3] > 6) applySegRect(r);
+          segRect = null;
+        }
+        if (drag.mode !== 'orbit' && drag.mode !== 'pan') markDirty(wb);
+        drag = null;
+        drawOverlay();
+      });
+      cvs.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        cam.dist = Math.max(4, Math.min(180, cam.dist * (e.deltaY > 0 ? 1.1 : 0.9)));
+        render();
+      }, { passive: false });
+    };
+    const normRect = (r) => [Math.min(r[0], r[0] + r[2]), Math.min(r[1], r[1] + r[3]), Math.abs(r[2]), Math.abs(r[3])];
+
+    /* ---------- 分割应用 ---------- */
+    const collectSeg = (test) => {
+      const idxs = [];
+      for (let i = 0; i < points.length; i++) {
+        const [sx, sy] = toScreen(new THREE.Vector3(points[i][0], points[i][1], points[i][2]));
+        if (test(sx, sy)) idxs.push(i);
+      }
+      return idxs;
+    };
+    const applySegRect = (r) => {
+      const idxs = collectSeg((x, y) => x >= r[0] && x <= r[0] + r[2] && y >= r[1] && y <= r[1] + r[3]);
+      applySegIdxs(idxs);
+    };
+    const applySegPolygon = (poly) => {
+      const inPoly = (x, y) => {
+        let inside = false;
+        for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+          const [xi, yi] = poly[i], [xj, yj] = poly[j];
+          if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+        }
+        return inside;
+      };
+      applySegIdxs(collectSeg(inPoly));
+    };
+    const applySegIdxs = (idxs) => {
+      if (!idxs.length) return toast('选区内没有点（注意裁剪/强度筛选会过滤点）', 'warn');
+      segs = segs.filter((sg) => sg.label !== segCls);
+      segs.push({ label: segCls, ranges: rleEncode(idxs) });
+      rebuildColors();
+      markDirty(wb); drawLists();
+      toast(`已将 ${idxs.length.toLocaleString()} 点标记为「${segCls}」`, 'ok');
+    };
+
+    /* ---------- 点云文件解析（PCD 二进制/ASCII、PLY、KITTI BIN） ---------- */
+    const loadCloudFile = async (file) => {
+      const buf = await file.arrayBuffer();
+      const name = (file.name || '').toLowerCase();
+      let pts = [], inten = [];
+      try {
+        if (name.endsWith('.bin')) {
+          const f = new Float32Array(buf);
+          const stride = 4;
+          const n = Math.floor(f.length / stride);
+          const step = Math.max(1, Math.floor(n / 120000));
+          for (let i = 0; i < n; i += step) {
+            pts.push([f[i * stride], f[i * stride + 1], f[i * stride + 2]]);
+            inten.push(f[i * stride + 3] || 0);
+          }
+        } else if (name.endsWith('.pcd')) {
+          const headEnd = findSub(buf, 'DATA');
+          const head = new TextDecoder().decode(buf.slice(0, headEnd.end));
+          const fields = /FIELDS\s+([^\n]+)/.exec(head);
+          const dataLine = /DATA\s+(\S+)/.exec(head);
+          const fmt = dataLine ? dataLine[1] : 'ascii';
+          const names = fields ? fields[1].trim().split(/\s+/) : ['x', 'y', 'z'];
+          const ix = names.indexOf('x'), iy = names.indexOf('y'), iz = names.indexOf('z'), ii = names.indexOf('intensity');
+          if (fmt === 'binary') {
+            const off = /OFFSETS\s+([^\n]+)/.exec(head);
+            const sizeM = /SIZE\s+([^\n]+)/.exec(head);
+            const typeM = /TYPE\s+([^\n]+)/.exec(head);
+            const sizes = sizeM ? sizeM[1].trim().split(/\s+/).map(Number) : [4, 4, 4];
+            const types = typeM ? typeM[1].trim().split(/\s+/) : ['F', 'F', 'F'];
+            const offs = off ? off[1].trim().split(/\s+/).map(Number) : sizes.reduce((a, s, i2) => (a.push(i2 ? a[i2 - 1] + sizes[i2 - 1] : 0), a), []);
+            const rowSize = sizes.reduce((a, b2) => a + b2, 0);
+            const dv = new DataView(buf, headEnd.end);
+            const n = Math.floor(dv.byteLength / rowSize);
+            const readF = (o, t, s) => (t === 'F' ? (s === 8 ? dv.getFloat64(o, true) : dv.getFloat32(o, true)) : (t === 'U' ? (s === 4 ? dv.getUint32(o, true) : dv.getUint16(o, true)) : dv.getInt32(o, true)));
+            const step = Math.max(1, Math.floor(n / 120000));
+            for (let i = 0; i < n; i += step) {
+              const base = i * rowSize;
+              pts.push([readF(base + offs[ix], types[ix], sizes[ix]), readF(base + offs[iy], types[iy], sizes[iy]), readF(base + offs[iz], types[iz], sizes[iz])]);
+              if (ii >= 0) inten.push(readF(base + offs[ii], types[ii], sizes[ii]));
+            }
+          } else {
+            new TextDecoder().decode(buf.slice(headEnd.end)).split('\n').forEach((line) => {
+              const parts = line.trim().split(/\s+/).map(Number);
+              if (parts.length >= 3 && parts.every((x) => isFinite(x))) {
+                pts.push([parts[ix], parts[iy], parts[iz]]);
+                if (ii >= 0) inten.push(parts[ii] || 0);
+              }
+            });
+          }
+        } else if (name.endsWith('.ply')) {
+          const headEnd = findSub(buf, 'end_header');
+          const head = new TextDecoder().decode(buf.slice(0, headEnd.end));
+          const fmt = /format\s+(\S+)/.exec(head);
+          const props = [...head.matchAll(/property\s+\S+\s+(\S+)/g)].map((m) => m[1]);
+          const ix = props.indexOf('x'), iy = props.indexOf('y'), iz = props.indexOf('z'), ii = props.indexOf('intensity') >= 0 ? props.indexOf('intensity') : props.indexOf('scalar_intensity');
+          if (fmt && fmt[1] === 'ascii') {
+            new TextDecoder().decode(buf.slice(headEnd.end)).split('\n').forEach((line) => {
+              const parts = line.trim().split(/\s+/).map(Number);
+              if (parts.length >= 3 && parts.every((x) => isFinite(x))) {
+                pts.push([parts[ix], parts[iy], parts[iz]]);
+                if (ii >= 0) inten.push(parts[ii] || 0);
+              }
+            });
+          } else {
+            const dv = new DataView(buf, headEnd.end);
+            const rowSize = props.length * 4;
+            const n = Math.floor(dv.byteLength / rowSize);
+            const step = Math.max(1, Math.floor(n / 120000));
+            for (let i = 0; i < n; i += step) {
+              const base = i * rowSize;
+              const g = (k) => dv.getFloat32(base + k * 4, true);
+              pts.push([g(ix), g(iy), g(iz)]);
+              if (ii >= 0) inten.push(g(ii));
+            }
+          }
+        } else {
+          new TextDecoder().decode(buf).split('\n').forEach((line) => {
+            const parts = line.trim().split(/[\s,]+/).map(Number);
+            if (parts.length >= 3 && parts.every((x) => isFinite(x))) pts.push(parts.slice(0, 3));
+          });
+        }
+      } catch (err) {
+        console.error('点云解析失败', err);
+      }
+      if (!pts.length) return toast('未解析到点云数据', 'err');
+      points = pts;
+      intensity = inten.length === pts.length ? inten : [];
+      if (intensity.length) {
+        const mx = Math.max(...intensity);
+        intenRange = [0, mx];
+        const sl = $v('#pc-inten');
+        if (sl) { sl.min = 0; sl.max = mx; sl.value = mx; $v('#pc-inten-val').textContent = mx.toFixed(1); }
+      }
+      rebuildPointGeometry();
+      markDirty(wb);
+      toast(`已加载 ${pts.length.toLocaleString()} 点${intensity.length ? '（含强度）' : ''}`, 'ok');
+    };
+    const findSub = (buf, str) => {
+      const t = new TextEncoder().encode(str);
+      const u8 = new Uint8Array(buf);
+      for (let i = 0; i < u8.length - t.length; i++) {
+        let ok = true;
+        for (let j = 0; j < t.length; j++) if (u8[i + j] !== t[j]) { ok = false; break; }
+        if (ok) {
+          let end = i;
+          while (end < u8.length && u8[end] !== 10) end++;
+          return { start: i, end: Math.min(end + 1, u8.length) };
+        }
+      }
+      return { start: 0, end: 0 };
+    };
+
+    /* ---------- 帧序列（4D） ---------- */
+    const setFrame = (i) => {
+      const f = frames[i];
+      if (!f) return;
+      boxes = JSON.parse(JSON.stringify(f.boxes || []));
+      keypoints = JSON.parse(JSON.stringify(f.keypoints || []));
+      lanes = JSON.parse(JSON.stringify(f.lanes || []));
+      segs = JSON.parse(JSON.stringify(f.seg || []));
+      if (f.sample && f.sample.length) { points = f.sample.map((p) => p.slice()); intensity = []; }
+      selBox = -1;
+      rebuildPointGeometry(); rebuildBoxes(); rebuildLanes(); rebuildKPs(); drawLists();
+      const tl = $v('#pc-frame-cur');
+      if (tl) tl.textContent = String(i + 1);
+    };
+    const snapshotFrame = () => {
+      frames.push({
+        name: `帧 ${frames.length + 1}`,
+        sample: points.slice(0, 25000),
+        boxes: JSON.parse(JSON.stringify(boxes)),
+        keypoints: JSON.parse(JSON.stringify(keypoints)),
+        lanes: JSON.parse(JSON.stringify(lanes)),
+        seg: JSON.parse(JSON.stringify(segs)),
+      });
+      drawLists(); markDirty(wb);
+      toast(`已保存第 ${frames.length} 帧`, 'ok');
+    };
+    const playFrames = () => {
+      if (playing) {
+        playing = false;
+        clearInterval(playTimer);
+        $v('#pc-play').textContent = '播放';
+        return;
+      }
+      if (frames.length < 2) return toast('至少需要 2 帧才能播放', 'warn');
+      playing = true;
+      $v('#pc-play').textContent = '暂停';
+      let i = Number($v('#pc-frame-cur').textContent || '1') - 1;
+      playTimer = setInterval(() => {
+        i = (i + 1) % frames.length;
+        setFrame(i);
+      }, 600);
+    };
+
+    /* ---------- 列表 ---------- */
     const drawLists = () => {
-      $v('#pc-list').innerHTML = boxes.map((b, i) => `<div style="display:flex;gap:8px;padding:5px 0;border-bottom:1px solid rgba(30,42,63,.5)"><span class="tag">${esc(b.label)}</span><span class="sub">(${b.x},${b.y},${b.z}) L${b.l} W${b.w} H${b.h}</span><button class="btn ghost danger" data-del-3d="${i}" style="margin-left:auto">删除</button></div>`).join('') || '<div class="empty">暂无 3D 框</div>';
+      $v('#pc-list').innerHTML = boxes.map((b, i) => `<div style="display:flex;gap:8px;padding:5px 0;border-bottom:1px solid rgba(30,42,63,.5);align-items:center;${i === selBox ? 'background:rgba(252,211,77,.08)' : ''}">
+        <span class="tag">${esc(b.label)}</span><span class="sub">(${b.x},${b.y},${b.z}) L${b.l} W${b.w} H${b.h} ${((b.yaw || 0) * 57.3).toFixed(0)}°</span>
+        ${b.source === 'ai' ? `<span class="chip info" title="AI 预标注，请核对">AI ${typeof b.conf === 'number' ? b.conf : ''}</span>` : ''}
+        <button class="btn ghost sm" data-cp-box="${i}" title="复制盒参数">复制</button>
+        <button class="btn ghost danger" data-del-3d="${i}">删除</button></div>`).join('') || '<div class="empty">暂无 3D 框</div>';
       $v('#pc-kps').innerHTML = keypoints.map((k, i) => `<div style="display:flex;gap:8px;padding:5px 0;border-bottom:1px solid rgba(30,42,63,.5)"><span class="tag">${esc(k.label)}</span><span class="sub">(${k.x},${k.y},${k.z})</span><button class="btn ghost danger" data-del-kp="${i}" style="margin-left:auto">删除</button></div>`).join('') || '<div class="empty">暂无关键点</div>';
-      $v('#pc-lanes').innerHTML = lanes.map((ln, i) => `<div style="display:flex;gap:8px;padding:5px 0;border-bottom:1px solid rgba(30,42,63,.5)"><span class="tag">${esc(ln.type)}</span><span class="sub">${esc(ln.style)} · ${(ln.points || []).length} 点</span><button class="btn ghost danger" data-del-lane="${i}" style="margin-left:auto">删除</button></div>`).join('') || '<div class="empty">暂无车道线</div>';
-      $v('#pc-frames').innerHTML = frames.map((f, i) => `<div style="display:flex;gap:8px;padding:5px 0;border-bottom:1px solid rgba(30,42,63,.5)"><span class="tag">帧 ${i + 1}</span><span class="sub">${(f.boxes || []).length} 框 · ${(f.keypoints || []).length} 关键点</span><button class="btn ghost" data-load-f="${i}" style="margin-left:auto">载入</button><button class="btn ghost danger" data-del-f="${i}">删除</button></div>`).join('') || '<div class="empty">暂无帧快照</div>';
-      $$v('[data-del-3d]').forEach((b) => { b.onclick = () => { boxes.splice(Number(b.dataset.del3d), 1); draw(); drawLists(); markDirty(wb); }; });
-      $$v('[data-del-kp]').forEach((b) => { b.onclick = () => { keypoints.splice(Number(b.dataset.delKp), 1); draw(); drawLists(); markDirty(wb); }; });
-      $$v('[data-del-lane]').forEach((b) => { b.onclick = () => { lanes.splice(Number(b.dataset.delLane), 1); draw(); drawLists(); markDirty(wb); }; });
+      $v('#pc-lanes').innerHTML = lanes.map((ln, i) => `<div style="display:flex;gap:8px;padding:5px 0;border-bottom:1px solid rgba(30,42,63,.5);align-items:center;${i === selLane ? 'background:rgba(34,211,238,.08)' : ''}"><span class="tag">${esc(ln.type)}</span><span class="sub">${esc(ln.style)} · ${(ln.points || []).length} 点</span><button class="btn ghost sm" data-cp-lane="${i}" title="复制到相邻帧/批量标注">复用</button><button class="btn ghost danger" data-del-lane="${i}">删除</button></div>`).join('') || '<div class="empty">暂无车道线</div>';
+      $v('#pc-segs').innerHTML = segs.map((sg, i) => `<div style="display:flex;gap:8px;padding:5px 0;border-bottom:1px solid rgba(30,42,63,.5);align-items:center"><i style="width:10px;height:10px;border-radius:2px;background:#F59E0B"></i><span class="tag">${esc(sg.label)}</span><span class="sub">${rleDecode(sg.ranges || []).length.toLocaleString()} 点</span><button class="btn ghost danger" data-del-seg="${i}" style="margin-left:auto">清除</button></div>`).join('') || '<div class="empty">暂无分割：框选或多边形圈选点后标记类别</div>';
+      $v('#pc-frames').innerHTML = frames.map((f, i) => `<div style="display:flex;gap:8px;padding:5px 0;border-bottom:1px solid rgba(30,42,63,.5);align-items:center"><span class="tag">帧 ${i + 1}</span><span class="sub">${(f.boxes || []).length} 框 · ${(f.lanes || []).length} 车道线 · ${(f.seg || []).length} 分割</span><button class="btn ghost sm" data-load-f="${i}" style="margin-left:auto">载入</button><button class="btn ghost sm" data-cp-f="${i}" title="把当前标注复制到该帧">写入</button><button class="btn ghost danger" data-del-f="${i}">删除</button></div>`).join('') || '<div class="empty">暂无帧：点「+帧快照」把当前帧加入时间轴</div>';
+      $$v('[data-del-3d]').forEach((b) => { b.onclick = () => { boxes.splice(Number(b.dataset.del3d), 1); if (selBox >= boxes.length) selBox = -1; drawLists(); rebuildBoxes(); markDirty(wb); }; });
+      $$v('[data-cp-box]').forEach((b) => { b.onclick = () => { const src = boxes[Number(b.dataset.cpBox)]; boxes.push({ ...JSON.parse(JSON.stringify(src)), x: src.x + 1.5 }); drawLists(); rebuildBoxes(); markDirty(wb); toast('已复制盒参数（偏移 1.5m）', 'ok'); }; });
+      $$v('[data-del-kp]').forEach((b) => { b.onclick = () => { keypoints.splice(Number(b.dataset.delKp), 1); drawLists(); rebuildKPs(); markDirty(wb); }; });
+      $$v('[data-del-lane]').forEach((b) => { b.onclick = () => { lanes.splice(Number(b.dataset.delLane), 1); drawLists(); rebuildLanes(); markDirty(wb); }; });
+      $$v('[data-cp-lane]').forEach((b) => { b.onclick = () => { const src = lanes[Number(b.dataset.cpLane)]; lanes.push(JSON.parse(JSON.stringify(src))); drawLists(); rebuildLanes(); markDirty(wb); toast('已复用车道线（可用于相邻/转向车道批量标注）', 'ok'); }; });
+      $$v('[data-del-seg]').forEach((b) => { b.onclick = () => { segs.splice(Number(b.dataset.delSeg), 1); rebuildColors(); drawLists(); markDirty(wb); }; });
       $$v('[data-del-f]').forEach((b) => { b.onclick = () => { frames.splice(Number(b.dataset.delF), 1); drawLists(); markDirty(wb); }; });
-      $$v('[data-load-f]').forEach((b) => {
-        b.onclick = () => {
-          const f = frames[Number(b.dataset.loadF)];
-          if (!f) return;
-          boxes.length = 0; boxes.push(...JSON.parse(JSON.stringify(f.boxes || [])));
-          keypoints.length = 0; keypoints.push(...JSON.parse(JSON.stringify(f.keypoints || [])));
-          draw(); drawLists(); markDirty(wb);
-        };
-      });
+      $$v('[data-load-f]').forEach((b) => { b.onclick = () => setFrame(Number(b.dataset.loadF)); });
+      $$v('[data-cp-f]').forEach((b) => { b.onclick = () => { const i = Number(b.dataset.cpF); frames[i] = { ...frames[i], boxes: JSON.parse(JSON.stringify(boxes)), keypoints: JSON.parse(JSON.stringify(keypoints)), lanes: JSON.parse(JSON.stringify(lanes)), seg: JSON.parse(JSON.stringify(segs)) }; drawLists(); markDirty(wb); toast(`当前标注已写入帧 ${i + 1}`, 'ok'); }; });
+      drawHud();
     };
-    wb.customPayload = () => ({ media_type: 'pointcloud', boxes, keypoints, lanes, frames, category, attrs, sample: points.slice(0, 4000) });
-    wbShell(wb, wb.task.name, `${chip('3D 点云')}${chip(wb.project ? wb.project.name : '')}${chip(`框 ${boxes.length}`)}${chip(`关键点 ${keypoints.length}`)}`, `
-      <div class="image-panel"><div class="image-toolbar"><span>点云预览（拖拽旋转 / 滚轮缩放）</span><span class="spacer"></span>
-        <select class="select" id="pc-color" style="width:96px;height:26px"><option value="depth">按深度</option><option value="height">按高度</option><option value="distance">按距离</option></select>
-        <input class="input" id="pc-min" type="number" placeholder="最近 m" style="width:74px;height:26px" value="0">
-        <input class="input" id="pc-max" type="number" placeholder="最远 m" style="width:74px;height:26px" value="80">
-        <button class="btn ghost" id="pc-load">加载点云</button></div>
-        <div class="image-stage" id="pc-stage" style="min-height:420px;cursor:grab"><canvas id="pc-canvas" style="width:100%;height:420px;display:block"></canvas></div></div>`,
-      `<div class="card"><div class="card-head"><h3 class="card-title">3D 检测框</h3></div><div class="card-body">
-        <div class="grid" style="grid-template-columns:1fr 1fr">
-          <div class="field"><label>X</label><input class="input" id="pc-x" value="0"></div><div class="field"><label>Y</label><input class="input" id="pc-y" value="0"></div>
-          <div class="field"><label>Z</label><input class="input" id="pc-z" value="0"></div><div class="field"><label>长 L</label><input class="input" id="pc-l" value="4"></div>
-          <div class="field"><label>宽 W</label><input class="input" id="pc-w" value="2"></div><div class="field"><label>高 H</label><input class="input" id="pc-h" value="1.6"></div>
+
+    wb.customPayload = () => ({
+      media_type: 'pointcloud',
+      boxes, keypoints, lanes, frames, category, attrs,
+      seg: segs,
+      sample: points.slice(0, 25000),
+      intensity: intensity.slice(0, 25000),
+    });
+
+    /* ---------- 布局 ---------- */
+    const camImg = (wb.media || []).find((m) => m.kind === 'image');
+    wbShell(wb, wb.task.name, `${chip('3D 点云')}${chip(wb.project ? wb.project.name : '')}${chip(`框 ${boxes.length}`)}${chip(`分割 ${segs.length} 类`)}${chip(`帧 ${frames.length}`)}`, `
+      <div class="image-panel">
+        <div class="image-toolbar" style="flex-wrap:wrap;gap:6px">
+          ${[['select', '选择'], ['box', '画 3D 框'], ['segrect', '框选分割'], ['segpoly', '多边形分割'], ['lane', '车道线'], ['keypoint', '关键点'], ['pan', '平移']].map(([k, label]) => `<button class="img-tool pc-tool ${k === 'select' ? 'active' : ''}" data-pctool="${k}">${label}</button>`).join('')}
+          <select class="select" id="pc-segcls" style="width:88px;height:26px">${classes.map((c) => `<option>${esc(c)}</option>`).join('')}</select>
+          <span class="spacer"></span>
+          <span class="hint">地面Z</span><input class="input" id="pc-ground" type="number" step="0.1" value="-1.7" style="width:64px;height:26px">
+          <select class="select" id="pc-color" style="width:90px;height:26px"><option value="height">按高度</option><option value="distance">按距离</option></select>
+          强度 <input type="range" id="pc-inten" min="0" max="1" step="0.05" value="1" style="width:80px"><span class="hint" id="pc-inten-val">—</span>
+          <button class="btn sm ghost" id="pc-home" title="回到与 2D 相机一致的视角">对齐视角</button>
+          <button class="btn sm primary" id="pc-ai" title="内置聚类+PCA 自动检测目标，生成 AI 预标注框供核对">AI 预标注</button>
+          <button class="btn sm ghost" id="pc-load">${icon('upload')} 加载点云</button><input type="file" id="pc-file" accept=".pcd,.ply,.bin,.txt" hidden>
         </div>
-        <div class="field"><label>类别</label><input class="input" id="pc-label" value="轿车"></div>
-        <button class="btn primary" id="pc-add">添加 3D 框</button>
-        <div id="pc-list" style="margin-top:12px"></div>
+        <div style="display:grid;grid-template-columns:3fr 2fr;gap:10px;align-items:stretch">
+          <div class="image-stage" id="pc-stage" style="min-height:460px;cursor:crosshair;position:relative;margin:0">
+            <canvas id="pc-canvas" style="width:100%;height:460px;display:block"></canvas>
+            <canvas id="pc-overlay" style="position:absolute;inset:0;width:100%;height:460px;pointer-events:none"></canvas>
+          </div>
+          <div class="card" style="margin:0;display:flex;flex-direction:column;min-width:0">
+            <div class="card-head" style="padding:8px 12px"><h3 class="card-title" style="font-size:12px">2D 相机画面${calib ? ' · 3D 框实时投影' : ''}</h3>
+              ${calib ? '<label class="toggle-wrap" style="margin-left:auto"><input type="checkbox" id="pc-proj-pts" /> 投影点云</label>' : ''}
+              <span class="card-sub">${esc(camImg ? camImg.name : '未挂载')}</span></div>
+            <div class="card-body" style="padding:8px;flex:1;display:flex;align-items:center;min-height:0">
+              ${camImg ? `<div style="position:relative;width:100%">
+                  <img id="pc-cam" src="${camImg.url}" style="width:100%;border-radius:6px;border:1px solid var(--border);display:block" />
+                  <canvas id="pc-cam-overlay" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none"></canvas>
+                </div>`
+                : '<div class="empty" style="width:100%">该任务未挂载相机图</div>'}
+            </div>
+          </div>
+        </div>
+        <div class="image-status" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+          <span id="pc-hud">点 0 · 框 0</span>
+          <span class="spacer"></span>
+          <span class="hint">ROI 裁剪</span>
+          <input class="input" id="roi-x0" placeholder="x≥" style="width:52px;height:24px" value="-60"><input class="input" id="roi-x1" placeholder="x≤" style="width:52px;height:24px" value="60">
+          <input class="input" id="roi-y0" placeholder="y≥" style="width:52px;height:24px" value="-60"><input class="input" id="roi-y1" placeholder="y≤" style="width:52px;height:24px" value="60">
+          <input class="input" id="roi-z0" placeholder="z≥" style="width:52px;height:24px" value="-3"><input class="input" id="roi-z1" placeholder="z≤" style="width:52px;height:24px" value="5">
+        </div>
+        <div class="filters" style="margin-top:8px;align-items:center">
+          <b style="font-size:12px">4D 帧序列</b>
+          <button class="btn sm" id="pc-snap">+ 帧快照</button>
+          <button class="btn sm ghost" id="pc-play">播放</button>
+          <button class="btn sm ghost" id="pc-prev">上一帧</button>
+          <button class="btn sm ghost" id="pc-next">下一帧</button>
+          <span class="tag">当前帧 <b id="pc-frame-cur">—</b> / ${frames.length}</span>
+          <span class="hint">首帧标注后复制到后续帧，再逐帧微调即帧间追踪</span>
+        </div>
+      </div>
+      `,
+      `<div class="card"><div class="card-head"><h3 class="card-title">3D 检测框</h3><span class="card-sub">画布点击地面放置，拖动把手调尺寸/旋转</span></div><div class="card-body">
+        <div class="grid" style="grid-template-columns:1fr 1fr 1fr">
+          <div class="field"><label>长 L</label><input class="input" id="pc-l" value="4"></div>
+          <div class="field"><label>宽 W</label><input class="input" id="pc-w" value="1.8"></div>
+          <div class="field"><label>高 H</label><input class="input" id="pc-h" value="1.6"></div>
+        </div>
+        <div class="field"><label>类别</label><input class="input" id="pc-label" value="${esc(classes[0])}"></div>
+        <div id="pc-list" style="margin-top:10px"></div>
+      </div></div>
+      <div class="card"><div class="card-head"><h3 class="card-title">语义 / 实例分割</h3></div><div class="card-body">
+        <div class="hint" style="margin-bottom:6px">框选或多边形圈选点云区域后，按当前类别写入分割；同类别互相覆盖，实例请用不同类别（如 轿车-1 / 轿车-2）。</div>
+        <div id="pc-segs"></div>
       </div></div>
       <div class="card"><div class="card-head"><h3 class="card-title">关键点</h3></div><div class="card-body">
-        <div class="filters"><input class="input" id="kp-x" placeholder="X" style="width:56px"><input class="input" id="kp-y" placeholder="Y" style="width:56px"><input class="input" id="kp-z" placeholder="Z" style="width:56px"><input class="input" id="kp-label" placeholder="名称" style="width:88px"></div>
-        <button class="btn ghost" id="kp-add" style="margin-top:6px">添加关键点</button>
+        <div class="filters"><input class="input" id="kp-label" placeholder="名称" style="width:110px"></div>
+        <div class="hint" style="margin-top:4px">切到「关键点」工具，在点云地面点击放置。</div>
         <div id="pc-kps" style="margin-top:8px"></div>
       </div></div>
       <div class="card"><div class="card-head"><h3 class="card-title">车道线</h3></div><div class="card-body">
         <div class="filters"><select class="select" id="ln-type" style="width:88px">${['直道', '弯道', '匝道', '路口'].map((x) => `<option>${x}</option>`).join('')}</select><select class="select" id="ln-style" style="width:76px"><option>实线</option><option>虚线</option></select></div>
-        <div class="filters" style="margin-top:6px"><input class="input" id="ln-x1" placeholder="起点X" style="width:62px"><input class="input" id="ln-y1" placeholder="起点Y" style="width:62px"><input class="input" id="ln-x2" placeholder="终点X" style="width:62px"><input class="input" id="ln-y2" placeholder="终点Y" style="width:62px"></div>
-        <button class="btn ghost" id="ln-add" style="margin-top:6px">添加车道线</button>
+        <div class="hint" style="margin-top:4px">「车道线」工具连续点击地面取点，双击结束；支持折线/曲线点列与相邻车道复用。</div>
         <div id="pc-lanes" style="margin-top:8px"></div>
       </div></div>
-      <div class="card"><div class="card-head"><h3 class="card-title">场景分类 / 4D 帧序列</h3></div><div class="card-body">
+      <div class="card"><div class="card-head"><h3 class="card-title">场景分类 / 帧序列</h3></div><div class="card-body">
         <div class="field"><label>场景分类</label><input class="input" id="pc-cat" value="${esc(category)}" placeholder="城市道路/高速/停车场"></div>
         <div class="field"><label>属性（逗号分隔）</label><input class="input" id="pc-attrs" value="${esc(attrs)}" placeholder="白天,雨天"></div>
-        <button class="btn ghost" id="pc-snap">复制当前帧到帧序列</button>
         <div id="pc-frames" style="margin-top:8px"></div>
       </div></div>`);
-    const stage = $v('#pc-stage');
-    let dragging = null;
-    stage.onmousedown = (e) => { dragging = e.clientX; };
-    window.addEventListener('mouseup', () => { dragging = null; });
-    stage.onmousemove = (e) => { if (dragging !== null) { yaw += (e.clientX - dragging) * 0.01; dragging = e.clientX; draw(); } };
-    stage.onwheel = (e) => { e.preventDefault(); scale = Math.max(0.3, Math.min(4, scale * (e.deltaY > 0 ? 0.92 : 1.08))); draw(); };
-    $v('#pc-color').onchange = (e) => { colorMode = e.target.value; draw(); };
-    $v('#pc-min').onchange = (e) => { minD = Number(e.target.value) || 0; draw(); };
-    $v('#pc-max').onchange = (e) => { maxD = Number(e.target.value) || 80; draw(); };
-    $v('#pc-load').onclick = async () => {
-      if (!wb.mediaName) return toast('该任务没有点云文件', 'err');
-      const r = await fetch(`/media/${encodeURIComponent(wb.mediaName)}`, { credentials: 'same-origin' });
-      const txt = await r.text();
-      points = [];
-      txt.split('\n').forEach((line) => {
-        const parts = line.trim().split(/\s+/).map(Number);
-        if (parts.length >= 3 && parts.every((x) => isFinite(x))) points.push(parts.slice(0, 3));
-      });
-      if (!points.length) toast('未解析到点云坐标（仅支持 ASCII PCD/PLY）', 'err');
-      draw();
-    };
-    $v('#pc-add').onclick = () => {
-      boxes.push({ x: Number($v('#pc-x').value) || 0, y: Number($v('#pc-y').value) || 0, z: Number($v('#pc-z').value) || 0, l: Number($v('#pc-l').value) || 1, w: Number($v('#pc-w').value) || 1, h: Number($v('#pc-h').value) || 1, yaw: 0, label: $v('#pc-label').value || '目标' });
-      draw(); drawLists(); markDirty(wb);
-    };
-    $v('#kp-add').onclick = () => {
-      const x = Number($v('#kp-x').value), y = Number($v('#kp-y').value), z = Number($v('#kp-z').value) || 0;
-      if (!isFinite(x) || !isFinite(y)) return toast('请填写关键点坐标', 'err');
-      keypoints.push({ x, y, z, label: $v('#kp-label').value.trim() || '关键点' });
-      draw(); drawLists(); markDirty(wb);
-    };
-    $v('#ln-add').onclick = () => {
-      const p1 = [Number($v('#ln-x1').value), Number($v('#ln-y1').value), 0];
-      const p2 = [Number($v('#ln-x2').value), Number($v('#ln-y2').value), 0];
-      if (!p1.every(isFinite) || !p2.every(isFinite)) return toast('请填写车道线起终点', 'err');
-      lanes.push({ type: $v('#ln-type').value, style: $v('#ln-style').value, points: [p1, p2] });
-      draw(); drawLists(); markDirty(wb);
-    };
+
+    /* ---------- 事件绑定 ---------- */
+    $$v('.pc-tool').forEach((b) => {
+      b.onclick = () => {
+        tool = b.dataset.pctool;
+        $$v('.pc-tool').forEach((x) => x.classList.toggle('active', x === b));
+        const cvs = canvas();
+        if (cvs) cvs.style.cursor = tool === 'pan' ? 'grab' : tool === 'select' ? 'default' : 'crosshair';
+      };
+    });
+    $v('#pc-segcls').onchange = (e) => { segCls = e.target.value; $v('#pc-label').value = segCls; };
+    $v('#pc-ground').onchange = (e) => { groundZ = Number(e.target.value) || 0; groundPlane.constant = -groundZ; render(); };
+    $v('#pc-color').onchange = () => rebuildColors();
+    $v('#pc-inten').oninput = (e) => { intenRange[1] = Number(e.target.value); $v('#pc-inten-val').textContent = Number(e.target.value).toFixed(1); rebuildColors(); };
+    [['roi-x0', 'x0'], ['roi-x1', 'x1'], ['roi-y0', 'y0'], ['roi-y1', 'y1'], ['roi-z0', 'z0'], ['roi-z1', 'z1']].forEach(([id, key]) => {
+      $v(`#${id}`).onchange = (e) => { roi[key] = Number(e.target.value) || 0; rebuildColors(); };
+    });
+    $v('#pc-load').onclick = () => $v('#pc-file').click();
+    $v('#pc-file').onchange = (e) => { const f = e.target.files[0]; if (f) loadCloudFile(f); e.target.value = ''; };
     $v('#pc-cat').onchange = (e) => { category = e.target.value.trim(); };
     $v('#pc-attrs').onchange = (e) => { attrs = e.target.value.split(',').map((x) => x.trim()).filter(Boolean).join(','); };
-    $v('#pc-snap').onclick = () => {
-      frames.push({ boxes: JSON.parse(JSON.stringify(boxes)), keypoints: JSON.parse(JSON.stringify(keypoints)) });
-      drawLists(); markDirty(wb); toast(`已保存第 ${frames.length} 帧`, 'ok');
+    $v('#pc-snap').onclick = snapshotFrame;
+    $v('#pc-play').onclick = playFrames;
+    $v('#pc-prev').onclick = () => { const i = Math.max(0, (Number($v('#pc-frame-cur').textContent || '1') - 2)); if (frames[i]) setFrame(i); };
+    $v('#pc-next').onclick = () => { const i = Math.min(frames.length - 1, Number($v('#pc-frame-cur').textContent || '0')); if (frames[i]) setFrame(i); };
+    // 内置 AI 预标注：地面滤除 → 网格聚类 → PCA 拟合 3D 框（可接外部检测算子替换）
+    const autoLabel = () => {
+      if (!points.length) return toast('请先加载点云', 'warn');
+      const zs = points.map((p) => p[2]).sort((a, b) => a - b);
+      const zGround = zs[Math.floor(zs.length * 0.08)] + 0.05;
+      const cell = 0.6;
+      const grid = new Map();
+      const kept = [];
+      points.forEach((p, i) => {
+        const [x, y, z] = p;
+        if (z < zGround + 0.25 || z > zGround + 2.6) return;
+        if (Math.hypot(x, y) > 55 || x < roi.x0 || x > roi.x1 || y < roi.y0 || y > roi.y1) return;
+        kept.push(i);
+        const key = `${Math.round(x / cell)},${Math.round(y / cell)}`;
+        if (!grid.has(key)) grid.set(key, []);
+        grid.get(key).push(i);
+      });
+      if (!kept.length) return toast('滤除地面后没有剩余点', 'warn');
+      // BFS 聚类（6 邻域膨胀一格）
+      const seen = new Set();
+      const clusters = [];
+      const keyOf = (x, y) => `${Math.round(points[x][0] / cell)},${Math.round(points[x][1] / cell)}`;
+      kept.forEach((start) => {
+        if (seen.has(start)) return;
+        const stack = [start];
+        const cl = [];
+        seen.add(start);
+        while (stack.length) {
+          const i = stack.pop();
+          cl.push(i);
+          const [x, y] = points[i];
+          const cx = Math.round(x / cell), cy = Math.round(y / cell);
+          for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+            const bucket = grid.get(`${cx + dx},${cy + dy}`);
+            if (!bucket) continue;
+            bucket.forEach((j) => {
+              if (!seen.has(j)) { seen.add(j); stack.push(j); }
+            });
+          }
+        }
+        clusters.push(cl);
+      });
+      const found = [];
+      clusters.forEach((cl) => {
+        if (cl.length < 25 || cl.length > 6000) return;
+        let cx = 0, cy = 0, zmax = -Infinity, zmin = Infinity;
+        cl.forEach((i) => {
+          cx += points[i][0]; cy += points[i][1];
+          if (points[i][2] > zmax) zmax = points[i][2];
+          if (points[i][2] < zmin) zmin = points[i][2];
+        });
+        cx /= cl.length; cy /= cl.length;
+        if (zmax - zmin < 0.55) return; // 排除立面/地面残片
+        // PCA（2x2 协方差）
+        let sxx = 0, sxy = 0, syy = 0;
+        cl.forEach((i) => {
+          const dx = points[i][0] - cx, dy = points[i][1] - cy;
+          sxx += dx * dx; sxy += dx * dy; syy += dy * dy;
+        });
+        const theta = 0.5 * Math.atan2(2 * sxy, sxx - syy);
+        const ct = Math.cos(theta), st = Math.sin(theta);
+        let uMin = Infinity, uMax = -Infinity, vMin = Infinity, vMax = -Infinity;
+        cl.forEach((i) => {
+          const dx = points[i][0] - cx, dy = points[i][1] - cy;
+          const u = dx * ct + dy * st, v = -dx * st + dy * ct;
+          if (u < uMin) uMin = u; if (u > uMax) uMax = u;
+          if (v < vMin) vMin = v; if (v > vMax) vMax = v;
+        });
+        const l = uMax - uMin + 0.3, w = vMax - vMin + 0.3, h = zmax - zGround + 0.15;
+        if (l < 1.2 || l > 7 || w < 0.7 || w > 3 || h < 0.8 || h > 2.4) return;
+        const density = cl.length / (l * w);
+        if (density < 14) return; // 排除树木/围栏等稀疏簇
+        const yaw = Math.round(Math.atan2(st, ct) * 100) / 100;
+        found.push({
+          x: Math.round(cx * 10) / 10, y: Math.round(cy * 10) / 10, z: Math.round(zGround * 100) / 100,
+          l: Math.round(l * 10) / 10, w: Math.round(w * 10) / 10, h: Math.round(h * 10) / 10,
+          yaw, label: $v('#pc-label').value || segCls,
+          source: 'ai', auto_cls: 'auto-cluster',
+          conf: Math.round(Math.min(0.95, 0.55 + cl.length / 300) * 100) / 100,
+        });
+      });
+      if (!found.length) return toast('未检测到有效目标（可放宽 ROI/强度筛选后重试）', 'warn');
+      const manual = boxes.filter((b) => b.source !== 'ai');
+      boxes = [...manual, ...found];
+      selBox = -1;
+      markDirty(wb); drawLists(); rebuildBoxes();
+      toast(`AI 预标注 ${found.length} 个目标（置信度见列表），请逐框核对`, 'ok');
     };
+    $v('#pc-ai').onclick = autoLabel;
+    $v('#pc-home').onclick = () => { Object.assign(cam, DEFAULT_CAM); render(); };
+    window.addEventListener('resize', render);
+    bindCanvas();
+    const camEl = $v('#pc-cam');
+    if (camEl) camEl.onload = () => render();
+    const projChk = $v('#pc-proj-pts');
+    if (projChk) projChk.onchange = () => render();
+    rebuildPointGeometry();
+    rebuildBoxes();
+    rebuildLanes();
+    rebuildKPs();
     drawLists();
-    draw();
+    render();
   };
+
 
   WB.multimodal = (wb) => {
     const payload = (state.current.annotation && state.current.annotation.payload) || {};
@@ -1957,21 +2848,22 @@
   /* ------------------------------------------------------------------ 通知 */
   async function openNotifications() {
     const data = await api('/api/notifications');
+    // 打开即视为已读：角标即时清零，无需手动刷新
+    if (data.unread > 0) {
+      api('/api/notifications/read-all', { method: 'POST', body: {} }).then(() => {
+        const dot = document.getElementById('notif-dot');
+        if (dot) dot.style.display = 'none';
+      }).catch(() => {});
+    }
     openModal(`<div class="card-head"><h3 class="card-title">通知中心</h3><button class="btn ghost" style="margin-left:auto" onclick="closeModal()">关闭</button></div>
       <div class="card-body">
-        <div class="filters"><button class="btn ghost" id="n-readall">全部已读</button><span class="spacer"></span><span class="hint">未读 ${data.unread}</span></div>
+        <div class="filters"><span class="hint">${data.unread > 0 ? `打开时已标记 ${data.unread} 条为已读` : '没有未读通知'}</span></div>
         ${data.notifications.map((n) => `<div style="display:flex;gap:10px;padding:9px 0;border-bottom:1px solid rgba(30,42,63,.5);opacity:${n.read_at ? '.6' : '1'}">
           <span class="chip ${n.kind === 'rework' ? 'danger' : n.kind === 'qc' ? 'done' : 'pending'}">${esc(n.kind)}</span>
           <div><b style="font-size:12.5px">${esc(n.title)}</b><div class="sub">${esc(n.body || '')} · ${time(n.created_at)}</div></div>
           ${n.link ? `<a class="btn ghost" href="${esc(n.link)}" style="margin-left:auto" onclick="closeModal()">查看</a>` : ''}
         </div>`).join('') || '<div class="empty">暂无通知</div>'}
       </div>`);
-    $v('#n-readall').onclick = async () => {
-      await api('/api/notifications/read-all', { method: 'POST', body: {} });
-      const dot = document.getElementById('notif-dot');
-      if (dot) dot.style.display = 'none';
-      toast('已全部已读', 'ok'); closeModal();
-    };
   }
 
   /* ------------------------------------------------------------------ 运营服务 */

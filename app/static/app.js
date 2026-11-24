@@ -73,7 +73,8 @@ const SPK_COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#8B5CF6', '#06B6D4', '#EF4
 const BOX_COLORS = {
   '商品主体': '#3B82F6', '价签': '#10B981', '货架': '#F59E0B', '遮挡': '#EF4444',
   '清晰': '#22C55E', '模糊': '#F97316', '过曝': '#E879F9',
-  '行人': '#A855F7', '骑行者': '#06B6D4', '轿车': '#22D3EE', '卡车': '#EC4899',
+  '行人': '#A855F7', '骑行者': '#06B6D4', '轿车': '#22D3EE', '货车': '#F59E0B',
+  '卡车': '#EC4899', '公交车': '#8B5CF6',
 };
 const boxColor = (c) => BOX_COLORS[c] || '#64748B';
 /* 按类型给出的常用名称候选，供名称输入框下拉快速选择 */
@@ -83,10 +84,11 @@ const NAME_SUGGEST = {
   '货架': ['货架', '端架', '堆头', '陈列架', '层板'],
   '遮挡': ['遮挡', '被遮挡商品', '反光遮挡', '人物遮挡', '杂物遮挡'],
   '清晰': ['清晰'], '模糊': ['模糊'], '过曝': ['过曝'],
-  '行人': ['顾客', '店员', '行人'],
-  '骑行者': ['外卖骑手', '骑行者'],
-  '轿车': ['轿车', 'SUV', '出租车'],
-  '卡车': ['货车', '公交车', '卡车'],
+  '行人': ['行人', '过街行人', '候车行人', '成年男性', '成年女性', '儿童', '老人'],
+  '骑行者': ['自行车骑手', '电动车骑手', '外卖骑手'],
+  '轿车': ['出租车', '私家车', '网约车', 'SUV', '警车', '教练车'],
+  '货车': ['厢式货车', '物流车', '卡车', '冷链车', '渣土车'],
+  '公交车': ['公交车', '大巴', '中巴', 'BRT公交'],
 };
 const nameSuggestOf = (cls) => NAME_SUGGEST[cls] || [];
 const sugId = (wb, cls) => `nm-${Math.max(0, clsOptions(wb).indexOf(cls))}`;
@@ -130,7 +132,10 @@ async function api(path, opts = {}) {
   try { data = await res.json(); } catch (e) { /* ignore */ }
   if (!res.ok) {
     if (res.status === 401) { state.user = null; renderLogin(); }
-    throw new Error((data && (data.detail || data.error)) || `请求失败(${res.status})`);
+    const err = new Error((data && (data.detail || data.error)) || `请求失败(${res.status})`);
+    err.data = data || {};
+    err.status = res.status;
+    throw err;
   }
   return data;
 }
@@ -271,12 +276,47 @@ const NAV_PERM = {
   ops: 'settings.write', console: 'settings.write', service: 'member.read',
 };
 
+// 项目平台执行类角色的精简导航：标注员/质检员/验收员只需与本职工作相关的入口
+const PROJECT_NAV_BY_ROLE = {
+  annotator: [
+    ['dashboard', '工作台', 'dashboard'],
+    ['tasks', '我的任务', 'tasks'],
+    ['hall', '任务大厅', 'tasks'],
+    ['issues', '问题清单', 'qc'],
+    ['help', '帮助中心', 'search'],
+    ['preferences', '个人偏好', 'members'],
+  ],
+  reviewer: [
+    ['dashboard', '工作台', 'dashboard'],
+    ['qc', '质检中心', 'qc'],
+    ['quality', '规则质检', 'shield'],
+    ['issues', '问题清单', 'qc'],
+    ['help', '帮助中心', 'search'],
+    ['preferences', '个人偏好', 'members'],
+  ],
+  acceptor: [
+    ['dashboard', '工作台', 'dashboard'],
+    ['acceptance', '验收中心', 'check'],
+    ['help', '帮助中心', 'search'],
+    ['preferences', '个人偏好', 'members'],
+  ],
+};
+
+// 执行类角色可见的扩展（CK_NAV）入口白名单，其余治理/运维类入口一律隐藏
+const WORKER_EXTRA_ALLOW = {
+  annotator: ['hall', 'issues', 'help', 'preferences'],
+  reviewer: ['quality', 'issues', 'help', 'preferences'],
+  acceptor: ['help', 'preferences'],
+};
+
 function navDef() {
-  const base = state.space === 'admin' ? ADMIN_NAV : state.space === 'tenant' ? TENANT_NAV : PROJECT_NAV;
+  const workerNav = state.space === 'project' ? PROJECT_NAV_BY_ROLE[state.user && state.user.platform_role] : null;
+  const base = workerNav || (state.space === 'admin' ? ADMIN_NAV : state.space === 'tenant' ? TENANT_NAV : PROJECT_NAV);
   const extras = state.space === 'project'
     ? (window.CK_NAV || [])
       .filter(([, , , perm]) => !perm || can(perm))
       .filter(([key]) => !base.some(([k]) => k === key))
+      .filter(([key]) => !workerNav || (WORKER_EXTRA_ALLOW[state.user.platform_role] || []).includes(key))
     : [];
   return base.concat(extras).filter(([key, , , perm]) => {
     const need = perm || NAV_PERM[key];
@@ -294,7 +334,7 @@ function shell(active, content, crumb = '') {
     const badge = key === 'qc'
       ? '<b class="tag" id="nav-qc-count">0</b>'
       : key === 'acceptance' ? '<b class="tag" id="nav-accept-count">0</b>' : '';
-    return `<a class="nav-item ${active === key ? 'active' : ''}" href="${hrefFor(key)}">${icon(ico)}<span>${label}</span>${badge}</a>`;
+    return `<a class="nav-item ${active === key ? 'active' : ''}" href="${hrefFor(key)}" title="${esc(label)}" aria-current="${active === key ? 'page' : 'false'}">${icon(ico)}<span>${label}</span>${badge}</a>`;
   }).join('');
   const role = state.user.role_label || '';
   const ctx = state.context || {};
@@ -318,10 +358,10 @@ function shell(active, content, crumb = '') {
       <div class="topbar">
         <div class="crumb">${esc(ctx.space_label || '春科数据')} / <b>${esc(crumb)}</b></div>
         <div class="top-actions">
-          <button class="btn sm ghost" id="tenant-switch" title="切换租户">${icon('shield')} ${esc(tenantName)}</button>
-          <div class="search">${icon('search')}<input id="top-search" placeholder="搜索任务或项目，回车" /></div>
+          <button class="btn sm ghost tenant-btn" id="tenant-switch" title="当前：${esc(tenantName)}，点击切换租户">${icon('shield')}<span class="t-name">${esc(tenantName)}</span></button>
+          <div class="search">${icon('search')}<input id="top-search" placeholder="搜索任务 / 项目" aria-label="搜索任务或项目" /></div>
           <button class="icon-btn" id="notif-btn" title="通知">${icon('bell')}<b class="tag" id="notif-dot" style="display:none">0</b></button>
-          <div class="user-chip" id="user-chip"><div class="avatar">${esc(state.user.name.slice(0, 1))}</div><div><b>${esc(state.user.name)}</b><br/><span>${esc(role)}</span></div></div>
+          <div class="user-chip" id="user-chip" title="${esc(state.user.name)} · ${esc(role)}"><div class="avatar">${esc(state.user.name.slice(0, 1))}</div><div class="u-meta"><b>${esc(state.user.name)}</b><span>${esc(role)}</span></div></div>
         </div>
       </div>
       <div class="page" id="page">${content}</div>
@@ -493,21 +533,36 @@ async function pageDashboard() {
   const recent = b.tasks.slice(0, 7);
   const nextTask = b.tasks.find((t) => t.status === 'pending' || t.status === 'annotating') || b.tasks[0];
   const maxTrend = Math.max(1, ...stats.trend.map((d) => Math.max(d.created, d.done)));
+  const CHART_H = 88;
+  const BASE = 120;
   const trendSvg = stats.trend.map((d, i) => {
     const x = 18 + i * 52;
-    const h1 = Math.round((d.created / maxTrend) * 76);
-    const h2 = Math.round((d.done / maxTrend) * 76);
-    return `<g><rect x="${x}" y="${100 - h1}" width="11" height="${h1}" rx="2" fill="#3B82F6" opacity=".85"/>
-      <rect x="${x + 14}" y="${100 - h2}" width="11" height="${h2}" rx="2" fill="#10B981" opacity=".85"/>
-      <text x="${x + 12}" y="116" text-anchor="middle" fill="#64748B" font-size="9">${d.day}</text></g>`;
+    const h1 = Math.round((d.created / maxTrend) * CHART_H);
+    const h2 = Math.round((d.done / maxTrend) * CHART_H);
+    return `<g><title>${esc(d.day)}：新建 ${d.created} · 完成 ${d.done}</title>
+      <rect x="${x}" y="${BASE - h1}" width="11" height="${Math.max(h1, 2)}" rx="2" fill="#3B82F6" opacity=".9"/>
+      <rect x="${x + 14}" y="${BASE - h2}" width="11" height="${Math.max(h2, 2)}" rx="2" fill="#10B981" opacity=".9"/>
+      <text x="${x + 12}" y="136" text-anchor="middle" fill="#64748B" font-size="9.5">${esc(d.day)}</text></g>`;
   }).join('');
+  const grid = [0, 1, 2, 3].map((n) => {
+    const y = Math.round(BASE - (CHART_H / 3) * n);
+    return `<line x1="8" y1="${y}" x2="372" y2="${y}" stroke="#1E2A3F" stroke-dasharray="${n ? '3 5' : '0'}" opacity="${n ? '.7' : '1'}"/>`;
+  }).join('');
+  const qcQueue = (s.submitted || 0) + (s.reviewing || 0);
+  const engineOnline = (e) => !!(e && e.online);
+  const lsEngine = (b.engines || []).find((e) => /label/i.test(e.name)) || {};
+  const cvatEngine = (b.engines || []).find((e) => /cvat/i.test(e.name)) || {};
+  const hasTrend = stats.trend.some((d) => d.created || d.done);
+  const chartHtml = hasTrend
+    ? `<svg class="chart" viewBox="0 0 380 140" preserveAspectRatio="none" style="height:170px" role="img" aria-label="近 7 日任务吞吐柱状图">${grid}${trendSvg}</svg>`
+    : '<div class="chart-empty">近 7 日暂无任务变动</div>';
 
   const content = `
     <div class="page-head">
       <div><h1 class="page-title">工作台</h1><p class="page-sub">${esc(state.user.name)}，今天有 ${s.pending || 0} 个待标注任务、${(s.submitted || 0) + (s.reviewing || 0)} 个待质检任务</p></div>
       <div class="page-actions">
-        <a class="btn" href="#/tasks">${icon('tasks')} 查看任务</a>
-        <a class="btn primary" href="${nextTask ? `#/annotate/${nextTask.id}` : '#/tasks'}">${icon('spark')} 进入标注</a>
+        <a class="btn" href="${hrefFor('tasks')}">${icon('tasks')} 查看任务</a>
+        <a class="btn primary" href="${nextTask ? `#/annotate/${nextTask.id}` : hrefFor('tasks')}">${icon('spark')} 进入标注</a>
       </div>
     </div>
     <div class="grid kpi-grid" style="margin-bottom:14px">
@@ -520,8 +575,7 @@ async function pageDashboard() {
       <div class="card">
         <div class="card-head"><h3 class="card-title">近 7 日任务吞吐</h3><span class="card-sub">新建 / 完成</span></div>
         <div class="card-body">
-          <svg class="chart" viewBox="0 0 380 124" preserveAspectRatio="none" height="124">${trendSvg || ''}
-            <line x1="8" y1="101" x2="372" y2="101" stroke="#1E2A3F"/></svg>
+          ${chartHtml}
           <div class="legend"><span><i style="background:#3B82F6"></i>新建任务</span><span><i style="background:#10B981"></i>完成质检</span></div>
         </div>
       </div>
@@ -539,12 +593,12 @@ async function pageDashboard() {
     </div>
     <div class="grid two-col">
       <div class="card">
-        <div class="card-head"><h3 class="card-title">最近任务</h3><a class="card-sub" href="#/tasks">全部任务 →</a></div>
+        <div class="card-head"><h3 class="card-title">最近任务</h3><a class="card-sub" href="${hrefFor('tasks')}">全部任务 →</a></div>
         <div class="table-wrap">
-          <table class="table"><thead><tr><th>任务</th><th>项目</th><th>标注员</th><th>状态</th><th class="right">更新时间</th></tr></thead>
+          <table class="table"><thead><tr><th>任务</th><th>项目</th><th class="hide-sm">标注员</th><th>状态</th><th class="right">更新时间</th></tr></thead>
           <tbody>${recent.map((t) => `<tr onclick="location.hash='#/annotate/${t.id}'">
             <td><div class="name">${esc(t.name)}</div><div class="sub">${esc(t.batch || '')}</div></td>
-            <td>${esc(t.project_name)}</td><td>${esc(t.assignee_name || '—')}</td>
+            <td>${esc(t.project_name)}</td><td class="hide-sm">${esc(t.assignee_name || '—')}</td>
             <td>${statusChip(t.status)}</td><td class="right mono">${esc((t.updated_at || '').slice(5, 16))}</td></tr>`).join('') || '<tr><td colspan="5" class="empty">暂无任务</td></tr>'}</tbody></table>
         </div>
       </div>
@@ -553,14 +607,19 @@ async function pageDashboard() {
           <div class="card-head"><h3 class="card-title">引擎与预识别</h3><span class="card-sub">本地服务探测</span></div>
           <div>${b.engines.map((e) => `<div class="engine"><i class="dot ${e.online ? 'online' : 'offline'}"></i>
             <div class="engine-info"><b>${esc(e.name)}</b><span>${esc(e.desc)}</span></div>
-            <a href="${esc(e.url)}" target="_blank" rel="noreferrer">${e.online ? '打开' : '未启动'}</a></div>`).join('')}</div>
+            <a href="${esc(e.url)}" target="_blank" rel="noreferrer" title="${e.online ? '在新窗口打开' : '服务未启动'}">${e.online ? '打开' : '未启动'}</a></div>`).join('')}</div>
         </div>
-        <div class="card"><div class="card-head"><h3 class="card-title">快捷入口</h3></div>
-          <div class="card-body" style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-            <a class="btn" href="#/qc">${icon('qc')} 质检队列</a>
-            <a class="btn" href="#/projects">${icon('projects')} 项目管理</a>
-            <a class="btn" href="http://127.0.0.1:8080/" target="_blank">${icon('audio')} Label Studio</a>
-            <a class="btn" href="http://127.0.0.1:8090/" target="_blank">${icon('cloud')} CVAT</a>
+        <div class="card">
+          <div class="card-head"><h3 class="card-title">快捷入口</h3><span class="card-sub">常用操作</span></div>
+          <div class="card-body">
+            <div class="quick-grid">
+              <a class="quick-link" href="${hrefFor('tasks')}">${icon('tasks')}<div class="q-text"><b>任务中心</b><span class="sub">${s.total || 0} 个任务</span></div></a>
+              <a class="quick-link" href="${hrefFor('qc')}">${icon('qc')}<div class="q-text"><b>质检队列</b><span class="sub">${qcQueue} 个待质检</span></div></a>
+              <a class="quick-link" href="${hrefFor('projects')}">${icon('projects')}<div class="q-text"><b>项目管理</b><span class="sub">${stats.projects.length} 个项目</span></div></a>
+              <a class="quick-link" href="${esc(lsEngine.url || 'http://127.0.0.1:8080/')}" target="_blank" rel="noreferrer">${icon('audio')}<div class="q-text"><b>Label Studio</b><span class="sub">${engineOnline(lsEngine) ? '在线' : '未启动'}</span></div><span class="chip ${engineOnline(lsEngine) ? 'done' : 'plain'}">${engineOnline(lsEngine) ? '在线' : '离线'}</span></a>
+              <a class="quick-link" href="${esc(cvatEngine.url || 'http://127.0.0.1:8090/')}" target="_blank" rel="noreferrer">${icon('cloud')}<div class="q-text"><b>CVAT</b><span class="sub">点云 / 视频</span></div><span class="chip ${engineOnline(cvatEngine) ? 'done' : 'plain'}">${engineOnline(cvatEngine) ? '在线' : '离线'}</span></a>
+              <a class="quick-link" href="${hrefFor('stats')}">${icon('stats')}<div class="q-text"><b>数据统计</b><span class="sub">产能与质量</span></div></a>
+            </div>
           </div>
         </div>
       </div>
@@ -587,14 +646,17 @@ async function pageTasks(query) {
     <div class="filters">
       <div class="seg-tabs" id="task-tabs">
         <button class="active" data-st="">全部</button><button data-st="pending">待标注</button>
-        <button data-st="annotating">标注中</button><button data-st="submitted,review">待质检</button><button data-st="done">已完成</button>
+        <button data-st="annotating">标注中</button><button data-st="__rework__">返修中</button>
+        <button data-st="submitted">待质检</button><button data-st="review">质检中</button>
+        <button data-st="review_done">待验收</button><button data-st="paused">已暂停</button>
+        <button data-st="done">已完成</button>
       </div>
       <select class="select" id="filter-project" style="width:190px"><option value="">全部项目</option>${projOptions}</select>
       <span class="spacer"></span>
       <span class="tag">共 ${tasks.length} 条</span>
     </div>
     <div class="card"><div class="table-wrap">
-      <table class="table"><thead><tr><th style="width:30px"></th><th>任务名称</th><th>项目</th><th>模态</th><th>批次</th><th>标注员</th><th>质检员</th><th>状态</th><th>优先级</th><th class="right">操作</th></tr></thead>
+      <table class="table"><thead><tr><th style="width:30px"></th><th>任务名称</th><th>项目</th><th class="hide-lg">模态</th><th class="hide-lg">批次</th><th>标注员</th><th class="hide-md">质检员</th><th>状态</th><th class="hide-md">优先级</th><th class="right">操作</th></tr></thead>
       <tbody id="task-body">${taskRows(tasks, canManage)}</tbody></table>
     </div></div>`;
   mount('tasks', '任务中心', content);
@@ -603,8 +665,11 @@ async function pageTasks(query) {
     $$('#task-tabs button').forEach((x) => x.classList.remove('active'));
     b.classList.add('active');
     const set = b.dataset.st.split(',').filter(Boolean);
+    const reworkOnly = set.includes('__rework__');
     $$('#task-body tr').forEach((tr) => {
-      tr.style.display = !set.length || set.includes(tr.dataset.status) ? '' : 'none';
+      const statusOk = !set.length || reworkOnly || set.includes(tr.dataset.status);
+      const reworkOk = !reworkOnly || tr.dataset.rework === '1';
+      tr.style.display = statusOk && reworkOk ? '' : 'none';
     });
   }));
   $('#filter-project').onchange = (e) => { location.hash = `#/tasks?project=${e.target.value}`; };
@@ -618,13 +683,13 @@ async function pageTasks(query) {
 }
 
 function taskRows(tasks, canAssign = false) {
-  return tasks.map((t) => `<tr data-status="${t.status}" onclick="location.hash='#/annotate/${t.id}'">
+  return tasks.map((t) => `<tr data-status="${t.status}" data-rework="${(t.rework_count || 0) > 0 ? 1 : 0}" onclick="location.hash='#/annotate/${t.id}'">
     <td>${icon(MODALITY_ICON[t.modality] || 'tasks')}</td>
     <td><div class="name">${esc(t.name)}</div><div class="sub">#${t.id} · ${fmtShort(t.duration)}</div></td>
-    <td>${esc(t.project_name)}</td><td><span class="tag">${esc(t.modality_label)}</span></td>
-    <td class="mono">${esc(t.batch || '—')}</td><td>${esc(t.assignee_name || '未分配')}</td><td>${esc(t.reviewer_name || '—')}</td>
-    <td>${statusChip(t.status)}</td>
-    <td>${t.priority === 'high' ? '<span class="chip danger">高</span>' : t.priority === 'low' ? '<span class="chip plain">低</span>' : '<span class="chip plain">普通</span>'}</td>
+    <td>${esc(t.project_name)}</td><td class="hide-lg"><span class="tag">${esc(t.modality_label)}</span></td>
+    <td class="mono hide-lg">${esc(t.batch || '—')}</td><td style="white-space:nowrap">${esc(t.assignee_name || '未分配')}</td><td class="hide-md">${esc(t.reviewer_name || '—')}</td>
+    <td>${statusChip(t.status)}${(t.rework_count || 0) > 0 ? ` <span class="chip danger" title="已被驳回 ${t.rework_count} 次">返修×${t.rework_count}</span>` : ''}</td>
+    <td class="hide-md">${t.priority === 'high' ? '<span class="chip danger">高</span>' : t.priority === 'low' ? '<span class="chip plain">低</span>' : '<span class="chip plain">普通</span>'}</td>
     <td class="right"><div style="display:flex;gap:4px;justify-content:flex-end">
       ${canAssign ? `<button class="btn sm ghost" data-assign="${t.id}" data-pid="${t.project_id}">分配</button>` : ''}
       <a class="btn sm" href="#/annotate/${t.id}" onclick="event.stopPropagation()">${t.status === 'submitted' ? '质检' : '标注'}</a></div></td></tr>`).join('')
@@ -768,7 +833,7 @@ async function pageAnnotate(id) {
   const pre = (annotation && annotation.prelabel) || {};
 
   // 统一 wb 结构：audio 和 image 共用头部/侧栏框架
-  const classes = isEditing ? ['同类目标'] : (labels['目标类别'] || ['商品主体', '价签', '货架', '遮挡']);
+  const classes = isEditing ? ['同类目标'] : (labels['目标类别'] || ['行人', '轿车', '公交车']);
   const wb = {
     task, project, labels, canEdit: can_edit,
     mediaType, mediaName, pre, editing: isEditing,
@@ -793,6 +858,17 @@ async function pageAnnotate(id) {
           auto_cls: b.auto_cls || b.cls,
           conf: b.conf, x: b.x, y: b.y, w: b.w, h: b.h,
         })) : []),
+    // 图形工具链状态（多边形/关键点/掩码/整图分类）
+    polygons: Array.isArray(payload.polygons) ? payload.polygons : [],
+    keypoints: Array.isArray(payload.keypoints) ? payload.keypoints : [],
+    masks: Array.isArray(payload.masks) ? payload.masks : [],
+    imageClass: payload.category || '',
+    imgAttrs: payload.attrs || {},
+    transcription: payload.transcription || '',
+    tool: 'rect',
+    brushSize: 18,
+    selShape: null,   // {kind:'polygon'|'keypoint'|'mask', index}
+    view: { zoom: 1, panX: 0, panY: 0, rot: 0, flip: false },
     img: null, imgLoaded: false, imgW: 0, imgH: 0,
     // 共用
     summary: payload.summary || '',
@@ -839,7 +915,8 @@ function renderOtherWorkbench(wb) {
         <b>暂不支持在线标注（${typeLabel}）</b>
         <p class="hint" style="margin-top:10px;line-height:1.8">
           ${mediaName ? `已挂载媒体：${esc(mediaName)}<br/>` : '该任务还没有上传媒体文件。<br/>'}
-          本平台内置工作台目前支持 语音 / 图片 两类标注，${typeLabel}标注请在对应引擎中完成。
+          内置工作台已覆盖 语音 / 图片 / 视频 / 文本 / 点云 / 大模型 / 多模态 / PDF / 图像编辑指令，
+          当前任务类型未匹配到对应工作台，请在对应引擎中完成或联系管理员配置。
         </p>
         <div style="margin-top:16px">
           <button class="btn sm" id="btn-other-upload" ${wb.canEdit ? '' : 'disabled'}>${icon('upload')} ${mediaName ? '更换文件' : `上传${typeLabel}文件`}</button>
@@ -951,6 +1028,10 @@ function renderAudioWorkbench(wb, labels, qc, mediaName) {
               <div class="kv"><span>标注员</span><b>${esc(task.assignee_name || '未分配')}</b></div>
               <div class="kv"><span>质检员</span><b>${esc(task.reviewer_name || '—')}</b></div>
             </div>
+            <div class="panel-section">
+              <div class="panel-label">标注规范</div>
+              <div id="spec-panel"></div>
+            </div>
           </div>
         </div>
       </div>
@@ -959,11 +1040,14 @@ function renderAudioWorkbench(wb, labels, qc, mediaName) {
   mount('tasks', '标注工作台', content);
   if (mediaName) loadAudio(`/media/${encodeURIComponent(mediaName)}`, wb);
   bindWorkbench(wb, mediaName);
+  mountSpecPanel(task, project, $('#spec-panel'));
 }
 
 function renderImageWorkbench(wb, classes, qc) {
   const { task, project, canEdit, mediaName, boxes, pre } = wb;
-  const lastPrelabel = pre && pre.engine ? `${pre.engine} · ${pre.boxes?.length || 0} 框 · ${(pre.elapsed_ms / 1000).toFixed(1)}s` : '—';
+  const lastPrelabel = pre && pre.engine
+    ? `${pre.engine} · ${pre.boxes?.length || 0} 框${pre.elapsed_ms ? ` · ${(pre.elapsed_ms / 1000).toFixed(1)}s` : ''}`
+    : '—';
   const content = `
   <div class="wb" id="wb">
     <div class="wb-head">
@@ -981,8 +1065,20 @@ function renderImageWorkbench(wb, classes, qc) {
       <div class="col">
         <div class="image-panel">
           <div class="image-toolbar">
-            <span class="hint">${boxes.length} 个框</span>
+            <div class="seg-tabs" id="img-tools" style="flex-wrap:wrap">
+              ${[
+                ['rect', '矩形', 'R'], ['poly', '多边形', 'P'], ['circle', '圆形', 'C'], ['free', '自由', 'L'],
+                ['brush', '画笔', 'B'], ['fill', '填充', 'G'], ['keypoint', '关键点', 'K'], ['pan', '平移', 'V'],
+              ].map(([k, label, key]) => `<button class="img-tool ${k === 'rect' ? 'active' : ''}" data-tool="${k}" title="快捷键 ${key}">${label}</button>`).join('')}
+            </div>
+            <span class="hint" id="tool-hint">拖拽画框</span>
             <span class="spacer"></span>
+            <label class="toggle-wrap" title="笔刷大小"><input type="range" id="brush-size" min="4" max="60" value="18" style="width:70px" /></label>
+            <button class="btn sm ghost" id="btn-zoom-out">−</button>
+            <button class="btn sm ghost" id="btn-zoom-in">＋</button>
+            <button class="btn sm ghost" id="btn-rotate" title="旋转 90°(T)">旋转</button>
+            <button class="btn sm ghost" id="btn-flip" title="水平镜像(F)">镜像</button>
+            <button class="btn sm ghost" id="btn-compare" title="多图并列对比">对比</button>
             <button class="btn sm ghost" id="btn-img-upload" ${canEdit ? '' : 'disabled'}>${icon('upload')} ${mediaName ? '更换图片' : '上传图片'}</button>
             <input type="file" id="img-file-input" accept="image/*" hidden />
             <label class="toggle-wrap"><input type="checkbox" id="toggle-box" checked /><span>显示框</span></label>
@@ -1020,9 +1116,44 @@ function renderImageWorkbench(wb, classes, qc) {
             </div>
             <div class="panel-section" id="result-panel">${resultPanelHTML(wb)}</div>
             <div class="panel-section">
-              <div class="panel-label">筛选 / 画框类别</div>
+              <div class="panel-label">筛选 / 画框与图形类别</div>
               <div class="cls-picker" id="cls-picker">${clsPickerHTML(wb)}</div>
-              <div class="hint" style="margin-top:6px">点类别只显示该类目标；在图片上拖拽时按当前选中类别画框。</div>
+              <div class="hint" style="margin-top:6px">点类别只显示该类目标；在图片上拖拽时按当前选中类别画框 / 图形。</div>
+            </div>
+            <div class="panel-section">
+              <div class="panel-label">图形标注（多边形 / 关键点 / 分割实例）</div>
+              <div class="filters" style="margin-bottom:6px">
+                <input class="input" id="kp-label-input" placeholder="关键点名称，如 左眼" style="width:140px" />
+                <span class="hint">Alt+涂抹=橡皮擦</span>
+              </div>
+              <div id="shape-list">${shapeListHTML(wb)}</div>
+              <div class="filters" style="margin-top:6px">
+                <button class="btn sm ghost" id="btn-shape-merge" title="勾选两个及以上多边形合并">合并</button>
+                <button class="btn sm ghost" id="btn-shape-split" title="选中多边形在指定顶点拆分">拆分</button>
+                <button class="btn sm ghost" id="btn-kp-copy" title="复刻上一组关键点">复刻关键点</button>
+              </div>
+            </div>
+            <div class="panel-section">
+              <div class="panel-label">整图分类与场景属性</div>
+              <div class="field"><label>图片分类（层级，如 交通/路口）</label><input class="input" id="img-category" value="${esc(wb.imageClass)}" placeholder="交通/路口" /></div>
+              <div class="grid" style="grid-template-columns:1fr 1fr 1fr;gap:6px">
+                <div class="field" style="margin:0"><label>天气</label><select class="select" id="img-attr-weather">${['', '晴', '阴', '雨', '雪', '雾'].map((x) => `<option ${wb.imgAttrs.weather === x ? 'selected' : ''}>${x}</option>`).join('')}</select></div>
+                <div class="field" style="margin:0"><label>时间段</label><select class="select" id="img-attr-daytime">${['', '白天', '黄昏', '夜间'].map((x) => `<option ${wb.imgAttrs.daytime === x ? 'selected' : ''}>${x}</option>`).join('')}</select></div>
+                <div class="field" style="margin:0"><label>场景</label><select class="select" id="img-attr-scene">${['', '路口', '路段', '高架', '广场', '停车场'].map((x) => `<option ${wb.imgAttrs.scene === x ? 'selected' : ''}>${x}</option>`).join('')}</select></div>
+              </div>
+            </div>
+            <div class="panel-section">
+              <div class="panel-label">标注规范</div>
+              <div id="spec-panel"></div>
+            </div>
+            <div class="panel-section">
+              <div class="panel-label">OCR 转写校对（对照图片录入文字，疑似错误高亮）</div>
+              <textarea class="input textarea" id="ocr-transcript" rows="4" placeholder="对照左侧图片录入文字内容，点击「校对」检查错别字/标点/语法">${esc(wb.transcription || '')}</textarea>
+              <div class="filters" style="margin-top:6px">
+                <button class="btn sm" id="btn-ocr-check">校对</button>
+                <span class="hint" id="ocr-check-stat"></span>
+              </div>
+              <div id="ocr-check-out" style="margin-top:6px"></div>
             </div>
             ${qc ? `<div class="panel-section">
               <div class="panel-label">质检结论</div>
@@ -1512,38 +1643,336 @@ function bindImageWorkbench(wb, classes) {
     };
   }
 
-  // 拖拽画框（以 canvas 实际显示区域为坐标系，避免留白导致偏移）
+  // 视图变换（缩放/平移/旋转/镜像）：screen = pan ∘ rot ∘ flip ∘ zoom ∘ (p-0.5) + 0.5
+  const applyViewCSS = () => {
+    const v = wb.view;
+    imgEl.style.transformOrigin = '50% 50%';
+    imgEl.style.transform = `translate(${v.panX * 100}%, ${v.panY * 100}%) rotate(${v.rot}deg) scaleX(${v.flip ? -1 : 1}) scale(${v.zoom})`;
+    drawImageBoxes(wb);
+  };
+  const rotFwd = (x, y, rot) => {
+    for (let i = 0; i < ((rot / 90) % 4 + 4) % 4; i++) { const t = x; x = -y; y = t; }
+    return [x, y];
+  };
+  const rotInv = (x, y, rot) => {
+    for (let i = 0; i < ((rot / 90) % 4 + 4) % 4; i++) { const t = x; x = y; y = -t; }
+    return [x, y];
+  };
+  const viewToImage = (q) => {
+    const v = wb.view;
+    let x = (q.x - 0.5 - v.panX) / v.zoom, y = (q.y - 0.5 - v.panY) / v.zoom;
+    [x, y] = rotInv(x, y, v.rot);
+    if (v.flip) x = -x;
+    return { x: x + 0.5, y: y + 0.5 };
+  };
+  const imageToView = (p) => {
+    const v = wb.view;
+    let x = p.x - 0.5, y = p.y - 0.5;
+    if (v.flip) x = -x;
+    [x, y] = rotFwd(x, y, v.rot);
+    return { x: x * v.zoom + 0.5 + v.panX, y: y * v.zoom + 0.5 + v.panY };
+  };
+  wb._view = { applyViewCSS, viewToImage, imageToView };
+
+  // 拖拽绘制（工具路由：以 canvas 实际显示区域为坐标系，经视图逆变换得到图片坐标）
   const getPos = (e) => {
     const rect = cvs.getBoundingClientRect();
     const x = (e.clientX - rect.left) / rect.width;
     const y = (e.clientY - rect.top) / rect.height;
-    return { x: Math.max(0, Math.min(1, x)), y: Math.max(0, Math.min(1, y)) };
+    return { x: Math.max(-0.2, Math.min(1.2, x)), y: Math.max(-0.2, Math.min(1.2, y)) };
+  };
+  const getImgPos = (e) => viewToImage(getPos(e));
+  const clamp01 = (v) => Math.max(0, Math.min(1, v));
+
+  const setTool = (t) => {
+    wb.tool = t;
+    $$('#img-tools .img-tool').forEach((b) => b.classList.toggle('active', b.dataset.tool === t));
+    const hints = {
+      rect: '拖拽画矩形框', poly: '点击加点，双击或点起点闭合', circle: '按住拖出圆形',
+      free: '按住绘制自由曲线', brush: '涂抹生成分割实例', fill: '点击填充封闭区域',
+      keypoint: '点击添加关键点（自动连线）', pan: '拖拽平移画布（滚轮缩放）',
+    };
+    const h = $('#tool-hint'); if (h) h.textContent = hints[t] || '';
+    cvs.style.cursor = t === 'pan' ? 'grab' : 'crosshair';
+  };
+  wb._setTool = setTool;
+
+  // 掩码层管理：每个实例一张位图，编辑后回写 png dataURL；渲染时按类别着色
+  const maskCanvasCache = new Map();
+  wb._maskCanvases = maskCanvasCache;
+  wb._maskTinted = new Map();
+  const refreshTint = (idx) => {
+    const c = maskCanvasCache.get(idx);
+    if (!c) return;
+    const t = document.createElement('canvas');
+    t.width = c.width; t.height = c.height;
+    const tx = t.getContext('2d');
+    tx.drawImage(c, 0, 0);
+    tx.globalCompositeOperation = 'source-in';
+    tx.fillStyle = boxColor(wb.masks[idx].label);
+    tx.fillRect(0, 0, t.width, t.height);
+    wb._maskTinted.set(idx, t);
+  };
+  const maskDims = () => {
+    const w = 384;
+    const h = wb.imgW && wb.imgH ? Math.round(384 * wb.imgH / wb.imgW) : 216;
+    return { w, h };
+  };
+  const maskOf = (idx) => {
+    if (maskCanvasCache.has(idx)) return maskCanvasCache.get(idx);
+    const m = wb.masks[idx];
+    const { w, h } = maskDims();
+    const c = document.createElement('canvas'); c.width = m.w || w; c.height = m.h || h;
+    const x = c.getContext('2d');
+    if (m.png) {
+      const im = new Image();
+      im.onload = () => { x.drawImage(im, 0, 0); refreshTint(idx); drawImageBoxes(wb); };
+      im.src = m.png;
+    } else refreshTint(idx);
+    maskCanvasCache.set(idx, c);
+    return c;
+  };
+  const commitMask = (idx) => {
+    const c = maskCanvasCache.get(idx);
+    if (!c) return;
+    wb.masks[idx].png = c.toDataURL('image/png');
+    wb.masks[idx].w = c.width; wb.masks[idx].h = c.height;
+    refreshTint(idx);
+    markDirty(wb);
+  };
+  const activeMaskIdx = () => {
+    // 同一类别取最后一个实例继续涂抹；没有则新建
+    const cls = wb.activeCls;
+    for (let i = wb.masks.length - 1; i >= 0; i--) if (wb.masks[i].label === cls) { maskOf(i); return i; }
+    wb.masks.push({ label: cls, w: 0, h: 0, png: '' });
+    const i = wb.masks.length - 1;
+    maskOf(i); refreshTint(i);
+    refreshShapeUI(wb);
+    return i;
+  };
+  const paintMask = (idx, imgP, erase) => {
+    const c = maskOf(idx);
+    const x = c.getContext('2d');
+    const r = wb.brushSize / 2;
+    x.globalCompositeOperation = erase ? 'destination-out' : 'source-over';
+    x.fillStyle = '#fff';
+    x.beginPath();
+    x.arc(imgP.x * c.width, imgP.y * c.height, Math.max(1.5, r * c.width / (wb.imgW || c.width)), 0, Math.PI * 2);
+    x.fill();
+    drawImageBoxes(wb);
+  };
+  const floodMask = (idx, imgP) => {
+    const c = maskOf(idx);
+    const x = c.getContext('2d');
+    const { w, h } = c;
+    const src = x.getImageData(0, 0, w, h);
+    const dst = x.createImageData(w, h);
+    dst.data.set(src.data);
+    const si = x.getImageData(0, 0, w, h).data;
+    const sx = Math.round(imgP.x * w), sy = Math.round(imgP.y * h);
+    if (sx < 0 || sy < 0 || sx >= w || sy >= h) return;
+    const start = (sy * w + sx) * 4;
+    const tr = si[start], tg = si[start + 1], tb = si[start + 2], ta = si[start + 3];
+    const match = (i) => Math.abs(si[i] - tr) < 12 && Math.abs(si[i + 1] - tg) < 12 && Math.abs(si[i + 2] - tb) < 12 && Math.abs(si[i + 3] - ta) < 12;
+    const q = [sx + sy * w];
+    const seen = new Uint8Array(w * h);
+    while (q.length) {
+      const p = q.pop();
+      if (seen[p]) continue;
+      seen[p] = 1;
+      const i = p * 4;
+      if (!match(i)) continue;
+      dst.data[i] = 255; dst.data[i + 1] = 255; dst.data[i + 2] = 255; dst.data[i + 3] = 255;
+      const px = p % w, py = (p / w) | 0;
+      if (px > 0) q.push(p - 1);
+      if (px < w - 1) q.push(p + 1);
+      if (py > 0) q.push(p - w);
+      if (py < h - 1) q.push(p + w);
+    }
+    x.putImageData(dst, 0, 0);
+    drawImageBoxes(wb);
   };
 
-  let dragStart = null;
+  // 多边形顶点命中（图片坐标）
+  const hitVertex = (imgP, pts) => pts.findIndex(([x, y]) => Math.hypot(imgP.x - x, imgP.y - y) < 0.012);
+  const simplifyPath = (pts, eps = 0.004) => {
+    if (pts.length < 4) return pts;
+    const keep = new Array(pts.length).fill(false);
+    keep[0] = keep[pts.length - 1] = true;
+    const stack = [[0, pts.length - 1]];
+    while (stack.length) {
+      const [a, b] = stack.pop();
+      let dmax = 0, idx = -1;
+      const [ax, ay] = pts[a], [bx, by] = pts[b];
+      const len = Math.hypot(bx - ax, by - ay) || 1e-6;
+      for (let i = a + 1; i < b; i++) {
+        const d = Math.abs((pts[i][0] - ax) * (by - ay) - (pts[i][1] - ay) * (bx - ax)) / len;
+        if (d > dmax) { dmax = d; idx = i; }
+      }
+      if (dmax > eps && idx > 0) { keep[idx] = true; stack.push([a, idx], [idx, b]); }
+    }
+    return pts.filter((_, i) => keep[i]);
+  };
+
+  let dragStart = null;      // 图片坐标（rect/circle 起点）
+  let dragStartView = null;  // 屏幕坐标（pan 用）
+  let dragKind = null;       // rect | circle | free | pan | poly-vertex | brush | kp
+  let freePath = null;
+  let brushErase = false;
   cvs.addEventListener('mousedown', (e) => {
     if (!wb.canEdit) return;
-    if (e.button !== 0) return;
-    const p = getPos(e);
-    // 命中已有目标 → 选中并高亮（删除走列表按钮或 Delete 键），按住 Shift 可叠加画新框
-    const hit = visibleIndexes(wb).find((i) => {
-      const b = wb.boxes[i];
-      return p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h;
-    });
-    if (hit !== undefined && !e.shiftKey) { selectBox(wb, hit); return; }
-    dragStart = p;
-    wb._dragging = true;
+    if (e.button !== 0 && !(wb.tool === 'pan' && e.button === 0)) return;
+    const sp = getPos(e);
+    const p = viewToImage(sp);
+    const T = wb.tool;
+    if (T === 'pan' || e.button === 1) {
+      dragKind = 'pan'; dragStartView = sp; cvs.style.cursor = 'grabbing';
+      e.preventDefault();
+      return;
+    }
+    if (T === 'rect') {
+      // 命中已有目标 → 选中并高亮（删除走列表按钮或 Delete 键），按住 Shift 可叠加画新框
+      const hit = visibleIndexes(wb).find((i) => {
+        const b = wb.boxes[i];
+        return p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h;
+      });
+      if (hit !== undefined && !e.shiftKey) { selectBox(wb, hit); return; }
+      dragStart = p; dragKind = 'rect'; wb._dragging = true;
+      return;
+    }
+    if (T === 'poly') {
+      const draft = wb._polyDraft || (wb._polyDraft = []);
+      // 拖拽已有顶点
+      const target = wb.selShape && wb.selShape.kind === 'polygon' ? wb.polygons[wb.selShape.index] : null;
+      if (target) {
+        const vi = hitVertex(p, target.points);
+        if (vi >= 0) { dragKind = 'poly-vertex'; dragStart = { poly: target, vi }; return; }
+      }
+      if (draft.length && Math.hypot(p.x - draft[0][0], p.y - draft[0][1]) < 0.012 && draft.length >= 3) {
+        finishPolygon();
+        return;
+      }
+      draft.push([clamp01(p.x), clamp01(p.y)]);
+      drawImageBoxes(wb);
+      return;
+    }
+    if (T === 'circle') { dragStart = p; dragKind = 'circle'; wb._dragCircle = { cx: p.x, cy: p.y, r: 0 }; return; }
+    if (T === 'free') { dragStart = p; dragKind = 'free'; freePath = [[p.x, p.y]]; wb._freeLive = freePath; return; }
+    if (T === 'brush') {
+      dragKind = 'brush'; brushErase = e.altKey;
+      paintMask(activeMaskIdx(), p, brushErase);
+      markDirty(wb);
+      return;
+    }
+    if (T === 'fill') {
+      const idx = activeMaskIdx();
+      floodMask(idx, p);
+      commitMask(idx);
+      return;
+    }
+    if (T === 'keypoint') {
+      // 命中已有关键点可拖拽
+      const ki = wb.keypoints.findIndex((k) => Math.hypot(p.x - k.x, p.y - k.y) < 0.012);
+      if (ki >= 0) { dragKind = 'kp'; dragStart = { ki }; return; }
+      const label = ($('#kp-label-input') && $('#kp-label-input').value.trim()) || `P${wb.keypoints.length + 1}`;
+      wb.keypoints.push({ x: clamp01(p.x), y: clamp01(p.y), label, visibility: 2 });
+      refreshShapeUI(wb); drawImageBoxes(wb); markDirty(wb);
+      return;
+    }
   });
-  cvs.addEventListener('mousemove', (e) => {
-    if (!wb._dragging) return;
-    const p = getPos(e);
-    wb._dragRect = {
-      x: Math.min(dragStart.x, p.x), y: Math.min(dragStart.y, p.y),
-      w: Math.abs(p.x - dragStart.x), h: Math.abs(p.y - dragStart.y),
-    };
+  const finishPolygon = () => {
+    const draft = wb._polyDraft || [];
+    if (draft.length >= 3) {
+      wb.polygons.push({ label: wb.activeCls, points: draft.map(([x, y]) => [Math.round(x * 1e4) / 1e4, Math.round(y * 1e4) / 1e4]) });
+      wb.selShape = { kind: 'polygon', index: wb.polygons.length - 1 };
+      markDirty(wb);
+      refreshShapeUI(wb);
+    }
+    wb._polyDraft = null;
     drawImageBoxes(wb);
+  };
+  cvs.addEventListener('dblclick', () => { if (wb.tool === 'poly' && wb._polyDraft && wb._polyDraft.length >= 3) finishPolygon(); });
+  cvs.addEventListener('mousemove', (e) => {
+    const sp = getPos(e);
+    if (dragKind === 'pan') {
+      const dx = sp.x - dragStartView.x, dy = sp.y - dragStartView.y;
+      wb.view.panX += dx; wb.view.panY += dy;
+      dragStartView = sp;
+      applyViewCSS();
+      return;
+    }
+    const p = viewToImage(sp);
+    if (dragKind === 'rect' && wb._dragging) {
+      wb._dragRect = {
+        x: Math.min(dragStart.x, p.x), y: Math.min(dragStart.y, p.y),
+        w: Math.abs(p.x - dragStart.x), h: Math.abs(p.y - dragStart.y),
+      };
+      drawImageBoxes(wb);
+      return;
+    }
+    if (dragKind === 'circle' && wb._dragCircle) {
+      wb._dragCircle.r = Math.hypot(p.x - dragStart.x, p.y - dragStart.y);
+      drawImageBoxes(wb);
+      return;
+    }
+    if (dragKind === 'free' && freePath) {
+      freePath.push([p.x, p.y]);
+      drawImageBoxes(wb);
+      return;
+    }
+    if (dragKind === 'brush') {
+      paintMask(activeMaskIdx(), p, brushErase);
+      return;
+    }
+    if (dragKind === 'poly-vertex' && dragStart) {
+      dragStart.poly.points[dragStart.vi] = [clamp01(p.x), clamp01(p.y)];
+      drawImageBoxes(wb);
+      return;
+    }
+    if (dragKind === 'kp' && dragStart) {
+      wb.keypoints[dragStart.ki].x = clamp01(p.x);
+      wb.keypoints[dragStart.ki].y = clamp01(p.y);
+      drawImageBoxes(wb);
+      return;
+    }
   });
   window.addEventListener('mouseup', () => {
+    if (dragKind === 'pan') { dragKind = null; cvs.style.cursor = 'grab'; return; }
+    if (dragKind === 'brush') { const idx = activeMaskIdx(); commitMask(idx); dragKind = null; return; }
+    if (dragKind === 'circle' && wb._dragCircle) {
+      const { cx, cy, r } = wb._dragCircle;
+      wb._dragCircle = null;
+      if (r > 0.008) {
+        const pts = [];
+        for (let i = 0; i < 24; i++) {
+          const a = (i / 24) * Math.PI * 2;
+          pts.push([Math.round((cx + r * Math.cos(a)) * 1e4) / 1e4, Math.round((cy + r * Math.sin(a)) * 1e4) / 1e4]);
+        }
+        wb.polygons.push({ label: wb.activeCls, shape: 'circle', cx: Math.round(cx * 1e4) / 1e4, cy: Math.round(cy * 1e4) / 1e4, r: Math.round(r * 1e4) / 1e4, points: pts });
+        markDirty(wb); refreshShapeUI(wb);
+      }
+      drawImageBoxes(wb);
+      dragKind = null;
+      return;
+    }
+    if (dragKind === 'free' && freePath) {
+      const pts = simplifyPath(freePath);
+      freePath = null;
+      wb._freeLive = null;
+      if (pts.length >= 3) {
+        wb.polygons.push({ label: wb.activeCls, points: pts.map(([x, y]) => [Math.round(x * 1e4) / 1e4, Math.round(y * 1e4) / 1e4]) });
+        markDirty(wb); refreshShapeUI(wb);
+      }
+      drawImageBoxes(wb);
+      dragKind = null;
+      return;
+    }
+    if (dragKind === 'poly-vertex' || dragKind === 'kp') {
+      markDirty(wb); refreshShapeUI(wb);
+      dragKind = null;
+      return;
+    }
+    dragKind = null;
     if (!wb._dragging) return;
     wb._dragging = false;
     const r = wb._dragRect;
@@ -1554,6 +1983,83 @@ function bindImageWorkbench(wb, classes) {
       wb.selected = wb.boxes.length - 1;
       refreshBoxUI(wb); drawImageBoxes(wb); markDirty(wb);
     }
+  });
+
+  // 工具栏与视图控制
+  const toolsBar = $('#img-tools');
+  if (toolsBar) toolsBar.onclick = (e) => {
+    const b = e.target.closest('[data-tool]');
+    if (b) setTool(b.dataset.tool);
+  };
+  $('#brush-size').oninput = (e) => { wb.brushSize = Number(e.target.value) || 18; };
+  const zoomBy = (f) => {
+    wb.view.zoom = Math.max(0.25, Math.min(8, wb.view.zoom * f));
+    applyViewCSS();
+  };
+  $('#btn-zoom-in').onclick = () => zoomBy(1.25);
+  $('#btn-zoom-out').onclick = () => zoomBy(0.8);
+  cvs.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    zoomBy(e.deltaY < 0 ? 1.12 : 0.9);
+  }, { passive: false });
+  $('#btn-rotate').onclick = () => { wb.view.rot = (wb.view.rot + 90) % 360; applyViewCSS(); };
+  $('#btn-flip').onclick = () => { wb.view.flip = !wb.view.flip; applyViewCSS(); };
+  const resetView = () => { wb.view = { zoom: 1, panX: 0, panY: 0, rot: 0, flip: false }; applyViewCSS(); };
+  wb._resetView = resetView;
+  $('#btn-reset').onclick = resetView;
+  $('#btn-compare').onclick = () => openCompareModal(wb);
+
+  // 图形列表与操作
+  bindShapeList(wb);
+  const msBtn = $('#btn-shape-merge');
+  if (msBtn) msBtn.onclick = () => mergeSelectedShapes(wb);
+  const spBtn = $('#btn-shape-split');
+  if (spBtn) spBtn.onclick = () => splitSelectedShape(wb);
+  const kpBtn = $('#btn-kp-copy');
+  if (kpBtn) kpBtn.onclick = () => copyKeypoints(wb);
+  // 初始化掩码位图
+  (wb.masks || []).forEach((_, i) => maskOf(i));
+  // 标注规范面板
+  mountSpecPanel(wb.task, wb.project, $('#spec-panel'));
+  // OCR 转写校对
+  const ta = $('#ocr-transcript');
+  if (ta) ta.onchange = () => { wb.transcription = ta.value; markDirty(wb); };
+  const chk = $('#btn-ocr-check');
+  if (chk) chk.onclick = async () => {
+    const text = (ta && ta.value.trim()) || '';
+    if (!text) return toast('请先录入转写文本', 'warn');
+    chk.disabled = true;
+    try {
+      const r = await api('/api/qc/operators/run', { method: 'POST', body: { text } });
+      const issues = r.issues || [];
+      $('#ocr-check-stat').textContent = issues.length ? `${issues.length} 处疑似问题 · 得分 ${r.score ?? '—'}` : '未发现问题';
+      // 字符级高亮
+      const marks = [];
+      issues.forEach((it) => {
+        const s = Number(it.start) || 0, e2 = Number(it.end) || s;
+        if (e2 > s) marks.push([s, e2, it]);
+      });
+      marks.sort((a, b) => a[0] - b[0]);
+      let html = '', pos = 0;
+      marks.forEach(([s, e2, it]) => {
+        if (s < pos) return;
+        html += esc(text.slice(pos, s));
+        html += `<mark title="${esc(it.message)}${it.suggestion ? ' → 建议：' + esc(it.suggestion) : ''}" style="background:rgba(239,68,68,.35);color:#FECACA;border-bottom:1px dashed #EF4444">${esc(text.slice(s, e2))}</mark>`;
+        pos = e2;
+      });
+      html += esc(text.slice(pos));
+      $('#ocr-check-out').innerHTML = `
+        <div style="font-size:12.5px;line-height:2;background:rgba(13,21,36,.6);border:1px solid var(--border);border-radius:8px;padding:10px;max-height:180px;overflow:auto">${html || esc(text)}</div>
+        ${issues.length ? `<div style="margin-top:6px">${issues.slice(0, 8).map((it) => `<div class="hint" style="line-height:1.7">[${it.level === 'error' ? '疑似错误' : '提示'}] ${esc(it.message)}${it.suggestion ? ` → ${esc(it.suggestion)}` : ''}</div>`).join('')}</div>` : ''}`;
+    } catch (err) { toast(err.message, 'err'); }
+    chk.disabled = false;
+  };
+  // 整图分类与场景属性
+  const catInput = $('#img-category');
+  if (catInput) catInput.onchange = () => { wb.imageClass = catInput.value.trim(); markDirty(wb); };
+  [['weather', '#img-attr-weather'], ['daytime', '#img-attr-daytime'], ['scene', '#img-attr-scene']].forEach(([key, sel2]) => {
+    const el2 = $(sel2);
+    if (el2) el2.onchange = () => { wb.imgAttrs = { ...wb.imgAttrs, [key]: el2.value }; markDirty(wb); };
   });
 
   // 列表操作
@@ -1587,18 +2093,41 @@ function bindImageWorkbench(wb, classes) {
     }
   };
 
-  // 快捷键：Delete 删除选中目标，Esc 清除筛选/选中
+  // 快捷键：Delete 删除选中目标/图形，Esc 清除筛选/选中，字母键切换工具
   document.onkeydown = (e) => {
     if (!document.body.contains($('#wb'))) return;
     if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return;
-    if ((e.key === 'Delete' || e.key === 'Backspace') && wb.canEdit && wb.selected >= 0) {
-      e.preventDefault();
-      wb.boxes.splice(wb.selected, 1);
-      wb.selected = -1;
-      markDirty(wb); refreshBoxUI(wb); drawImageBoxes(wb);
+    if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+      const toolKey = { r: 'rect', p: 'poly', c: 'circle', l: 'free', b: 'brush', g: 'fill', k: 'keypoint', v: 'pan' }[e.key.toLowerCase()];
+      if (toolKey && setTool) { setTool(toolKey); return; }
+      if (e.key.toLowerCase() === 't') { wb.view.rot = (wb.view.rot + 90) % 360; applyViewCSS(); return; }
+      if (e.key.toLowerCase() === 'f') { wb.view.flip = !wb.view.flip; applyViewCSS(); return; }
+      if (e.key.toLowerCase() === 'w') { wb.view.panY += 0.05; applyViewCSS(); return; }
+      if (e.key.toLowerCase() === 's' && wb.tool === 'pan') { wb.view.panY -= 0.05; applyViewCSS(); return; }
+      if (e.key.toLowerCase() === 'a') { wb.view.panX += 0.05; applyViewCSS(); return; }
+      if (e.key.toLowerCase() === 'd') { wb.view.panX -= 0.05; applyViewCSS(); return; }
+    }
+    if ((e.key === 'Delete' || e.key === 'Backspace') && wb.canEdit) {
+      if (wb.selShape) {
+        e.preventDefault();
+        const arr = wb.selShape.kind === 'polygon' ? wb.polygons : wb.selShape.kind === 'mask' ? wb.masks : wb.keypoints;
+        arr.splice(wb.selShape.index, 1);
+        wb.selShape = null;
+        markDirty(wb); refreshShapeUI(wb); drawImageBoxes(wb);
+        return;
+      }
+      if (wb.selected >= 0) {
+        e.preventDefault();
+        wb.boxes.splice(wb.selected, 1);
+        wb.selected = -1;
+        markDirty(wb); refreshBoxUI(wb); drawImageBoxes(wb);
+      }
     }
     if (e.key === 'Escape') {
       wb.selected = -1;
+      wb.selShape = null;
+      wb._polyDraft = null;
+      refreshShapeUI(wb); drawImageBoxes(wb);
       setFilter(wb, 'all');
     }
   };
@@ -1616,7 +2145,7 @@ function bindImageWorkbench(wb, classes) {
     );
     if (!ok) return;
     try {
-      await api(`/api/tasks/${wb.task.id}/submit`, { method: 'POST', body: { payload: payloadOf(wb) } });
+      await submitWithRuleGuard(`/api/tasks/${wb.task.id}/submit`, payloadOf(wb));
       toast('已提交质检', 'ok');
       setTimeout(() => (location.hash = '#/tasks'), 500);
     } catch (err) { toast(err.message, 'err'); }
@@ -1714,6 +2243,14 @@ function drawImageBoxes(wb) {
   const ctx = cvs.getContext('2d');
   ctx.clearRect(0, 0, cvs.width, cvs.height);
   const sw = cvs.width, sh = cvs.height;
+  // 应用视图变换（缩放/平移/旋转/镜像），后续绘制全部走图片归一化坐标
+  const v = wb.view || { zoom: 1, panX: 0, panY: 0, rot: 0, flip: false };
+  ctx.save();
+  ctx.translate((0.5 + (v.panX || 0)) * sw, (0.5 + (v.panY || 0)) * sh);
+  ctx.rotate((v.rot || 0) * Math.PI / 180);
+  if (v.flip) ctx.scale(-1, 1);
+  ctx.scale(v.zoom || 1, v.zoom || 1);
+  ctx.translate(-0.5 * sw, -0.5 * sh);
   const hasSel = wb.selected >= 0 && !!wb.boxes[wb.selected];
 
   if (wb.showBox) {
@@ -1724,12 +2261,359 @@ function drawImageBoxes(wb) {
     });
     if (hasSel) drawOneBox(ctx, wb.boxes[wb.selected], wb.selected, sw, sh, 1, true);
   }
+  // 图形层：多边形 / 掩码 / 关键点（与框同坐标系）
+  drawShapes(ctx, wb, sw, sh);
   // 正在拖的预览框
   if (wb._dragRect) {
     const r = wb._dragRect;
     ctx.strokeStyle = '#FCD34D'; ctx.setLineDash([5, 3]); ctx.lineWidth = 2;
     ctx.strokeRect(r.x * sw, r.y * sh, r.w * sw, r.h * sh);
     ctx.setLineDash([]);
+  }
+  // 圆形预览
+  if (wb._dragCircle) {
+    const { cx, cy, r } = wb._dragCircle;
+    ctx.strokeStyle = boxColor(wb.activeCls); ctx.setLineDash([5, 3]); ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(cx * sw, cy * sh, r * sw, 0, Math.PI * 2); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  // 多边形草稿
+  if (wb._polyDraft && wb._polyDraft.length) {
+    const pts = wb._polyDraft;
+    ctx.strokeStyle = '#FCD34D'; ctx.lineWidth = 2;
+    ctx.beginPath();
+    pts.forEach(([x, y], i) => (i ? ctx.lineTo(x * sw, y * sh) : ctx.moveTo(x * sw, y * sh)));
+    ctx.stroke();
+    pts.forEach(([x, y], i) => {
+      ctx.fillStyle = i === 0 ? '#22C55E' : '#FCD34D';
+      ctx.fillRect(x * sw - 3, y * sh - 3, 6, 6);
+    });
+  }
+  // 自由曲线草稿
+  if (wb._freeLive && wb._freeLive.length > 1) {
+    ctx.strokeStyle = boxColor(wb.activeCls); ctx.lineWidth = 2; ctx.beginPath();
+    wb._freeLive.forEach(([x, y], i) => (i ? ctx.lineTo(x * sw, y * sh) : ctx.moveTo(x * sw, y * sh)));
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/* ------------ 图形绘制：多边形 / 掩码 / 关键点 ------------ */
+function drawShapes(ctx, wb, sw, sh) {
+  const sel = wb.selShape;
+  // 分割掩码：按实例类别着色（白色位图 → 类别色）
+  (wb.masks || []).forEach((m, i) => {
+    const tinted = wb._maskTinted && wb._maskTinted.get(i);
+    if (!tinted) return;
+    ctx.save();
+    ctx.globalAlpha = sel && sel.kind === 'mask' && sel.index === i ? 0.85 : 0.5;
+    ctx.drawImage(tinted, 0, 0, sw, sh);
+    ctx.restore();
+    const col = boxColor(m.label);
+    ctx.fillStyle = col;
+    ctx.font = '600 11px ui-sans-serif, system-ui';
+    const text = `▨ ${m.label}#${i + 1}`;
+    ctx.fillRect(4, 4 + i * 18, ctx.measureText(text).width + 10, 16);
+    ctx.fillStyle = '#fff';
+    ctx.fillText(text, 8, 16 + i * 18);
+  });
+  // 多边形
+  (wb.polygons || []).forEach((p, i) => {
+    const pts = p.points || [];
+    if (pts.length < 2) return;
+    const col = boxColor(p.label);
+    const selected = sel && sel.kind === 'polygon' && sel.index === i;
+    ctx.save();
+    ctx.globalAlpha = selected ? 0.95 : 0.8;
+    ctx.strokeStyle = col; ctx.lineWidth = selected ? 2.4 : 1.6;
+    ctx.fillStyle = col + '22';
+    ctx.beginPath();
+    pts.forEach(([x, y], k) => (k ? ctx.lineTo(x * sw, y * sh) : ctx.moveTo(x * sw, y * sh)));
+    ctx.closePath();
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = col;
+    ctx.font = '600 11px ui-sans-serif, system-ui';
+    ctx.fillRect(pts[0][0] * sw, pts[0][1] * sh - 14, ctx.measureText(p.label).width + 8, 14);
+    ctx.fillStyle = '#fff';
+    ctx.fillText(p.label, pts[0][0] * sw + 4, pts[0][1] * sh - 3);
+    if (selected) {
+      ctx.fillStyle = '#fff';
+      pts.forEach(([x, y]) => ctx.fillRect(x * sw - 3, y * sh - 3, 6, 6));
+    }
+    ctx.restore();
+  });
+  // 关键点 + 骨骼连线
+  const kps = wb.keypoints || [];
+  if (kps.length) {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(34,197,94,.85)'; ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    kps.forEach((k, i) => {
+      const x = k.x * sw, y = k.y * sh;
+      if (i && k.link !== false) ctx.lineTo(x, y);
+      else ctx.moveTo(x, y);
+    });
+    ctx.stroke();
+    kps.forEach((k, i) => {
+      const x = k.x * sw, y = k.y * sh;
+      const col = sel && sel.kind === 'keypoint' && sel.index === i ? '#FCD34D' : '#22C55E';
+      ctx.fillStyle = col;
+      ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#050912';
+      ctx.beginPath(); ctx.arc(x, y, 2, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = col;
+      ctx.font = '600 10px ui-sans-serif, system-ui';
+      ctx.fillText(k.label || `P${i + 1}`, x + 7, y - 5);
+    });
+    ctx.restore();
+  }
+}
+
+/* ------------ 图形列表与操作 ------------ */
+function shapeListHTML(wb) {
+  const sel = wb.selShape;
+  const rows = [];
+  (wb.polygons || []).forEach((p, i) => {
+    const on = sel && sel.kind === 'polygon' && sel.index === i;
+    rows.push(`<div class="shape-row ${on ? 'sel' : ''}" data-sel="polygon:${i}">
+      <input type="checkbox" class="shape-ck" data-ck="polygon:${i}" title="合并候选" />
+      <i style="background:${boxColor(p.label)}"></i><span class="shape-kind">多边形</span>
+      <input class="box-name" data-shape-label="polygon:${i}" value="${esc(p.label)}" style="width:82px" />
+      <span class="sub">${(p.points || []).length} 顶点${p.shape === 'circle' ? ' · 圆' : ''}</span>
+      <button class="box-del" data-shape-del="polygon:${i}" title="删除">${icon('x')}</button></div>`);
+  });
+  (wb.masks || []).forEach((m, i) => {
+    const on = sel && sel.kind === 'mask' && sel.index === i;
+    rows.push(`<div class="shape-row ${on ? 'sel' : ''}" data-sel="mask:${i}">
+      <i style="background:${boxColor(m.label)}"></i><span class="shape-kind">分割</span>
+      <input class="box-name" data-shape-label="mask:${i}" value="${esc(m.label)}" style="width:82px" />
+      <span class="sub">${m.w || '—'}×${m.h || '—'}</span>
+      <button class="box-del" data-shape-del="mask:${i}" title="删除">${icon('x')}</button></div>`);
+  });
+  (wb.keypoints || []).forEach((k, i) => {
+    const on = sel && sel.kind === 'keypoint' && sel.index === i;
+    rows.push(`<div class="shape-row ${on ? 'sel' : ''}" data-sel="keypoint:${i}">
+      <i style="background:#22C55E"></i><span class="shape-kind">关键点</span>
+      <input class="box-name" data-shape-label="keypoint:${i}" value="${esc(k.label || `P${i + 1}`)}" style="width:82px" />
+      <span class="sub">${(k.x * 100).toFixed(1)},${(k.y * 100).toFixed(1)}</span>
+      <button class="box-del" data-shape-del="keypoint:${i}" title="删除">${icon('x')}</button></div>`);
+  });
+  return rows.join('') || '<div class="empty" style="padding:10px">暂无图形标注<br/>用多边形 / 画笔 / 关键点工具在画布上直接绘制</div>';
+}
+
+function refreshShapeUI(wb) {
+  const el = $('#shape-list');
+  if (el) el.innerHTML = shapeListHTML(wb);
+  const hint = $('#tool-hint');
+  if (hint && wb.tool === 'poly' && wb._polyDraft) hint.textContent = `多边形草稿 ${wb._polyDraft.length} 点 · 双击或点起点闭合`;
+}
+
+function bindShapeList(wb) {
+  const el = $('#shape-list');
+  if (!el || el._bound) return;
+  el._bound = true;
+  const arrOf = (kind) => kind === 'polygon' ? wb.polygons : kind === 'mask' ? wb.masks : wb.keypoints;
+  el.onclick = (e) => {
+    const del = e.target.closest('[data-shape-del]');
+    if (del) {
+      const [kind, idx] = del.dataset.shapeDel.split(':');
+      arrOf(kind).splice(Number(idx), 1);
+      if (wb.selShape && wb.selShape.kind === kind && wb.selShape.index === Number(idx)) wb.selShape = null;
+      markDirty(wb); refreshShapeUI(wb); drawImageBoxes(wb);
+      return;
+    }
+    const row = e.target.closest('[data-sel]');
+    if (row && !e.target.closest('input')) {
+      const [kind, idx] = row.dataset.sel.split(':');
+      wb.selShape = { kind, index: Number(idx) };
+      refreshShapeUI(wb); drawImageBoxes(wb);
+    }
+  };
+  el.oninput = (e) => {
+    const inp = e.target.closest('[data-shape-label]');
+    if (!inp) return;
+    const [kind, idx] = inp.dataset.shapeLabel.split(':');
+    arrOf(kind)[Number(idx)].label = inp.value.trim() || arrOf(kind)[Number(idx)].label;
+    markDirty(wb); drawImageBoxes(wb);
+  };
+}
+
+/* 凸包（ Graham 扫描） */
+function convexHull(pts) {
+  const P = pts.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  if (P.length < 3) return P;
+  const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lower = [];
+  for (const p of P) { while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop(); lower.push(p); }
+  const upper = [];
+  for (let i = P.length - 1; i >= 0; i--) { const p = P[i]; while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop(); upper.push(p); }
+  lower.pop(); upper.pop();
+  return lower.concat(upper);
+}
+
+function mergeSelectedShapes(wb) {
+  const cks = $$('#shape-list .shape-ck:checked');
+  if (cks.length < 2) return toast('请勾选两个及以上多边形', 'warn');
+  const idxs = cks.map((c) => Number(c.dataset.ck.split(':')[1])).sort((a, b) => a - b);
+  const all = [];
+  idxs.forEach((i) => (wb.polygons[i].points || []).forEach((p) => all.push(p)));
+  const hull = convexHull(all).map(([x, y]) => [Math.round(x * 1e4) / 1e4, Math.round(y * 1e4) / 1e4]);
+  if (hull.length < 3) return toast('合并结果无效', 'warn');
+  const label = wb.polygons[idxs[0]].label;
+  wb.polygons = wb.polygons.filter((_, i) => !idxs.includes(i));
+  wb.polygons.push({ label, points: hull });
+  wb.selShape = { kind: 'polygon', index: wb.polygons.length - 1 };
+  markDirty(wb); refreshShapeUI(wb); drawImageBoxes(wb);
+  toast(`已合并 ${idxs.length} 个多边形`, 'ok');
+}
+
+function splitSelectedShape(wb) {
+  const sel = wb.selShape;
+  if (!sel || sel.kind !== 'polygon') return toast('请先在列表选中一个多边形', 'warn');
+  const poly = wb.polygons[sel.index];
+  const pts = poly.points || [];
+  if (pts.length < 4) return toast('顶点太少无法拆分', 'warn');
+  // 按最长轴方向的中位顶点拆成两段
+  const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+  const spanX = Math.max(...xs) - Math.min(...xs), spanY = Math.max(...ys) - Math.min(...ys);
+  const axis = spanX >= spanY ? 0 : 1;
+  const sorted = pts.map((p, i) => [p, i]).sort((a, b) => a[0][axis] - b[0][axis]);
+  const cut = sorted[Math.floor(sorted.length / 2)][1];
+  const a = pts.slice(0, cut + 1), b = pts.slice(cut);
+  if (a.length < 3 || b.length < 3) return toast('该顶点位置无法拆分', 'warn');
+  poly.points = a;
+  wb.polygons.push({ label: poly.label, points: b });
+  markDirty(wb); refreshShapeUI(wb); drawImageBoxes(wb);
+  toast('已拆分为两个多边形', 'ok');
+}
+
+function copyKeypoints(wb) {
+  if (!wb.keypoints.length) return toast('当前没有关键点可复制', 'warn');
+  const n = wb.keypoints.length;
+  wb.keypoints.forEach((k, i) => wb.keypoints.push({
+    x: Math.min(1, k.x + 0.03), y: Math.min(1, k.y + 0.03),
+    label: `P${n + i + 1}`, visibility: k.visibility,
+  }));
+  markDirty(wb); refreshShapeUI(wb); drawImageBoxes(wb);
+  toast(`已复刻 ${n} 个关键点（相同姿态，偏移放置）`, 'ok');
+}
+
+/* 多图并列对比 */
+function openCompareModal(wb) {
+  const media = (wb.media || []).filter((m) => m.kind === 'image');
+  if (!media.length) return toast('该任务没有其他图片可对比', 'warn');
+  const cols = media.slice(0, 3).map((m, i) => `<div style="flex:1;min-width:200px">
+      <div class="hint" style="margin-bottom:4px">${i === 0 ? '当前图' : `媒体 ${i + 1}`} · ${esc(m.name)}</div>
+      <img src="${m.url}" style="width:100%;border-radius:8px;border:1px solid var(--border)" /></div>`).join('');
+  openModal(`<div class="modal-head"><h3>多图并列对比</h3><button class="x" data-close>×</button></div>
+    <div class="modal-body"><div style="display:flex;gap:12px;flex-wrap:wrap">${cols}</div></div>
+    <div class="modal-foot"><button class="btn ghost" data-close>关闭</button></div>`, 'wide');
+}
+
+/* ------------ 规范展示与违规预警（#8-11） ------------ */
+const specCache = new Map();
+async function fetchSpecForTask(task, project) {
+  try {
+    if (project && project.spec_id) {
+      if (!specCache.has(project.spec_id)) {
+        specCache.set(project.spec_id, await api(`/api/spec-templates/${project.spec_id}`).catch(() => null));
+      }
+      const t = specCache.get(project.spec_id);
+      if (t) {
+        return {
+          title: t.name,
+          source: '项目规范模板',
+          lines: (t.content || '').split('\n').map((x) => x.trim()).filter(Boolean),
+          samples: t.samples || [],
+        };
+      }
+    }
+  } catch (e) { /* 无规范模板 */ }
+  if (task.instruction) {
+    return { title: '本任务标注说明', source: '任务', lines: String(task.instruction).split('\n').map((x) => x.trim()).filter(Boolean), samples: [] };
+  }
+  return null;
+}
+
+async function mountSpecPanel(task, project, el) {
+  if (!el) return;
+  el.innerHTML = '<div class="hint">加载标注规范…</div>';
+  const spec = await fetchSpecForTask(task, project);
+  if (!spec) {
+    el.innerHTML = '<div class="hint">该项目未绑定规范模板，可在「模板中心 → 规范模板」创建并在项目设置中绑定。</div>';
+    return;
+  }
+  const sampleHtml = (spec.samples || []).slice(0, 6).map((s) => {
+    const isPdf = /\.pdf$/i.test(s.url || '');
+    return isPdf
+      ? `<a class="btn sm ghost" href="${esc(s.url)}" target="_blank" rel="noopener">📄 ${esc(s.name || '规范文档')}</a>`
+      : `<img src="${esc(s.url)}" title="${esc(s.name || '示例')}" style="width:72px;height:52px;object-fit:cover;border-radius:6px;border:1px solid var(--border);cursor:pointer" data-spec-zoom="${esc(s.url)}" />`;
+  }).join(' ');
+  el.innerHTML = `
+    <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+      <b style="font-size:12px">${esc(spec.title)}</b>
+      <span class="tag">${esc(spec.source)}</span>
+      <button class="btn sm ghost" style="margin-left:auto" id="spec-toggle">收起</button>
+    </div>
+    <ul id="spec-lines" style="margin:0 0 6px 16px;padding:0;font-size:12px;line-height:1.9;color:var(--text)">
+      ${spec.lines.map((l) => `<li>${esc(l)}</li>`).join('') || '<li class="hint">模板暂无规范条文</li>'}
+    </ul>
+    ${sampleHtml ? `<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">${sampleHtml}</div>` : ''}`;
+  const tg = $('#spec-toggle');
+  if (tg) tg.onclick = () => {
+    const box = $('#spec-lines');
+    const hidden = box && box.style.display === 'none';
+    if (box) box.style.display = hidden ? '' : 'none';
+    tg.textContent = hidden ? '收起' : '展开';
+  };
+  el.onclick = (e) => {
+    const img = e.target.closest('[data-spec-zoom]');
+    if (img) openModal(`<div class="modal-head"><h3>规范示例</h3><button class="x" data-close>×</button></div>
+      <div class="modal-body"><img src="${img.dataset.specZoom}" style="width:100%;border-radius:8px" /></div>
+      <div class="modal-foot"><button class="btn ghost" data-close>关闭</button></div>`);
+  };
+}
+
+/* 违规列表渲染（工作台内实时预警） */
+function violationsHTML(violations) {
+  if (!violations || !violations.length) return '';
+  return `<div style="margin-top:8px;border:1px solid rgba(239,68,68,.4);background:rgba(239,68,68,.08);border-radius:8px;padding:8px 10px">
+    <div style="font-size:12px;font-weight:600;color:#FCA5A5;margin-bottom:4px">规范预警 · ${violations.length} 项</div>
+    ${violations.map((v) => `<div style="font-size:11.5px;line-height:1.7;color:${v.level === 'error' ? '#FECACA' : '#FCD34D'}">[${v.level === 'error' ? '错误' : '警告'}] ${esc(v.message)}</div>`).join('')}
+  </div>`;
+}
+
+function renderViolations(violations) {
+  let box = $('#wb-violations');
+  if (!violations || !violations.length) {
+    if (box) box.remove();
+    return;
+  }
+  if (!box) {
+    const head = $('.wb-head');
+    if (!head) return;
+    box = document.createElement('div');
+    box.id = 'wb-violations';
+    box.style.cssText = 'flex-basis:100%;width:100%';
+    head.parentNode.insertBefore(box, head.nextSibling);
+  }
+  box.innerHTML = violationsHTML(violations);
+}
+
+/* 提交守卫：428 违规 → 确认后强制提交 */
+async function submitWithRuleGuard(path, payload, okText = '提交质检') {
+  try {
+    return await api(path, { method: 'POST', body: { payload } });
+  } catch (err) {
+    if (err.status === 428 && err.data && err.data.confirm_required) {
+      const vs = err.data.violations || [];
+      renderViolations(vs);
+      const html = vs.map((v) => `<div style="font-size:12px;line-height:1.8;color:${v.level === 'error' ? '#FECACA' : '#FCD34D'}">[${v.level === 'error' ? '错误' : '警告'}] ${esc(v.message)}</div>`).join('');
+      const ok = await confirmModal('存在规范违规', `<div style="text-align:left">${html}<div class="hint" style="margin-top:8px">修正后提交，或强制提交由质检环节复核。</div></div>`, '强制提交');
+      if (!ok) throw err;
+      return api(path, { method: 'POST', body: { payload, force: true } });
+    }
+    throw err;
   }
 }
 
@@ -1929,7 +2813,7 @@ function bindWorkbench(wb, mediaName) {
     const ok = await confirmModal('提交质检？', `共 ${wb.segments.length} 段标注，提交后将进入质检队列，标注内容暂不可修改。`, '提交质检');
     if (!ok) return;
     try {
-      await api(`/api/tasks/${wb.task.id}/submit`, { method: 'POST', body: { payload: payloadOf(wb) } });
+      await submitWithRuleGuard(`/api/tasks/${wb.task.id}/submit`, payloadOf(wb));
       toast('已提交质检', 'ok');
       setTimeout(() => (location.hash = '#/tasks'), 500);
     } catch (err) { toast(err.message, 'err'); }
@@ -1969,6 +2853,18 @@ function payloadOf(wb) {
         ...(typeof b.conf === 'number' ? { conf: b.conf } : {}),
         ...(b.auto_cls ? { auto_cls: b.auto_cls } : {}),
       })),
+      polygons: (wb.polygons || []).map((p) => ({
+        label: p.label, points: p.points,
+        ...(p.shape === 'circle' ? { shape: 'circle', cx: p.cx, cy: p.cy, r: p.r } : {}),
+      })),
+      keypoints: (wb.keypoints || []).map((k) => ({
+        label: k.label, x: Number(k.x) || 0, y: Number(k.y) || 0,
+        visibility: k.visibility ?? 2,
+      })),
+      masks: (wb.masks || []).map((m) => ({ label: m.label, w: m.w || 0, h: m.h || 0, png: m.png || '' })),
+      category: wb.imageClass || '',
+      attrs: wb.imgAttrs || {},
+      transcription: wb.transcription || '',
       summary: wb.summary || '',
       quality_score: wb.quality || 0,
     };
@@ -2008,6 +2904,7 @@ async function save(wb, silent = false) {
   try {
     const r = await api(`/api/tasks/${wb.task.id}/annotation`, { method: 'POST', body: { payload: payloadOf(wb) } });
     wb.dirty = false;
+    renderViolations(r.violations);
     const ind = $('#save-ind');
     if (ind) ind.textContent = '已保存 ' + r.saved_at.slice(11, 16);
     if (typeof wb.onSaved === 'function') wb.onSaved(r);
@@ -2025,17 +2922,64 @@ async function pageQC() {
   const tasks = data.tasks;
   const content = `
     <div class="page-head"><div><h1 class="page-title">质检中心</h1><p class="page-sub">对待质检任务执行复核、评分与返修，质检记录写入审计日志</p></div>
-      <div class="page-actions"><span class="tag">${tasks.length} 个待质检</span></div></div>
+      <div class="page-actions"><span class="tag">${tasks.length} 个待质检</span>
+        <button class="btn" id="qc-batch-approve">批量通过</button>
+        <button class="btn danger" id="qc-batch-reject">批量驳回</button></div></div>
     <div class="card"><div class="table-wrap">
-      <table class="table"><thead><tr><th>任务</th><th>项目</th><th>标注员</th><th>批次</th><th>提交时间</th><th class="right">操作</th></tr></thead>
+      <table class="table"><thead><tr><th style="width:30px"><input type="checkbox" id="qc-ck-all" /></th><th>任务</th><th>项目</th><th>标注员</th><th>批次</th><th>提交时间</th><th class="right">操作</th></tr></thead>
       <tbody>${tasks.map((t) => `<tr>
+        <td><input type="checkbox" class="qc-ck" value="${t.id}" /></td>
         <td><div class="name">${esc(t.name)}</div><div class="sub">#${t.id} · ${esc(t.modality_label)}</div></td>
         <td>${esc(t.project_name)}</td><td>${esc(t.assignee_name || '—')}</td><td class="mono">${esc(t.batch || '—')}</td>
         <td class="mono">${esc((t.updated_at || '').slice(5, 16))}</td>
-        <td class="right"><button class="btn sm primary" data-review="${t.id}">开始质检</button></td></tr>`).join('') || '<tr><td colspan="6" class="empty"><b>质检队列为空</b>所有提交任务均已完成复核</td></tr>'}</tbody></table>
+        <td class="right"><button class="btn sm primary" data-review="${t.id}">开始质检</button></td></tr>`).join('') || '<tr><td colspan="7" class="empty"><b>质检队列为空</b>所有提交任务均已完成复核</td></tr>'}</tbody></table>
     </div></div>`;
   mount('qc', '质检中心', content);
   $$('[data-review]').forEach((b) => (b.onclick = () => openReview(Number(b.dataset.review))));
+  const all = $('#qc-ck-all');
+  if (all) all.onchange = () => $$('.qc-ck').forEach((c) => { c.checked = all.checked; });
+  $('#qc-batch-approve').onclick = () => runBatchReview(tasks, 'approved');
+  $('#qc-batch-reject').onclick = () => runBatchReview(tasks, 'rejected');
+}
+
+function checkedTaskIds(cls) {
+  return $$(`.${cls}:checked`).map((c) => Number(c.value));
+}
+
+async function runBatchReview(tasks, result) {
+  const ids = checkedTaskIds('qc-ck');
+  if (!ids.length) return toast('请先勾选任务', 'warn');
+  if (result === 'approved') {
+    const ok = await confirmModal('批量质检通过？', `将对勾选的 ${ids.length} 个任务统一记 90 分通过，进入待验收。`, '批量通过');
+    if (!ok) return;
+    const r = await api('/api/tasks/batch-review', { method: 'POST', body: { task_ids: ids, result, score: 90 } });
+    toast(`通过 ${r.done.length} 个${r.failed.length ? `，失败 ${r.failed.length} 个：${r.failed[0].reason}` : ''}`, r.failed.length ? 'warn' : 'ok');
+    pageQC();
+    return;
+  }
+  openModal(`<div class="modal-head"><h3>批量驳回返修</h3><button class="x" data-close>×</button></div>
+    <div class="modal-body"><div class="form-grid">
+      <div class="field"><label>统一评分</label><input class="input" type="number" id="bqr-score" value="60" min="0" max="100" /></div>
+      <div class="field full"><label>返修意见（必填）</label><textarea class="input textarea" id="bqr-comment" placeholder="统一返修说明"></textarea></div>
+      <div class="field full"><label>错误类型</label><div class="filters" id="bqr-errors">
+        ${['漏标', '错标', '框选偏差', '标签错误', '属性错误', '其他'].map((x) => `<label class="toggle-wrap"><input type="checkbox" value="${x}"> ${x}</label>`).join('')}
+      </div></div>
+    </div></div>
+    <div class="modal-foot"><button class="btn ghost" data-close>取消</button><button class="btn danger" id="bqr-ok">批量驳回</button></div>`);
+  $('#bqr-ok').onclick = async () => {
+    const comment = $('#bqr-comment').value.trim();
+    if (!comment) return toast('请填写统一返修意见', 'warn');
+    const r = await api('/api/tasks/batch-review', {
+      method: 'POST',
+      body: {
+        task_ids: ids, result, score: Number($('#bqr-score').value) || 0, comment,
+        error_types: $$('#bqr-errors input:checked').map((x) => x.value),
+      },
+    });
+    closeModal();
+    toast(`驳回 ${r.done.length} 个${r.failed.length ? `，失败 ${r.failed.length} 个：${r.failed[0].reason}` : ''}`, r.failed.length ? 'warn' : 'ok');
+    pageQC();
+  };
 }
 
 async function openReview(tid) {
@@ -2074,13 +3018,27 @@ async function openReview(tid) {
   const panes = isImage
     ? `${editPane}${boxPane(boxes, '人工标注目标')}${preBoxes.length ? boxPane(preBoxes, 'AI 预识别目标') : ''}`
     : `${pane(segs, '人工标注结果')}${pane(preSegs, 'AI 预识别结果')}`;
-  const preview = isImage && mediaName
-    ? `<div style="display:flex;gap:12px;margin-bottom:12px;flex-wrap:wrap">
+  const mediaList = d.media || [];
+  const audioMedia = mediaList.find((m) => m.kind === 'audio');
+  const videoMedia = mediaList.find((m) => m.kind === 'video');
+  const audioSrc = audioMedia ? audioMedia.url : (mediaType === 'audio' && mediaName ? `/media/${encodeURIComponent(mediaName)}` : '');
+  const videoSrc = videoMedia ? videoMedia.url : (mediaType === 'video' && mediaName ? `/media/${encodeURIComponent(mediaName)}` : '');
+  let preview = '';
+  if (isImage && mediaName) {
+    preview = `<div style="display:flex;gap:12px;margin-bottom:12px;flex-wrap:wrap">
         <div style="flex:1;min-width:220px"><div class="hint" style="margin-bottom:4px">原图</div><img src="/media/${encodeURIComponent(mediaName)}" alt="待质检图片" style="max-height:220px;max-width:100%;border-radius:8px;border:1px solid var(--border)" /></div>
         ${resultMedia ? `<div style="flex:1;min-width:220px"><div class="hint" style="margin-bottom:4px">编辑结果图</div><img src="${resultMedia.url}" alt="编辑结果" style="max-height:220px;max-width:100%;border-radius:8px;border:1px solid var(--border)" /></div>`
           : (isEditing ? '<div style="flex:1;min-width:220px"><div class="hint" style="margin-bottom:4px">编辑结果图</div><div class="empty" style="padding:30px 10px">未挂载结果图</div></div>' : '')}
-      </div>`
-    : '';
+      </div>`;
+  } else if (audioSrc) {
+    preview = `<div style="margin-bottom:12px"><div class="hint" style="margin-bottom:4px">原始音频 · ${esc((audioMedia && audioMedia.name) || mediaName)}</div>
+      <audio controls preload="metadata" src="${audioSrc}" style="width:100%"></audio></div>`;
+  } else if (videoSrc) {
+    preview = `<div style="margin-bottom:12px"><div class="hint" style="margin-bottom:4px">原始视频 · ${esc((videoMedia && videoMedia.name) || mediaName)}</div>
+      <video controls preload="metadata" src="${videoSrc}" style="max-height:240px;max-width:100%;border-radius:8px;border:1px solid var(--border)"></video></div>`;
+  } else if (mediaName) {
+    preview = `<div class="hint" style="margin-bottom:12px">媒体文件：${esc(mediaName)}（该模态暂不支持在线预览）</div>`;
+  }
   const resultCount = isImage ? boxes.length : segs.length;
   openModal(`
     <div class="modal-head"><h3>质检 · ${esc(d.task.name)}</h3><span class="chip submitted" style="margin-left:auto">待质检</span><button class="x" data-close>×</button></div>
@@ -2145,15 +3103,18 @@ async function pageAcceptance() {
   const tasks = data.tasks || [];
   const content = `
     <div class="page-head"><div><h1 class="page-title">验收中心</h1><p class="page-sub">质检通过的任务进入验收，验收通过后完成任务并进入交付</p></div>
-      <div class="page-actions"><span class="tag">${tasks.length} 个待验收</span></div></div>
+      <div class="page-actions"><span class="tag">${tasks.length} 个待验收</span>
+        <button class="btn" id="ac-batch-approve">批量通过</button>
+        <button class="btn danger" id="ac-batch-reject">批量驳回</button></div></div>
     <div class="card"><div class="table-wrap">
-      <table class="table"><thead><tr><th>任务</th><th>项目</th><th>标注员</th><th>质检结果</th><th>验收员</th><th>更新时间</th><th class="right">操作</th></tr></thead>
+      <table class="table"><thead><tr><th style="width:30px"><input type="checkbox" id="ac-ck-all" /></th><th>任务</th><th>项目</th><th>标注员</th><th>质检结果</th><th>验收员</th><th>更新时间</th><th class="right">操作</th></tr></thead>
       <tbody>${tasks.map((t) => {
         const qc = t.qc || {};
         const qcText = qc.result === 'approved' || qc.result === 'auto_approved'
           ? `${qc.result === 'auto_approved' ? '免检' : '通过'}${qc.score ? ` · ${qc.score} 分` : ''}`
           : (qc.result === 'rejected' ? '驳回' : '—');
         return `<tr>
+          <td><input type="checkbox" class="ac-ck" value="${t.id}" /></td>
           <td><div class="name">${esc(t.name)}</div><div class="sub">#${t.id} · ${esc(t.modality_label)}</div></td>
           <td>${esc(t.project_name)}</td>
           <td>${esc(t.assignee_name || '—')}</td>
@@ -2165,9 +3126,47 @@ async function pageAcceptance() {
             <button class="btn sm success" data-accept="${t.id}">通过</button>
             <button class="btn sm danger" data-reject="${t.id}">驳回</button>
           </td></tr>`;
-      }).join('') || '<tr><td colspan="7" class="empty"><b>验收队列为空</b>质检通过的任务会出现在这里</td></tr>'}</tbody></table>
+      }).join('') || '<tr><td colspan="8" class="empty"><b>验收队列为空</b>质检通过的任务会出现在这里</td></tr>'}</tbody></table>
     </div></div>`;
   mount('acceptance', '验收中心', content);
+  const all = $('#ac-ck-all');
+  if (all) all.onchange = () => $$('.ac-ck').forEach((c) => { c.checked = all.checked; });
+  $('#ac-batch-approve').onclick = async () => {
+    const ids = checkedTaskIds('ac-ck');
+    if (!ids.length) return toast('请先勾选任务', 'warn');
+    const ok = await confirmModal('批量验收通过？', `将完成勾选的 ${ids.length} 个任务并进入交付。`, '批量通过');
+    if (!ok) return;
+    const r = await api('/api/tasks/batch-accept', { method: 'POST', body: { task_ids: ids, result: 'approved' } });
+    toast(`通过 ${r.done.length} 个${r.failed.length ? `，失败 ${r.failed.length} 个：${r.failed[0].reason}` : ''}`, r.failed.length ? 'warn' : 'ok');
+    state.context = await api('/api/context');
+    pageAcceptance();
+  };
+  $('#ac-batch-reject').onclick = () => {
+    const ids = checkedTaskIds('ac-ck');
+    if (!ids.length) return toast('请先勾选任务', 'warn');
+    openModal(`<div class="modal-head"><h3>批量验收驳回</h3><button class="x" data-close>×</button></div>
+      <div class="modal-body">
+        <div class="field"><label>统一驳回原因</label><textarea class="input textarea" id="bac-comment" placeholder="说明需要整改的问题"></textarea></div>
+        <div class="field"><label>退回阶段</label><select class="select" id="bac-target">
+          <option value="annotating">标注阶段（返修）</option>
+          <option value="review">质检阶段（复核）</option>
+        </select></div>
+      </div>
+      <div class="modal-foot"><button class="btn ghost" data-close>取消</button>
+      <button class="btn danger" id="bac-ok">批量驳回</button></div>`, 'sm');
+    $('#bac-ok').onclick = async () => {
+      const comment = $('#bac-comment').value.trim();
+      if (!comment) return toast('请填写统一驳回原因', 'warn');
+      const r = await api('/api/tasks/batch-accept', {
+        method: 'POST',
+        body: { task_ids: ids, result: 'rejected', comment, target: $('#bac-target').value },
+      });
+      closeModal();
+      toast(`驳回 ${r.done.length} 个${r.failed.length ? `，失败 ${r.failed.length} 个：${r.failed[0].reason}` : ''}`, r.failed.length ? 'warn' : 'ok');
+      state.context = await api('/api/context');
+      pageAcceptance();
+    };
+  };
   $$('[data-accept]').forEach((b) => (b.onclick = async () => {
     if (!(await confirmModal('验收通过', '确认通过该任务？通过后任务标记为已完成并进入交付。', '通过并完成'))) return;
     try {
@@ -2577,15 +3576,15 @@ async function pageDatasets() {
       <div class="kpi"><div class="kpi-label">${icon('clock')} 版本快照</div><div class="kpi-value">${totalVersions}</div><div class="kpi-delta">可回滚与导出</div></div>
     </div>
     <div class="card"><div class="card-head"><h3 class="card-title">数据集列表</h3><span class="card-sub">${list.length} 个</span></div>
-      <div class="table-wrap"><table class="table"><thead><tr><th>数据集</th><th>项目</th><th>类型</th><th>条目</th><th>版本</th><th>容量</th><th>更新时间</th><th class="right">操作</th></tr></thead><tbody>
+      <div class="table-wrap"><table class="table"><thead><tr><th>数据集</th><th>项目</th><th class="hide-lg">类型</th><th>条目</th><th class="hide-md">版本</th><th class="hide-md">容量</th><th class="hide-lg">更新时间</th><th class="right">操作</th></tr></thead><tbody>
       ${list.map((x) => `<tr data-ds="${x.id}">
         <td><div class="name">${esc(x.name)}</div><div class="sub mono">${esc(x.code)}</div></td>
         <td>${esc(x.project_name || '未绑定')}</td>
-        <td><span class="chip info">${esc(x.modality_label)}</span></td>
+        <td class="hide-lg"><span class="chip info">${esc(x.modality_label)}</span></td>
         <td><b>${x.item_count}</b></td>
-        <td><span class="tag">v${x.latest_version}</span></td>
-        <td>${fmtBytes(x.size)}</td>
-        <td class="sub">${esc((x.updated_at || '').slice(5, 16))}</td>
+        <td class="hide-md"><span class="tag">v${x.latest_version}</span></td>
+        <td class="hide-md">${fmtBytes(x.size)}</td>
+        <td class="sub hide-lg">${esc((x.updated_at || '').slice(5, 16))}</td>
         <td class="right"><button class="btn sm" data-detail="${x.id}">详情</button>
           <a class="btn sm" href="/api/datasets/${x.id}/export" data-export>导出</a></td>
       </tr>`).join('') || '<tr><td colspan="8"><div class="empty"><b>暂无数据集</b>先在数据集管理中创建，或从项目任务导入</div></td></tr>'}
@@ -2746,6 +3745,10 @@ async function pageTemplates() {
   const content = `
     <div class="page-head"><div><h1 class="page-title">模板中心</h1><p class="page-sub">标签体系与质检策略模板化，一键应用到项目与工作流</p></div>
       <div class="page-actions">${can('template.write') ? `<button class="btn primary" id="tpl-new">${icon('plus')} 新建模板</button>` : ''}</div></div>
+    <div class="card" style="margin-bottom:14px"><div class="card-head"><h3 class="card-title">标注规范模板库</h3>
+      <span class="card-sub">可编辑、可复用；绑定到项目后，标注工作台实时展示规范要点与示例截图</span>
+      ${can('template.write') ? `<button class="btn sm primary" id="spec-new" style="margin-left:auto">${icon('plus')} 新建规范</button>` : ''}</div>
+      <div class="card-body" id="spec-list"><span class="hint">加载规范模板…</span></div></div>
     <div class="grid tpl-grid">
       ${state.templates.map((x) => {
         const labelGroups = Object.keys(x.labels || {});
@@ -2764,10 +3767,107 @@ async function pageTemplates() {
       }).join('') || '<div class="empty">暂无模板</div>'}
     </div>`;
   mount('templates', '模板中心', content);
+  refreshSpecManager();
+  const specNew = $('#spec-new');
+  if (specNew) specNew.onclick = () => openSpecModal(0);
   $$('[data-tpl-view]').forEach((b) => (b.onclick = () => templateDetail(Number(b.dataset.tplView))));
   $$('[data-tpl-apply]').forEach((b) => (b.onclick = () => applyTemplateModal(Number(b.dataset.tplApply))));
   const nb = $('#tpl-new');
   if (nb) nb.onclick = newTemplateModal;
+}
+
+async function refreshSpecManager() {
+  const el = $('#spec-list');
+  if (!el) return;
+  const data = await api('/api/spec-templates').catch(() => ({ templates: [] }));
+  const tpls = data.templates || [];
+  const projData = state.projects || [];
+  el.innerHTML = tpls.map((t) => `
+    <div class="filters" style="border-bottom:1px solid rgba(30,42,63,.4);padding:8px 0;align-items:center">
+      <b style="font-size:12.5px">${esc(t.name)}</b>
+      <span class="chip plain">${t.modality ? esc(dbMODALITY(t.modality)) : '通用'}</span>
+      <span class="sub">${(t.content || '').split('\n').filter(Boolean).length} 条规范 · ${(t.samples || []).length} 个示例</span>
+      <span class="spacer"></span>
+      <select class="select" data-spec-bind="${t.id}" style="width:170px;height:26px">
+        <option value="">绑定到项目…</option>
+        ${projData.filter((p) => can('project.write') || p.my_role === 'manager').map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}
+      </select>
+      ${can('template.write') ? `<button class="btn sm" data-spec-edit="${t.id}">编辑</button>
+      <button class="btn sm ghost danger" data-spec-del="${t.id}">删除</button>` : ''}
+    </div>`).join('') || '<div class="empty">暂无规范模板，点击右上角「新建规范」创建</div>';
+  $$('#spec-list [data-spec-edit]').forEach((b) => (b.onclick = () => openSpecModal(Number(b.dataset.specEdit))));
+  $$('#spec-list [data-spec-del]').forEach((b) => (b.onclick = async () => {
+    if (!await confirmModal('删除规范模板？', '删除后已绑定项目将不再显示该规范。', '删除')) return;
+    await api(`/api/spec-templates/${b.dataset.specDel}`, { method: 'DELETE' });
+    toast('已删除', 'ok');
+    refreshSpecManager();
+  }));
+  $$('#spec-list [data-spec-bind]').forEach((s) => (s.onchange = async () => {
+    if (!s.value) return;
+    await api(`/api/projects/${s.value}`, { method: 'PATCH', body: { spec_id: Number(s.dataset.specBind) } });
+    toast('已绑定到项目，标注工作台将实时展示该规范', 'ok');
+    s.value = '';
+  }));
+}
+
+function dbMODALITY(m) { return ({ audio: '语音', image: '图片', video: '视频', text: '文本', pointcloud: '点云', multimodal: '多模态', llm: '大模型', pdf: 'PDF' })[m] || m; }
+
+async function openSpecModal(id) {
+  const t = id ? await api(`/api/spec-templates/${id}`) : { name: '', modality: '', content: '', samples: [] };
+  openModal(`<div class="modal-head"><h3>${id ? '编辑规范模板' : '新建规范模板'}</h3><button class="x" data-close>×</button></div>
+    <div class="modal-body"><div class="form-grid">
+      <div class="field"><label>模板名称</label><input class="input" id="sp-name" value="${esc(t.name)}" placeholder="例如：人车流量检测标注规范" /></div>
+      <div class="field"><label>适用模态</label><select class="select" id="sp-modality">${['', 'image', 'audio', 'video', 'text', 'pointcloud'].map((m) => `<option value="${m}" ${t.modality === m ? 'selected' : ''}>${m ? dbMODALITY(m) : '通用'}</option>`).join('')}</select></div>
+      <div class="field full"><label>规范条文（每行一条，工作台实时展示）</label><textarea class="input textarea" id="sp-content" rows="8" placeholder="1. 目标框需贴合目标边缘，误差不超过 2 像素&#10;2. 遮挡超过 50% 的目标标记为遮挡属性&#10;3. …">${esc(t.content)}</textarea></div>
+      <div class="field full"><label>示例截图 / 规范文档（可上传多张）</label>
+        <div id="sp-samples" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px">
+          ${(t.samples || []).map((s, i) => `<span style="position:relative"><img src="${esc(s.url)}" style="width:84px;height:60px;object-fit:cover;border-radius:6px;border:1px solid var(--border)" title="${esc(s.name)}" />
+            <button class="x" data-sp-del-sample="${i}" style="position:absolute;top:-6px;right:-6px;background:#EF4444;color:#fff;border:none;border-radius:50%;width:16px;height:16px;font-size:10px;cursor:pointer">×</button></span>`).join('')}
+        </div>
+        <input type="file" id="sp-file" accept="image/*,application/pdf" />
+      </div>
+    </div></div>
+    <div class="modal-foot"><button class="btn ghost" data-close>取消</button>
+      ${id ? '<button class="btn danger" id="sp-del">删除</button>' : ''}
+      <button class="btn primary" id="sp-save">保存模板</button></div>`, 'wide');
+  let samples = (t.samples || []).slice();
+  const fileInput = $('#sp-file');
+  fileInput.onchange = async () => {
+    const f = fileInput.files[0];
+    if (!f) return;
+    if (!id) return toast('请先保存模板，再上传示例附件', 'warn');
+    const fd = new FormData(); fd.append('file', f);
+    const r = await api(`/api/spec-templates/${id}/attachment`, { method: 'POST', body: fd });
+    samples.push({ name: r.name, url: r.url });
+    openSpecModalRefreshSamples(samples);
+  };
+  const openSpecModalRefreshSamples = (ss) => {
+    const box = $('#sp-samples');
+    if (box) box.innerHTML = ss.map((s, i) => `<span style="position:relative"><img src="${esc(s.url)}" style="width:84px;height:60px;object-fit:cover;border-radius:6px;border:1px solid var(--border)" title="${esc(s.name)}" /></span>`).join('');
+  };
+  $('#sp-save').onclick = async () => {
+    const body = {
+      name: $('#sp-name').value.trim(),
+      modality: $('#sp-modality').value,
+      content: $('#sp-content').value,
+      samples,
+    };
+    if (!body.name) return toast('请填写模板名称', 'warn');
+    if (id) await api(`/api/spec-templates/${id}`, { method: 'PATCH', body });
+    else await api('/api/spec-templates', { method: 'POST', body });
+    closeModal(); toast('规范模板已保存', 'ok');
+    specCache.clear();
+    refreshSpecManager();
+  };
+  const delBtn = $('#sp-del');
+  if (delBtn) delBtn.onclick = async () => {
+    if (!await confirmModal('删除规范模板？', '删除后不可恢复。', '删除')) return;
+    await api(`/api/spec-templates/${id}`, { method: 'DELETE' });
+    closeModal(); toast('已删除', 'ok'); specCache.clear(); refreshSpecManager();
+  };
+  document.querySelectorAll('[data-sp-del-sample]').forEach((b) => {
+    b.onclick = () => { samples.splice(Number(b.dataset.spDelSample), 1); openSpecModalRefreshSamples(samples); };
+  });
 }
 
 function templateDetail(id) {

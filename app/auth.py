@@ -4,14 +4,14 @@ from __future__ import annotations
 import json
 import os
 import secrets
+from datetime import datetime, timedelta
 
 from fastapi import HTTPException, Request
 
 from . import db
 
-SESSIONS: dict[str, int] = {}
-ACTIVE_TENANTS: dict[str, int] = {}
 COOKIE = "chunke_session"
+SESSION_TTL_HOURS = 12
 
 PLATFORM_ROLES = {
     "platform_admin": "平台管理员",
@@ -31,36 +31,47 @@ PROJECT_ROLES = {
 }
 
 
+def _expiry() -> str:
+    return (datetime.now() + timedelta(hours=SESSION_TTL_HOURS)).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _prune_expired() -> None:
+    db.execute("DELETE FROM sessions WHERE expires_at < ?", (db.now(),))
+
+
 def create_session(user_id: int) -> str:
     token = secrets.token_hex(24)
-    SESSIONS[token] = user_id
+    _prune_expired()
+    db.execute(
+        "INSERT INTO sessions(token,user_id,created_at,expires_at) VALUES(?,?,?,?)",
+        (token, user_id, db.now(), _expiry()),
+    )
     return token
 
 
 def destroy_session(token: str | None) -> None:
     if token:
-        SESSIONS.pop(token, None)
-        ACTIVE_TENANTS.pop(token, None)
+        db.execute("DELETE FROM sessions WHERE token=?", (token,))
 
 
 def set_active_tenant(token: str | None, tenant_id: int | None) -> None:
     if not token:
         return
     if tenant_id:
-        ACTIVE_TENANTS[token] = int(tenant_id)
+        db.execute("UPDATE sessions SET tenant_id=? WHERE token=?", (int(tenant_id), token))
     else:
-        ACTIVE_TENANTS.pop(token, None)
+        db.execute("UPDATE sessions SET tenant_id=NULL WHERE token=?", (token,))
 
 
 def user_by_token(token: str | None) -> dict | None:
     if not token:
         return None
-    uid = SESSIONS.get(token)
-    if not uid:
-        return None
     return db.row(
-        "SELECT id,username,name,platform_role,status,tenant_id,org_id,team_id FROM users WHERE id=?",
-        (uid,),
+        "SELECT u.id,u.username,u.name,u.platform_role,u.status,u.tenant_id,u.org_id,u.team_id,"
+        " s.tenant_id session_tenant_id"
+        " FROM sessions s JOIN users u ON u.id=s.user_id"
+        " WHERE s.token=? AND s.expires_at >= ?",
+        (token, db.now()),
     )
 
 
@@ -69,9 +80,8 @@ def current_user(request: Request) -> dict:
     user = user_by_token(token)
     if not user or user["status"] != "active":
         raise HTTPException(status_code=401, detail="请先登录")
-    active = ACTIVE_TENANTS.get(token) if token else None
+    active = user.pop("session_tenant_id", None)
     if active and active != user.get("tenant_id"):
-        user = dict(user)
         user["tenant_id"] = active
         member = db.row(
             "SELECT org_id,team_id FROM tenant_members WHERE tenant_id=? AND user_id=? AND status='active'",

@@ -33,10 +33,14 @@
 | 任务治理 | 任务大厅、任务包、领取锁、条件工作流、暂停/恢复/终止、包级退回与返工历史；质检通过后进入待验收，验收通过才完成 |
 | 模板编排 | 组件库、嵌套容器、属性与校验、版本升版与灰度投放、模板驱动表单 |
 | 多模态标注 | 图片/音频/视频/文本/点云/LLM/多模态/PDF 八类工作台；文本嵌套实体与语义匹配、语音语种/强度/发音校对、视频行为区间/逐帧、点云关键点/车道线/4D 帧序列 |
+| 图片图形工具链 | 画布直绘矩形/多边形/圆形/自由曲线，画笔/填充/橡皮擦分割实例（异色），关键点骨骼连线与批量复刻，整图分类与场景属性，缩放/平移/旋转/镜像/多图对比，区域合并拆分 |
+| 3D 点云工作台 | three.js r160 透视渲染（本地 vendor，无 CDN 依赖）；轨道/平移/缩放；3D 框画布交互（放置/拉伸/旋转/复制）；框选/多边形点云分割（RLE 存储）；车道线折线；ROI 裁剪与强度筛选；二进制 PCD/BIN/PLY 解析；**2D 相机双视图 + 标定投影联动**；**内置 AI 预标注**（地面滤除→聚类→PCA 拟合框）；4D 帧序列时间轴 |
+| 规范与预警 | 可复用标注规范模板库（示例截图/PDF 附件），绑定项目后工作台实时展示规范要点；保存/提交自动跑规则引擎，违规即时预警（428 确认后强制提交） |
+| 批量审核 | 质检/验收队列勾选批量通过/驳回（统一意见+错误类型+退回阶段），逐条失败原因，全部写入审计日志 |
 | 交互式算子 | SAM 分割、OCR、视频跟踪、文档问答、ASR、开放词检测、文本润色（内置降级 + 外部服务） |
 | 智能质检 | 规则引擎 + 质检算子库 + 阈值/权重/组合规则 + 字符级定位高亮；驳回错误类型（漏标/错标/框选偏差等）与分布统计 |
 | 集成与运维 | 双向集成端点、Prometheus/Loki/数据湖、备份恢复、升级回滚、TLS 反向代理 |
-| 安全合规 | PBKDF2 口令、Cookie 会话、IP 白名单、TOTP MFA、OIDC SSO、SCIM 2.0、API Key、媒体短时 Token、水印、审计导出 |
+| 安全合规 | PBKDF2 口令、SQLite 持久化会话（12h 过期）、IP 白名单、TOTP MFA、OIDC SSO、SCIM 2.0、API Key、媒体短时 Token、水印、审计导出 |
 
 > 算法类能力默认提供**内置降级实现**，配置 `operator.<name>.url` 后自动切换到真实推理服务；不配置也能完整走通业务流程与演示。
 
@@ -78,7 +82,7 @@
 
 - Python 3.12 + FastAPI + Uvicorn
 - SQLite（WAL 模式，单机零依赖）
-- 原生 HTML/CSS/JS，无 Node 构建步骤
+- 原生 HTML/CSS/JS，无 Node 构建步骤（点云工作台使用 three.js r160，已 vendor 至 `app/static/vendor/three.module.js`）
 - 可选：ffmpeg（音视频预处理）、onnxruntime/scikit-learn（本地预标注）、FunASR 独立 venv（语音转写）
 - 部署：Docker / Docker Compose + Nginx TLS
 
@@ -104,18 +108,22 @@ chunke-label-platform/
 │   └── static/
 │       ├── index.html
 │       ├── styles.css
-│       ├── app.js         # SPA 框架、任务、工作台
-│       ├── pages_v3.js    # 作业中心/任务大厅/算子/质检/运维
-│       └── pages_v4.js    # 控制台/模板编排/高级标注/质检算子
+│       ├── app.js         # SPA 框架、任务、图片工作台（图形工具链/规范面板）
+│       ├── pages_v3.js    # 作业中心/任务大厅/three.js 点云工作台/质检/运维
+│       ├── pages_v4.js    # 控制台/模板编排/高级标注/质检算子
+│       └── vendor/
+│           └── three.module.js  # three.js r160（本地 vendor，点云渲染）
 ├── scripts/
 │   ├── run.sh             # 本地启动
 │   ├── asr_worker.py      # FunASR 离线转写 worker
 │   ├── detect_worker.py   # 图片检测 worker
-│   └── loadtest.py        # 只读并发压测
+│   ├── loadtest.py        # 只读并发压测
+│   └── import_datasets.py # KITTI/nuScenes/DAIR 外部数据集一键导入
 ├── deploy/
 │   └── nginx.conf         # TLS 终止与反向代理
 ├── docs/
-│   └── bid-gap-analysis/  # 招标需求差距分析与演示清单
+│   ├── bid-gap-analysis/  # 招标需求差距分析与演示清单
+│   └── 数据标注平台系统研发汇报-差距分析.md  # 研发汇报需求差距分析（含实施状态）
 ├── data/
 │   ├── media/             # 媒体文件（演示素材入库）
 │   ├── backups/           # 运行期备份（gitignore）
@@ -183,9 +191,10 @@ Nginx 暴露 `8080`（HTTP 跳转）与 `8443`（HTTPS），反向代理到应�
 | `liuxiao` | project_manager | 项目平台 | 项目经理，管理所辖项目 |
 | `wangmin` / `liqiang` | annotator | 项目平台 | 标注员，仅见分派任务 |
 | `zhoulan` | reviewer | 项目平台 | 质检员，仅见待质检任务 |
+| `acceptor` | acceptor | 项目平台 | 验收员（陈静），仅见待验收任务 |
 | `client` | client | 项目平台 | 客户只读 |
 
-> 验收员使用平台/项目角色 `acceptor`，可由租户管理员在成员管理中创建，或通过 `POST /api/tasks/{tid}/roles` 给具体任务授权。没有预置验收员账号，避免演示数据被误改。
+> 验收员演示账号 `acceptor` 仅授予语音客服与 v4 演示项目的验收角色，用于走通「质检通过 → 待验收 → 验收」闭环；生产环境请修改默认口令或停用。
 
 ### 4.5 重置本地数据
 
@@ -266,11 +275,11 @@ POST /api/tasks/{tid}/form                  保存表单值
 
 | 模态 | 能力 |
 |---|---|
-| 图片 | 矩形框、多边形/孔洞、掩码、关键点、SAM 交互分割、OCR 区域、开放词检测 |
+| 图片 | 矩形/多边形/圆形/自由曲线画布直绘（顶点拖拽、RDP 简化），画笔/填充/橡皮擦分割实例（PNG 位图 + 类别异色），关键点骨骼连线与「复刻关键点」，整图分类与场景属性，缩放/WASD 平移/旋转/镜像/多图对比，多边形合并拆分，SAM 交互分割、OCR 区域、开放词检测，OCR 转写校对（字符级高亮） |
 | 音频 | 波形 + 分段轨道、说话人/情绪/事件、语种、情绪强度 1–5、发音校对（错读/漏读/多读/声调）、ASR 转写、音频预处理 |
-| 视频 | 逐帧框、关键帧插值、复制上一帧、0.5–2 倍速、逐帧/10 帧跳转、行为区间（主体+起止帧）、视频分类与属性 |
-| 文本 | 字符级 span、嵌套实体（父子层级）、词性、层级分类、情感极性与强度、A/B 语义匹配、文本质检 |
-| 点云 | 3D 投影框、关键点、车道线（类型/实虚线）、按深度/高度/距离着色、距离过滤、场景分类、4D 帧快照复制/载入 |
+| 视频 | 逐帧框、关键帧插值、复制上一帧、**内置自动跟踪**（前两关键帧匀速运动估计传播，可接 `operator.track.url`）、0.5–2 倍速、逐帧/10 帧跳转、行为区间（主体+起止帧）、视频分类与属性 |
+| 文本 | 字符级 span、嵌套实体（父子层级）、词性、层级分类、情感极性与强度、A/B 语义匹配、**内置实体预识别**（词典 NER，AI 标记供确认）、文本质检 |
+| 点云 | **three.js r160 透视渲染**：轨道/平移/缩放、地面网格；3D 框画布放置与把手拖拽（角点拉伸/顶柄调高/前柄旋转/复制参数）；框选/多边形分割（RLE 索引、语义/实例着色）；车道线多点折线与复用；ROI 裁剪 + 强度筛选；**2D 相机双视图联动 + 标定投影（含点云投影开关）**；**内置 AI 预标注**（聚类 + PCA 拟合，置信度可核对）；4D 帧序列时间轴（快照/播放/逐帧写入）；场景分类；二进制 PCD/BIN/PLY 解析 |
 | LLM | 问答对生成/采纳、多轮对话、偏好排序、评分、润色、视觉语言 |
 | 多模态 | 图/音/视频与文本配对、A/B 时间区间与区域、同步定位/播放、偏差提示 |
 | PDF | 文档区域、OCR 字段映射、问答生成、多算子对比与来源标注 |
@@ -359,14 +368,46 @@ GET  /api/qc/operators             算子目录
 ```text
 GET  /api/acceptance                 待验收队列
 POST /api/tasks/{tid}/accept         验收：{ "result": "approved|rejected", "comment": "", "target": "annotating|review" }
+POST /api/tasks/batch-review         批量质检：{ "task_ids": [], "result": "approved|rejected", "score": 90, "comment": "", "error_types": [] }
+POST /api/tasks/batch-accept         批量验收：{ "task_ids": [], "result": "approved|rejected", "comment": "", "target": "annotating|review" }
 GET  /api/quality/error-types        驳回错误类型分布
 ```
+
+### 5.11 标注规范模板库与违规预警
+
+- **规范模板库**：模板中心「标注规范模板库」支持创建/编辑可复用规范（适用模态 + 条文 + 示例截图/PDF 附件），并可绑定到项目（`PATCH /api/projects/{pid}` 的 `spec_id`）。
+- **工作台实时展示**：图片/语音工作台右侧常驻规范面板，逐条展示规范要点，示例图点击放大。
+- **违规即时预警**：保存标注时自动运行项目规则引擎（`quality_rules`），响应携带 `violations` 并在工作台顶部弹预警条；提交时若有 error 级违规返回 `428 confirm_required`，确认后可 `force` 强制提交交由质检复核。
+
+### 5.12 外部数据集导入
+
+`scripts/import_datasets.py` 把本机已下载的公开数据集一键导入为标注任务（幂等，按项目+任务名去重）：
+
+```bash
+python3 scripts/import_datasets.py --root /Volumes/ORICO/data/datasets --only all
+```
+
+| 数据源 | 目标项目 | 说明 |
+|---|---|---|
+| `kitti_image` | 城市治理-人车流量检测 | KITTI object/training 图片 + label_2 二维真值框（AI 预识别 + 部分人工确认） |
+| `kitti_lidar` | 智驾-点云目标标框 | velodyne 点云（3 万点）+ 标定矩阵精确换算 3D 框 + 同帧相机图（双视图投影联动） |
+| `nuscenes` | 智驾-点云目标标框 | nuScenes mini LIDAR_TOP 点云，按微秒时间戳匹配 CAM_FRONT 图作为附件 |
+| `dair` | 城市治理-人车流量检测 | DAIR-V2X-C（需镜像包含图像文件；仅标注包的镜像会自动跳过） |
 
 ---
 
 ## 6. 演示路径
 
-演示项目：`demo-v4-multi`（演示-视频/文档/大模型/多模态）
+三大基础场景（语音 / 图片 / 文本）已预置真实演示数据，登录 `wangmin` 即可在「我的任务」中直接标注：
+
+| 场景 | 项目 | 演示任务 | 演示点 |
+|---|---|---|---|
+| 语音 | 语音-客服话术质检 | 客服来电-20261123-001/002 | 波形播放、FunASR 预识别、分段转写、说话人/情绪/事件、业务分类 |
+| 图片 | 城市治理-人车流量检测 | 路口抓拍-曼哈顿-001 等 | 画布直绘多边形/分割/关键点、Grounding DINO 预识别、名称下拉、CSV 导出、类别筛选、整图分类 |
+| 文本 | 文本-用户评论标注 | 评论标注-0001/0002 | 语料自动加载、嵌套实体、预识别实体、情感极性/强度、层级分类、语义匹配 |
+| 3D 点云 | 智驾-点云目标标框 | kitti-点云-000006 等 | three.js 透视渲染、双视图 2D 投影联动、AI 预标注、框拖拽/分割、4D 帧序列 |
+
+多模态演示项目：`demo-v4-multi`（演示-视频/文档/大模型/多模态）
 
 | 任务 | 模态 | 演示点 |
 |---|---|---|
@@ -379,18 +420,19 @@ GET  /api/quality/error-types        驳回错误类型分布
 
 1. 登录 `admin` → 自动进入管理平台 `#/admin/dashboard`，查看平台总览、租户与 RBAC 矩阵。
 2. 切换到 `tb_admin` 登录 → 租户平台 `#/tenant/dashboard`，展示本租户项目/团队/成员与租户切换器。
-3. 切换到 `wangmin` 登录 → 项目平台 `#/project/1/dashboard`，展示“我的任务/验收中心/质检中心”。
-4. 平台控制台 → 租户配额、计量计费、安全合规基线。
-5. 模板中心 → 打开任一模板编排器，展示组件库、嵌套、灰度与版本。
-6. 任务中心 → 打开任务 16，演示时间轴、SAM 与跟踪参数。
-7. 打开任务 17，演示 PDF 区域、OCR 字段映射、问答对比。
-8. 打开任务 18，演示问答对、多轮对话、润色采纳。
-9. 打开任务 19，演示跨模态配对与同步定位。
-10. 平台控制台 → 文本质检算子，输入 `这个帐号登陆失败,,请检查.` 运行，展示得分、位置与高亮。
-11. 质检驳回：勾选“漏标/框选偏差”等错误类型，展示质检页错误类型分布。
-12. 验收闭环：质检通过 → 待验收 → 验收通过进入已完成；验收驳回退回标注/质检。
-13. 成员管理 → 批量导入，粘贴 `zhangsan,张三,标注员,chunke123` 演示逐行校验。
-14. 运维：监控摘要、备份、审计导出。
+3. 切换到 `wangmin` 登录 → 项目平台 `#/project/1/dashboard`，展示“我的任务/任务大厅”。
+4. 基础场景三件套：打开「客服来电」任务演示波形与预识别；打开「路口抓拍-曼哈顿」演示人/车画框与 AI 预识别；打开「评论标注-0001」演示实体高亮与情感标注。
+5. 平台控制台 → 租户配额、计量计费、安全合规基线。
+6. 模板中心 → 打开任一模板编排器，展示组件库、嵌套、灰度与版本。
+7. 任务中心 → 打开任务 16，演示时间轴、SAM 与跟踪参数。
+8. 打开任务 17，演示 PDF 区域、OCR 字段映射、问答对比。
+9. 打开任务 18，演示问答对、多轮对话、润色采纳。
+10. 打开任务 19，演示跨模态配对与同步定位。
+11. 平台控制台 → 文本质检算子，输入 `这个帐号登陆失败,,请检查.` 运行，展示得分、位置与高亮。
+12. 质检驳回：勾选“漏标/框选偏差”等错误类型，展示质检页错误类型分布。
+13. 验收闭环：质检通过 → 待验收 → `acceptor`（陈静）验收通过进入已完成；验收驳回退回标注/质检。
+14. 成员管理 → 批量导入，粘贴 `zhangsan,张三,标注员,chunke123` 演示逐行校验。
+15. 运维：监控摘要、备份、审计导出。
 
 ---
 
@@ -493,7 +535,7 @@ curl -s -b /tmp/ck.jar -H 'Content-Type: application/json' \
 - 媒体目录：`data/media/`，任务媒体经 `task_media` 关联；支持本地与 S3 兼容存储。
 - 备份目录：`data/backups/`（已被 `.gitignore` 忽略）。
 - 凭据加密密钥：`data/secret.key` 或 `CK_SECRET_KEY`（不入库）。
-- 主要数据表：`tenants`、`tenant_members`、`users`、`orgs`、`teams`、`projects`、`project_members`、`task_roles`、`tasks`、`annotations`、`annotation_versions`、`acceptance_records`、`templates`、`template_layouts`、`template_versions`、`datasets`、`dataset_versions`、`dataset_items`、`workflows`、`task_packages`、`rework_events`、`qc_records`、`quality_rules`、`operators`、`operator_runs`、`integration_endpoints`、`sync_logs`、`secret_vault`、`api_keys`、`security_events`、`capacity_snapshots`。
+- 主要数据表：`tenants`、`tenant_members`、`users`、`orgs`、`teams`、`projects`、`project_members`、`task_roles`、`tasks`、`annotations`、`annotation_versions`、`acceptance_records`、`templates`、`template_layouts`、`template_versions`、`datasets`、`dataset_versions`、`dataset_items`、`workflows`、`task_packages`、`rework_events`、`qc_records`、`quality_rules`、`spec_templates`、`sessions`、`operators`、`operator_runs`、`integration_endpoints`、`sync_logs`、`secret_vault`、`api_keys`、`security_events`、`capacity_snapshots`。
 
 ---
 
@@ -510,9 +552,9 @@ curl -s -b /tmp/ck.jar -H 'Content-Type: application/json' \
 
 - 单机 SQLite 架构，超大规模并发建议迁移 PostgreSQL 并增加对象存储。
 - 视频抽帧与转码依赖本机 ffmpeg。
-- 内置算法为规则/几何降级实现，精度不等同于生产模型。
-- 点云工作台提供 3D 框、关键点、车道线、距离过滤与 4D 帧快照；**点级语义分割**与真实连续点云序列（流式 PCD 帧）尚未实现。
-- 视频跟踪为手动关键帧 + 线性插值，未内置模型自动跟踪；可接 `operator.track.url`。
+- 内置算法为规则/几何降级实现，精度不等同于生产模型；点云 AI 预标注为聚类启发式，仅作预识别供人工核对。
+- 点云工作台已支持 3D 框交互、点云分割（RLE）、车道线、4D 帧序列与 2D 投影联动；**点级语义分割**与真实连续点云序列（流式 PCD 帧）尚未实现。
+- 视频跟踪内置匀速运动估计降级，生产精度可接 `operator.track.url`。
 - 多语言目前提供语言偏好字段与数据集 `lang` 标记，**全站中英文词条翻译**尚未完成。
 - 页面水印已实现；导出 CSV/JSON 文件内嵌水印未实现，避免破坏训练数据格式。
 - 批量导入支持 CSV 上传与 JSON 批量；百万级性能、平板适配与私有化安装包需在交付环境专项验证。

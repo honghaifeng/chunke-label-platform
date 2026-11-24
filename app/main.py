@@ -277,6 +277,27 @@ def create_project(body: dict, user: dict = Depends(me)):
     return {"ok": True, "id": pid}
 
 
+@app.patch("/api/projects/{pid}")
+def update_project(pid: int, body: dict, user: dict = Depends(me)):
+    project = db.row("SELECT * FROM projects WHERE id=?", (pid,))
+    if not project:
+        raise HTTPException(404, "项目不存在")
+    if not (auth.is_admin(user) or auth.project_role(user, pid) == "manager"):
+        raise HTTPException(403, "仅项目经理可修改项目")
+    fields = []
+    vals: list = []
+    for key, col in (("name", "name"), ("description", "description"), ("spec_id", "spec_id"), ("labels", "label_config")):
+        if key in body:
+            v = json.dumps(body[key], ensure_ascii=False) if key == "labels" else body[key]
+            fields.append(f"{col}=?")
+            vals.append(v)
+    if fields:
+        vals += [pid]
+        db.execute(f"UPDATE projects SET {', '.join(fields)} WHERE id=?", tuple(vals))
+        db.log(user["id"], "update_project", f"project:{pid}", ",".join(f.split("=")[0] for f in fields))
+    return {"ok": True}
+
+
 @app.get("/api/projects/{pid}/members")
 def project_members(pid: int, user: dict = Depends(me)):
     if not auth.is_admin(user) and not auth.project_role(user, pid):
@@ -455,7 +476,7 @@ def create_task(body: dict, user: dict = Depends(me)):
     if not name:
         raise HTTPException(400, "任务名称不能为空")
     media_type = body.get("media_type") or project["modality"]
-    if media_type not in ("audio", "image", "video", "pointcloud"):
+    if media_type not in ("audio", "image", "video", "pointcloud", "text", "llm", "pdf", "multimodal", "timeseries"):
         media_type = project["modality"]
     priority = body.get("priority") or "normal"
     if priority not in ("low", "normal", "high"):
@@ -720,6 +741,17 @@ def run_prelabel(tid: int, body: dict | None = None, user: dict = Depends(me)):
     return {"ok": True, "prelabel": result}
 
 
+def _rule_check(task: dict, payload: dict) -> dict:
+    """按项目启用规则评估当前标注结果（即时预警用）。"""
+    rules = db.rows(
+        "SELECT * FROM quality_rules WHERE enabled=1 AND (project_id=? OR project_id IS NULL)",
+        (task["project_id"],),
+    )
+    for r in rules:
+        r["config"] = json.loads(r["config"] or "{}")
+    return workbench.evaluate_rules(task, payload, rules)
+
+
 @app.post("/api/tasks/{tid}/annotation")
 def save_annotation(tid: int, body: dict, user: dict = Depends(me)):
     task = _get_task(tid, user)
@@ -735,7 +767,7 @@ def save_annotation(tid: int, body: dict, user: dict = Depends(me)):
     if task.get("modality") == editing.MODALITY:
         # 图像编辑指令：保存时归一化结构，提交时再做硬校验
         payload = editing.normalize(payload)
-    elif (task.get("media_type") or "audio") == "image":
+    elif (task.get("media_type") or task.get("modality") or "audio") == "image":
         # 图片标注：归一化坐标并丢弃无效框
         boxes = []
         for b in payload.get("boxes") or []:
@@ -809,7 +841,9 @@ def save_annotation(tid: int, body: dict, user: dict = Depends(me)):
         )
     if task["status"] == "pending":
         db.execute("UPDATE tasks SET status='annotating', updated_at=? WHERE id=?", (db.now(), tid))
-    return {"ok": True, "annotation_id": aid, "saved_at": db.now()}
+    check = _rule_check(task, payload)
+    return {"ok": True, "annotation_id": aid, "saved_at": db.now(),
+            "violations": check["violations"], "rule_score": check["score"]}
 
 
 def _task_qc_policy(task: dict) -> tuple[dict | None, dict]:
@@ -839,7 +873,8 @@ def submit_annotation(tid: int, body: dict, user: dict = Depends(me)):
     ):
         raise HTTPException(403, "仅任务标注员可提交质检")
     payload = body.get("payload") or {}
-    modality = task.get("media_type") or "audio"
+    # 模态判定：任务 media_type 优先，缺失时回退项目模态，避免空 media_type 错走音频校验
+    modality = task.get("media_type") or task.get("modality") or "audio"
     if task["status"] not in ("pending", "annotating"):
         raise HTTPException(400, "当前任务状态不可提交质检（已提交待质检 / 待验收 / 已完成）")
     if task.get("modality") == editing.MODALITY:
@@ -868,6 +903,18 @@ def submit_annotation(tid: int, body: dict, user: dict = Depends(me)):
             raise HTTPException(400, "请先完成文档区域或问答标注")
     elif not (payload.get("segments") or []):
         raise HTTPException(400, "至少需要一段标注结果才能提交")
+    # 规范即时预警：error 级违规需前端确认后才允许 force 提交
+    check = _rule_check(task, payload)
+    if any(v.get("level") == "error" for v in check["violations"]) and not body.get("force"):
+        return JSONResponse(
+            status_code=428,
+            content={
+                "detail": "标注存在规范违规，请修正或确认强制提交",
+                "confirm_required": True,
+                "violations": check["violations"],
+                "score": check["score"],
+            },
+        )
     ann = db.row("SELECT * FROM annotations WHERE task_id=? ORDER BY id DESC LIMIT 1", (tid,))
     if not ann:
         raise HTTPException(400, "请先保存标注草稿")
@@ -910,6 +957,109 @@ def submit_annotation(tid: int, body: dict, user: dict = Depends(me)):
         "min_score": policy.get("min_score", 0),
         "message": f"已提交质检（{sample_reason}）" if required else f"按抽审策略自动通过（{sample_reason}）",
     }
+
+
+@app.post("/api/tasks/batch-review")
+def batch_review(body: dict, user: dict = Depends(me)):
+    """批量质检：逐任务套用与单条 review 相同的状态与记录逻辑。"""
+    if user["platform_role"] not in ("platform_admin", "reviewer", "project_manager"):
+        raise HTTPException(403, "仅质检员可执行质检")
+    ids = [int(x) for x in (body.get("task_ids") or [])][:100]
+    if not ids:
+        raise HTTPException(400, "请选择要批量处理的任务")
+    result = body.get("result") or ""
+    if result not in ("approved", "rejected"):
+        raise HTTPException(400, "质检结论必须为 approved 或 rejected")
+    score = float(body.get("score") or 0)
+    comment = (body.get("comment") or "").strip()
+    error_types = [x for x in (body.get("error_types") or []) if isinstance(x, str)]
+    done, failed = [], []
+    for tid in ids:
+        try:
+            task = _get_task(tid, user)
+            if user["platform_role"] not in ("platform_admin", "reviewer", "project_manager") and auth.project_role(
+                user, task["project_id"]
+            ) != "reviewer":
+                failed.append({"id": tid, "reason": "无质检权限"})
+                continue
+            ann = db.row("SELECT * FROM annotations WHERE task_id=? ORDER BY id DESC LIMIT 1", (tid,))
+            if not ann or ann["status"] not in ("submitted", "approved") or task["status"] not in ("submitted", "review"):
+                failed.append({"id": tid, "reason": "状态不可质检"})
+                continue
+            _, policy = _task_qc_policy(task)
+            if result == "rejected" and policy.get("require_comment") and not comment:
+                failed.append({"id": tid, "reason": "该流程要求返修时填写质检意见"})
+                continue
+            db.execute(
+                "INSERT INTO qc_records(task_id,annotation_id,reviewer_id,result,score,comment,error_types,created_at)"
+                " VALUES(?,?,?,?,?,?,?,?)",
+                (tid, ann["id"], user["id"], result, score, comment, json.dumps(error_types, ensure_ascii=False), db.now()),
+            )
+            if result == "approved":
+                db.execute("UPDATE annotations SET status='approved', updated_at=? WHERE id=?", (db.now(), ann["id"]))
+                db.execute("UPDATE tasks SET status='review_done', progress=90, updated_at=? WHERE id=?", (db.now(), tid))
+                db.notify(task["assignee_id"], "任务质检通过", f"{task['name']} · {score} 分 · 待验收", "qc", f"#/annotate/{tid}")
+            else:
+                db.execute("UPDATE annotations SET status='rejected', updated_at=? WHERE id=?", (db.now(), ann["id"]))
+                reworks = (task.get("rework_count") or 0) + 1
+                db.execute(
+                    "UPDATE tasks SET status='annotating', rework_count=?, updated_at=? WHERE id=?",
+                    (reworks, db.now(), tid),
+                )
+                db.notify(task["assignee_id"], "任务需要返修", f"{task['name']} · {comment[:60] or '请按质检意见修改'}", "rework", f"#/annotate/{tid}")
+            db.log(user["id"], "batch_review", f"task:{tid}", f"{result} {score}")
+            done.append(tid)
+        except HTTPException as e:
+            failed.append({"id": tid, "reason": e.detail})
+    return {"ok": True, "done": done, "failed": failed}
+
+
+@app.post("/api/tasks/batch-accept")
+def batch_accept(body: dict, user: dict = Depends(me)):
+    """批量验收：通过或驳回（驳回统一原因 + 目标阶段）。"""
+    ids = [int(x) for x in (body.get("task_ids") or [])][:100]
+    if not ids:
+        raise HTTPException(400, "请选择要批量处理的任务")
+    result = body.get("result") or ""
+    if result not in ("approved", "rejected"):
+        raise HTTPException(400, "验收结论必须为 approved 或 rejected")
+    comment = (body.get("comment") or "").strip()
+    score = float(body.get("score") or (100 if result == "approved" else 0))
+    done, failed = [], []
+    for tid in ids:
+        try:
+            task = _get_task(tid, user)
+            if not (
+                auth.is_admin(user)
+                or user["platform_role"] in ("tenant_admin", "project_manager")
+                or auth.project_role(user, task["project_id"]) in ("manager", "acceptor")
+                or db.row("SELECT 1 ok FROM task_roles WHERE task_id=? AND user_id=? AND role='acceptor'", (tid, user["id"]))
+            ):
+                failed.append({"id": tid, "reason": "无验收权限"})
+                continue
+            if task["status"] != "review_done":
+                failed.append({"id": tid, "reason": "不在待验收状态"})
+                continue
+            db.execute(
+                "INSERT INTO acceptance_records(task_id,acceptor_id,result,score,comment,created_at) VALUES(?,?,?,?,?,?)",
+                (tid, user["id"], result, score, comment, db.now()),
+            )
+            if result == "approved":
+                db.execute("UPDATE tasks SET status='done', progress=100, updated_at=? WHERE id=?", (db.now(), tid))
+                db.notify(task["assignee_id"], "任务验收通过", f"{task['name']} · 已交付", "accept", f"#/annotate/{tid}")
+            else:
+                next_status = "review" if body.get("target") == "review" else "annotating"
+                db.execute(
+                    "UPDATE tasks SET status=?, progress=0, rework_count=rework_count+1, updated_at=? WHERE id=?",
+                    (next_status, db.now(), tid),
+                )
+                who = task["reviewer_id"] if next_status == "review" else task["assignee_id"]
+                db.notify(who, "任务验收驳回", f"{task['name']} · {comment[:60] or '请按验收意见整改'}", "rework", f"#/annotate/{tid}")
+            db.log(user["id"], "batch_accept", f"task:{tid}", f"{result} {score}")
+            done.append(tid)
+        except HTTPException as e:
+            failed.append({"id": tid, "reason": e.detail})
+    return {"ok": True, "done": done, "failed": failed}
 
 
 @app.get("/api/qc")
@@ -1030,6 +1180,24 @@ def review(tid: int, body: dict, user: dict = Depends(me)):
             task["assignee_id"], "任务需要返修",
             f"{task['name']} · {comment[:60] or '请按质检意见修改'}", "rework", f"#/annotate/{tid}",
         )
+        if escalated:
+            # 超返修上限升级：同步告警项目经理/负责人，避免任务卡在返修循环
+            managers = db.rows(
+                "SELECT user_id FROM project_members WHERE project_id=? AND project_role='manager'",
+                (task["project_id"],),
+            ) or []
+            owner = db.row("SELECT owner_id FROM projects WHERE id=?", (task["project_id"],))
+            recipients = {m["user_id"] for m in managers}
+            if owner and owner.get("owner_id"):
+                recipients.add(owner["owner_id"])
+            recipients.discard(user["id"])
+            recipients.discard(task["assignee_id"])
+            for mid in recipients:
+                db.notify(
+                    mid, "任务返修超次升级",
+                    f"{task['name']} · 已返修 {reworks} 次（上限 {int(policy.get('max_rework') or 99)}），请介入处理",
+                    "rework", f"#/annotate/{tid}",
+                )
     db.log(
         user["id"],
         "review",
@@ -1120,10 +1288,17 @@ def accept_task(tid: int, body: dict, user: dict = Depends(me)):
             "UPDATE tasks SET status=?, progress=0, rework_count=rework_count+1, updated_at=? WHERE id=?",
             (next_status, db.now(), tid),
         )
-        db.notify(
-            task["assignee_id"], "任务验收驳回",
-            f"{task['name']} · {comment[:60] or '请按验收意见整改'}", "rework", f"#/annotate/{tid}",
-        )
+        if next_status == "review":
+            # 仅需复检：通知质检员重新质检，标注员无需重标
+            db.notify(
+                task["reviewer_id"], "任务验收驳回 · 需复检",
+                f"{task['name']} · {comment[:60] or '请按验收意见复核'}", "rework", f"#/annotate/{tid}",
+            )
+        else:
+            db.notify(
+                task["assignee_id"], "任务验收驳回",
+                f"{task['name']} · {comment[:60] or '请按验收意见整改'}", "rework", f"#/annotate/{tid}",
+            )
     db.log(
         user["id"], "accept", f"task:{tid}",
         f"{result} {score}" + (f" · {comment[:60]}" if comment else ""),
@@ -1137,30 +1312,32 @@ def accept_task(tid: int, body: dict, user: dict = Depends(me)):
 
 @app.get("/api/stats")
 def stats(user: dict = Depends(me)):
-    ids = auth.visible_project_ids(user)
-    if not ids:
-        return {"summary": {}, "by_status": [], "by_modality": [], "trend": [], "projects": []}
-    marks = ",".join("?" * len(ids))
-    args = tuple(ids)
+    # 统计口径与任务列表一致：标注员仅统计本人任务，质检员仅统计本人质检任务，
+    # 管理类角色按可见项目统计
+    scope_where, scope_args = auth.task_scope_sql(user)
+    task_sub = f"SELECT t.id FROM tasks t WHERE {scope_where} AND t.deleted=0 AND t.archived=0"
+    in_scope = f"id IN ({task_sub})"
     summary = db.row(
         f"SELECT COUNT(*) total,"
         f" SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) pending,"
         f" SUM(CASE WHEN status='annotating' THEN 1 ELSE 0 END) annotating,"
         f" SUM(CASE WHEN status IN ('submitted','review') THEN 1 ELSE 0 END) reviewing,"
+        f" SUM(CASE WHEN status='review_done' THEN 1 ELSE 0 END) accepting,"
         f" SUM(CASE WHEN status='done' THEN 1 ELSE 0 END) done"
-        f" FROM tasks WHERE project_id IN ({marks})",
-        args,
+        f" FROM tasks WHERE {in_scope}",
+        scope_args,
     ) or {}
     by_status = [
         {"name": "待标注", "key": "pending", "value": summary.get("pending") or 0},
         {"name": "标注中", "key": "annotating", "value": summary.get("annotating") or 0},
         {"name": "质检中", "key": "reviewing", "value": summary.get("reviewing") or 0},
+        {"name": "待验收", "key": "accepting", "value": summary.get("accepting") or 0},
         {"name": "已完成", "key": "done", "value": summary.get("done") or 0},
     ]
     by_modality = db.rows(
         f"SELECT p.modality, COUNT(*) value FROM tasks t JOIN projects p ON p.id=t.project_id"
-        f" WHERE t.project_id IN ({marks}) GROUP BY p.modality",
-        args,
+        f" WHERE t.id IN ({task_sub}) GROUP BY p.modality",
+        scope_args,
     )
     for m in by_modality:
         m["name"] = db.MODALITY_LABEL.get(m["modality"], m["modality"])
@@ -1169,21 +1346,24 @@ def stats(user: dict = Depends(me)):
     for i in range(6, -1, -1):
         day = (today - timedelta(days=i)).strftime("%Y-%m-%d")
         total = db.row(
-            f"SELECT COUNT(*) c FROM tasks WHERE project_id IN ({marks}) AND substr(created_at,1,10)=?",
-            args + (day,),
+            f"SELECT COUNT(*) c FROM tasks WHERE {in_scope} AND substr(created_at,1,10)=?",
+            scope_args + (day,),
         )
         done = db.row(
-            f"SELECT COUNT(*) c FROM tasks WHERE project_id IN ({marks}) AND status='done' AND substr(updated_at,1,10)=?",
-            args + (day,),
+            f"SELECT COUNT(*) c FROM tasks WHERE {in_scope} AND status='done' AND substr(updated_at,1,10)=?",
+            scope_args + (day,),
         )
         trend.append({"day": day[5:], "created": total["c"] if total else 0, "done": done["c"] if done else 0})
 
-    projects = db.rows(f"SELECT * FROM projects WHERE id IN ({marks}) ORDER BY id", args)
+    ids = auth.visible_project_ids(user)
+    marks = ",".join("?" * len(ids)) if ids else "NULL"
+    projects = db.rows(f"SELECT * FROM projects WHERE id IN ({marks}) ORDER BY id", tuple(ids)) if ids else []
     proj_stats = []
     for p in projects:
         s = db.row(
-            "SELECT COUNT(*) total, SUM(CASE WHEN status='done' THEN 1 ELSE 0 END) done FROM tasks WHERE project_id=?",
-            (p["id"],),
+            f"SELECT COUNT(*) total, SUM(CASE WHEN status='done' THEN 1 ELSE 0 END) done"
+            f" FROM tasks WHERE project_id=? AND {in_scope}",
+            (p["id"],) + scope_args,
         )
         total = s["total"] or 0
         proj_stats.append(
@@ -1198,8 +1378,8 @@ def stats(user: dict = Depends(me)):
 
     qc = db.row(
         f"SELECT COUNT(*) c, SUM(CASE WHEN result='approved' THEN 1 ELSE 0 END) ok FROM qc_records"
-        f" WHERE task_id IN (SELECT id FROM tasks WHERE project_id IN ({marks}))",
-        args,
+        f" WHERE task_id IN (SELECT id FROM tasks WHERE {in_scope})",
+        scope_args,
     ) or {}
     qc_total = qc.get("c") or 0
     summary["qc_pass_rate"] = round((qc.get("ok") or 0) / qc_total * 100) if qc_total else 0

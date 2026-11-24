@@ -761,20 +761,38 @@ def claim_tasks(body: dict, user: dict = Depends(me)):
         ids = [r["task_id"] for r in db.rows("SELECT task_id FROM task_package_items WHERE package_id=?", (package_id,))]
     if not ids:
         raise HTTPException(400, "请选择要领取的任务")
-    claimed = []
+    claimed: list[int] = []
+    skipped: list[dict] = []
     for tid in ids:
-        t = db.row("SELECT * FROM tasks WHERE id=?", (tid,))
-        if not t or t["status"] != "pending" or t["assignee_id"]:
+        t = db.row("SELECT id,project_id,name,status,assignee_id FROM tasks WHERE id=?", (tid,))
+        if not t:
+            skipped.append({"id": tid, "reason": "任务不存在"})
+            continue
+        if t["status"] != "pending" or t["assignee_id"]:
+            skipped.append({"id": tid, "reason": "已被他人领取或不在待领取状态"})
             continue
         if not auth.is_admin(user) and auth.project_role(user, t["project_id"]) not in ("annotator", "manager"):
+            skipped.append({"id": tid, "reason": "当前角色不能领取该项目任务"})
             continue
-        db.execute("UPDATE tasks SET assignee_id=?,status='annotating',updated_at=? WHERE id=?", (user["id"], db.now(), tid))
-        claimed.append(tid)
+        # 原子领取：状态+负责人在同一条 UPDATE 中校验，避免并发重复领取
+        with db.connect() as conn:
+            cur = conn.execute(
+                "UPDATE tasks SET assignee_id=?,status='annotating',updated_at=? WHERE id=? AND status='pending'"
+                " AND (assignee_id IS NULL OR assignee_id=0)",
+                (user["id"], db.now(), tid),
+            )
+            conn.commit()
+            hit = cur.rowcount > 0
+        if hit:
+            claimed.append(tid)
+            db.notify(user["id"], "任务领取成功", f"{t['name']} · 已加入我的任务", "assign", f"#/annotate/{tid}")
+        else:
+            skipped.append({"id": tid, "reason": "手慢一步，已被他人领取"})
     if package_id and claimed:
         db.execute("UPDATE task_packages SET status='claimed',claimed_by=?,updated_at=? WHERE id=?", (user["id"], db.now(), package_id))
         db.execute("UPDATE tasks SET package_id=? WHERE id IN (%s)" % ",".join("?" * len(claimed)), (package_id, *claimed))
     db.log(user["id"], "claim_tasks", "task_hall", f"{len(claimed)} 个任务")
-    return {"ok": True, "claimed": claimed, "count": len(claimed)}
+    return {"ok": True, "claimed": claimed, "skipped": skipped, "count": len(claimed)}
 
 
 @router.get("/api/task-packages")
@@ -1482,6 +1500,96 @@ def run_rules(tid: int, user: dict = Depends(me)):
     result = evaluate_rules(task, _json(ann["payload"], {}), rules)
     result["task_id"] = tid
     return result
+
+
+# ---------------------------------------------------------------- 规范模板库
+def _spec_out(r: dict) -> dict:
+    r = dict(r)
+    r["samples"] = _json(r.get("samples") or "[]", [])
+    return r
+
+
+@router.get("/api/spec-templates")
+def list_spec_templates(modality: str = "", user: dict = Depends(me)):
+    if modality:
+        items = db.rows(
+            "SELECT * FROM spec_templates WHERE modality=? OR modality='' ORDER BY id DESC", (modality,))
+    else:
+        items = db.rows("SELECT * FROM spec_templates ORDER BY id DESC")
+    return {"templates": [_spec_out(r) for r in items]}
+
+
+@router.get("/api/spec-templates/{sid}")
+def get_spec_template(sid: int, user: dict = Depends(me)):
+    r = db.row("SELECT * FROM spec_templates WHERE id=?", (sid,))
+    if not r:
+        raise HTTPException(404, "规范模板不存在")
+    return _spec_out(r)
+
+
+@router.post("/api/spec-templates")
+def create_spec_template(body: dict, user: dict = Depends(me)):
+    auth.require_perm(user, "template.write")
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "模板名称不能为空")
+    ts = db.now()
+    sid = db.execute(
+        "INSERT INTO spec_templates(name,modality,content,samples,created_by,created_at,updated_at)"
+        " VALUES(?,?,?,?,?,?,?)",
+        (name, body.get("modality") or "", body.get("content") or "",
+         json.dumps(body.get("samples") or [], ensure_ascii=False), user["id"], ts, ts),
+    )
+    db.log(user["id"], "create_spec_template", f"spec:{sid}", name)
+    return {"ok": True, "id": sid}
+
+
+@router.patch("/api/spec-templates/{sid}")
+def update_spec_template(sid: int, body: dict, user: dict = Depends(me)):
+    auth.require_perm(user, "template.write")
+    r = db.row("SELECT * FROM spec_templates WHERE id=?", (sid,))
+    if not r:
+        raise HTTPException(404, "规范模板不存在")
+    db.execute(
+        "UPDATE spec_templates SET name=?,modality=?,content=?,samples=?,updated_at=? WHERE id=?",
+        (
+            body.get("name") or r["name"],
+            body.get("modality", r["modality"]),
+            body.get("content", r["content"]),
+            json.dumps(body.get("samples") if body.get("samples") is not None else _json(r["samples"], []), ensure_ascii=False),
+            db.now(), sid,
+        ),
+    )
+    return {"ok": True}
+
+
+@router.delete("/api/spec-templates/{sid}")
+def delete_spec_template(sid: int, user: dict = Depends(me)):
+    auth.require_perm(user, "template.write")
+    db.execute("DELETE FROM spec_templates WHERE id=?", (sid,))
+    db.log(user["id"], "delete_spec_template", f"spec:{sid}")
+    return {"ok": True}
+
+
+@router.post("/api/spec-templates/{sid}/attachment")
+async def upload_spec_attachment(sid: int, file: UploadFile = File(...), user: dict = Depends(me)):
+    """规范示例截图/文档上传：存入媒体目录，返回可访问 URL，登记到模板的 samples。"""
+    auth.require_perm(user, "template.write")
+    r = db.row("SELECT * FROM spec_templates WHERE id=?", (sid,))
+    if not r:
+        raise HTTPException(404, "规范模板不存在")
+    ext = os.path.splitext(file.filename or "")[1].lower() or ".png"
+    if ext not in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".pdf"):
+        raise HTTPException(400, "仅支持图片或 PDF 规范附件")
+    safe = f"spec-{sid}-{uuid.uuid4().hex[:8]}{ext}"
+    path = os.path.join(db.MEDIA_DIR, safe)
+    with open(path, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+    samples = _json(r["samples"], [])
+    samples.append({"name": file.filename or safe, "url": "/media/" + safe})
+    db.execute("UPDATE spec_templates SET samples=?,updated_at=? WHERE id=?",
+               (json.dumps(samples, ensure_ascii=False), db.now(), sid))
+    return {"ok": True, "url": "/media/" + safe, "name": file.filename or safe}
 
 
 @router.get("/api/prelabel/stats")
