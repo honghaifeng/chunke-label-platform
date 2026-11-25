@@ -1,13 +1,18 @@
 # 春科数据标注平台 v4
 
-面向国家人工智能应用中试基地（消费领域·家居家电方向）的数据标注平台，覆盖 **数据导入 → 数据集版本 → 任务分派/领取 → 多模态标注 → 智能质检 → 导出与集成** 全链路。
+面向国家人工智能应用中试基地（消费领域·家居家电方向）的数据标注平台，覆盖 **数据导入 → 数据集版本 → 任务分派/领取 → 多模态标注 → 智能质检 → 验收交付 → 结算与集成** 全链路。
 
-后端 **FastAPI + SQLite（WAL）**，前端 **原生 HTML/CSS/JS（无构建工具，hash 路由 SPA）**，支持本地部署与 Docker Compose 部署。
+- 后端：**FastAPI + SQLite（WAL）**，版本 `1.0.0`
+- 前端：**原生 HTML/CSS/JS**（无 Node 构建步骤，hash 路由 SPA）
+- 部署：本地 venv / Docker / Docker Compose + Nginx TLS 反向代理
 
-- 访问入口：`http://127.0.0.1:8100`
-- 健康检查：`GET /health`
-- 指标端点：`GET /metrics`（Prometheus 文本格式）
-- 缺口分析与演示清单：[docs/bid-gap-analysis/bid-gap-analysis.html](docs/bid-gap-analysis/bid-gap-analysis.html)
+| 入口 | 地址 |
+|---|---|
+| 平台首页 | `http://127.0.0.1:8100` |
+| 健康检查 | `GET /health` |
+| Prometheus 指标 | `GET /metrics` |
+| Swagger 文档 | `GET /docs` |
+| 差距分析与演示清单 | [docs/bid-gap-analysis/bid-gap-analysis.html](docs/bid-gap-analysis/bid-gap-analysis.html) |
 
 ### 三级平台入口
 
@@ -21,20 +26,26 @@
 
 旧链接（如 `#/tasks`、`#/qc`）会自动重定向到当前入口对应的三段式路由，不影响已有书签。
 
-### 供应商工作台高保真原型（`prototype/vendor-workspace/`）
+---
 
-仓库内另附一套独立的 **Vue 3 + Vite** 前端原型，还原钉钉「ding-tag」标注平台供应商侧（`/vendor/*`）的页面与交互，用于设计评审与客户演示，不依赖本仓库后端：
+## 目录
 
-```bash
-cd prototype/vendor-workspace
-npm install
-npm run dev          # http://127.0.0.1:5173
-```
-
-- 演示账号：`chunke_001` / `demo123456`（任意密码均可，演示数据）。
-- 覆盖长音频拉框标注、质检、返修、交付验收、数据统计、错题与组织管理。
-- 其中 15 个页面已按真实站 1440×1000 DOM 实测逐像素校准。
-- 详细说明见 [prototype/vendor-workspace/README.md](prototype/vendor-workspace/README.md)。
+- [1. 核心能力](#1-核心能力)
+- [2. 技术架构](#2-技术架构)
+- [3. 目录结构](#3-目录结构)
+- [4. 环境要求与依赖分层](#4-环境要求与依赖分层)
+- [5. 快速开始](#5-快速开始)
+- [6. 生产部署](#6-生产部署)
+- [7. 功能详解](#7-功能详解)
+- [8. 演示路径](#8-演示路径)
+- [9. API 摘要](#9-api-摘要)
+- [10. 配置项](#10-配置项)
+- [11. 数据、备份与恢复](#11-数据备份与恢复)
+- [12. 测试与压测](#12-测试与压测)
+- [13. 故障排查](#13-故障排查)
+- [14. 外部依赖与已知限制](#14-外部依赖与已知限制)
+- [15. 安全说明](#15-安全说明)
+- [16. License](#16-license)
 
 ---
 
@@ -83,7 +94,7 @@ npm run dev          # http://127.0.0.1:5173
 │  extras.py      扩展标注、作业队列、通知、抽审、模型仓库           │
 │  advanced.py    平台控制台、模板编排、交互算子、质检算子、集成      │
 │  editing.py     图像编辑指令标注与规范校验                         │
-│  serviceops.py  运营月报、工单 SLA、保密协议、培训考核              │
+│  serviceops.py  运营月报、工单 SLA、保密协议、培训考核             │
 └───────────────┬───────────────────────────────┬──────────────────┘
                 │                               │
         ┌───────▼────────┐              ┌───────▼──────────────┐
@@ -99,11 +110,17 @@ npm run dev          # http://127.0.0.1:5173
 
 **技术栈**
 
-- Python 3.12 + FastAPI + Uvicorn
+- Python 3.10+（Docker 镜像为 3.12）+ FastAPI + Uvicorn
 - SQLite（WAL 模式，单机零依赖）
 - 原生 HTML/CSS/JS，无 Node 构建步骤（点云工作台使用 three.js r160，已 vendor 至 `app/static/vendor/three.module.js`）
 - 可选：ffmpeg（音视频预处理）、onnxruntime/scikit-learn（本地预标注）、FunASR 独立 venv（语音转写）
 - 部署：Docker / Docker Compose + Nginx TLS
+
+**运行时说明**
+
+- 应用默认单进程 `--workers 1`。SQLite 适合单机小团队并发；写请求频繁或多副本部署时请迁移 PostgreSQL。
+- 会话保存在 SQLite `sessions` 表，进程重启不掉登录；Cookie 为 HttpOnly + SameSite=Lax，有效期 12 小时。
+- 所有静态资源随 `app/static` 一起发布，无外网 CDN 依赖，内网/离线环境可完整运行。
 
 ---
 
@@ -121,9 +138,10 @@ chunke-label-platform/
 │   ├── extras.py          # 扩展标注/作业/通知/抽审/模型仓库
 │   ├── advanced.py        # 平台控制台/模板编排/交互算子/质检算子/集成
 │   ├── prelabel.py        # 预标注调度与 ASR worker 包装
+│   ├── ai_local.py        # 本地 LLM/OCR/分割服务层
 │   ├── overlap.py         # 重叠发言检测（ONNX）
 │   ├── editing.py         # 图像编辑指令标注、规范校验、体检与 JSONL 导出
-│   ├── serviceops.py      # 运营月报、工单 SLA、保密协议、培训考核
+│   ├── serviceops.py       # 运营月报、工单 SLA、保密协议、培训考核
 │   └── static/
 │       ├── index.html
 │       ├── styles.css
@@ -142,7 +160,7 @@ chunke-label-platform/
 │   └── nginx.conf         # TLS 终止与反向代理
 ├── docs/
 │   ├── bid-gap-analysis/  # 招标需求差距分析与演示清单
-│   └── 数据标注平台系统研发汇报-差距分析.md  # 研发汇报需求差距分析（含实施状态）
+│   └── 数据标注平台系统研发汇报-差距分析.md
 ├── data/
 │   ├── media/             # 媒体文件（演示素材入库）
 │   ├── backups/           # 运行期备份（gitignore）
@@ -155,15 +173,51 @@ chunke-label-platform/
 
 ---
 
-## 4. 快速开始
+## 4. 环境要求与依赖分层
 
-### 4.1 环境要求
+### 4.1 必需
 
-- Python 3.10+（推荐 3.12）
-- 可选：ffmpeg（音视频转码/抽帧/降噪）
-- 可选：FunASR 独立 Python 3.10 venv（语音预识别，非必需）
+| 依赖 | 版本 | 说明 |
+|---|---|---|
+| Python | 3.10+（推荐 3.12） | 后端运行时 |
+| `requirements.txt` | 见文件 | `fastapi`、`uvicorn[standard]`、`python-multipart` |
+| 磁盘 | ≥ 10 GB | 数据库 + 媒体文件 |
+| 内存 | ≥ 2 GB | 纯标注流程；点云/大视频建议 8 GB+ |
 
-### 4.2 本地启动
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+### 4.2 准必需（影响音视频与图片预处理）
+
+| 依赖 | 用途 | 安装 |
+|---|---|---|
+| ffmpeg | 音视频转码、抽帧、16k 单声道转换、降噪、长音频切分 | `apt install ffmpeg` / `brew install ffmpeg` |
+| `rapidocr_onnxruntime` | OCR 算子真实识别 | `pip install rapidocr_onnxruntime` |
+| `opencv-python-headless` | SAM 类分割（GrabCut/区域生长）、图像预处理 | `pip install opencv-python-headless` |
+
+未安装时对应接口会返回明确错误或降级说明，其余功能不受影响。
+
+### 4.3 可选（AI 预识别与集成）
+
+| 能力 | 依赖 | 说明 |
+|---|---|---|
+| 语音转写 / 说话人 / 重叠检测 | 独立 FunASR venv + Paraformer/CAM++ 权重 | 见 `app/prelabel.py`、`scripts/asr_worker.py` |
+| 图像检测 | `torch`、`transformers`（Grounding DINO）、`ultralytics`（YOLOv8n） | `scripts/detect_worker.py` |
+| 重叠发言 ONNX | `onnxruntime`、`numpy` | 模型路径见 `app/overlap.py` |
+| 大模型问答/润色 | 本机 Ollama（默认 `127.0.0.1:11434`）或任意 OpenAI 兼容服务 | 未配置时 LLM 类算子明确报错 |
+| S3 / MinIO 存储 | `boto3`（未列入 requirements.txt） | 使用对象存储时需额外安装 |
+| 外部标注引擎 | CVAT / Label Studio / labelU | 仅外链与健康探测，不装则显示离线 |
+
+> **注意**：`app/prelabel.py` 与 `app/overlap.py` 中的 FunASR 解释器路径、模型目录为开发机绝对路径。部署到新环境前，请将这些常量改为目标机器的实际路径（或通过环境变量/配置项统一管理）。未配置时语音/图像预识别会明确提示不可用，不影响人工标注。
+
+---
+
+## 5. 快速开始
+
+### 5.1 本地启动
 
 ```bash
 git clone https://github.com/honghaifeng/chunke-label-platform.git
@@ -173,32 +227,31 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# 启动（默认 127.0.0.1:8100）
+# 方式一：脚本启动（默认 127.0.0.1:8100）
 bash scripts/run.sh
-```
 
-也可以直接运行：
-
-```bash
+# 方式二：直接运行
 uvicorn app.main:app --host 127.0.0.1 --port 8100 --reload
 ```
 
-首次启动会自动创建 `data/chunke.db` 并写入 schema、角色、演示项目与演示任务。
+首次启动会自动创建 `data/chunke.db`，写入 schema、角色、演示项目与演示任务。浏览器打开 `http://127.0.0.1:8100`。
 
-### 4.3 Docker 部署
+### 5.2 Docker 部署
 
 ```bash
 # 仅应用
 docker build -t chunke/label-platform:1.0.0 .
-docker run -d --name chunke-label -p 8100:8100 -v "$PWD/data:/app/data" chunke/label-platform:1.0.0
+docker run -d --name chunke-label -p 8100:8100 \
+  -v "$PWD/data:/app/data" \
+  chunke/label-platform:1.0.0
 
 # 应用 + Nginx TLS（证书放 deploy/certs/{fullchain.pem,privkey.pem}）
 docker compose up -d --build
 ```
 
-Nginx 暴露 `8080`（HTTP 跳转）与 `8443`（HTTPS），反向代理到应用 `8100`；已内置 HSTS、X-Content-Type-Options、X-Frame-Options、Referrer-Policy 与 2G 上传上限。
+`docker-compose.yml` 中 Nginx 暴露 `8080`（HTTP 跳转）与 `8443`（HTTPS），反向代理到应用 `8100`；已内置 HSTS、X-Content-Type-Options、X-Frame-Options、Referrer-Policy 与 2G 上传上限。
 
-### 4.4 体验账号
+### 5.3 体验账号
 
 密码均为 `chunke123`（生产环境请立即修改）：
 
@@ -215,7 +268,7 @@ Nginx 暴露 `8080`（HTTP 跳转）与 `8443`（HTTPS），反向代理到应�
 
 > 验收员演示账号 `acceptor` 仅授予语音客服与 v4 演示项目的验收角色，用于走通「质检通过 → 待验收 → 验收」闭环；生产环境请修改默认口令或停用。
 
-### 4.5 重置本地数据
+### 5.4 重置本地数据
 
 ```bash
 rm -f data/chunke.db data/chunke.db-* data/tmp/*
@@ -224,9 +277,151 @@ rm -f data/chunke.db data/chunke.db-* data/tmp/*
 
 ---
 
-## 5. 功能详解
+## 6. 生产部署
 
-### 5.1 多租户平台控制台
+以下为经过验证的单机部署拓扑：**应用机（内网）+ 网关机（公网，Nginx Proxy Manager 终结 TLS）**。也可将应用与 Nginx 部署在同一台机器。
+
+### 6.1 拓扑
+
+```text
+用户浏览器
+   │ HTTPS 443
+   ▼
+┌──────────────────────────────┐
+│ 网关机 / Nginx Proxy Manager │  公网 IP <GATEWAY_IP>
+│ 80 → 443 跳转，LE 证书        │
+└──────────────┬───────────────┘
+               │ HTTP 8100（内网）
+               ▼
+┌──────────────────────────────┐
+│ 应用机 / uvicorn + SQLite    │  内网 IP <APP_SERVER_IP>:8100
+│ /opt/chunke-label-platform    │
+└──────────────────────────────┘
+```
+
+### 6.2 应用机准备
+
+```bash
+# 以 Ubuntu 22.04 为例
+sudo apt update
+sudo apt install -y python3 python3-venv python3-pip ffmpeg nginx-common
+
+sudo mkdir -p /opt/chunke-label-platform
+sudo chown "$USER":"$USER" /opt/chunke-label-platform
+cd /opt/chunke-label-platform
+
+# 上传/克隆代码后
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+```
+
+### 6.3 systemd 托管
+
+创建 `/etc/systemd/system/chunke-label.service`：
+
+```ini
+[Unit]
+Description=Chunke Label Platform
+After=network.target
+
+[Service]
+Type=simple
+User=chunke
+Group=chunke
+WorkingDirectory=/opt/chunke-label-platform
+Environment=PYTHONUNBUFFERED=1
+Environment=TZ=Asia/Shanghai
+# 建议设置固定主密钥，避免迁移机器后已加密凭据失效
+Environment=CK_SECRET_KEY=<RANDOM_32_BYTES_HEX>
+ExecStart=/opt/chunke-label-platform/.venv/bin/uvicorn app.main:app \
+  --host 127.0.0.1 --port 8100 --workers 1
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now chunke-label
+sudo systemctl status chunke-label
+curl -s http://127.0.0.1:8100/health
+```
+
+> 除非已迁移到 PostgreSQL 并完成多进程测试，否则保持 `--workers 1`。SQLite 写并发与内存内缓存均按单进程设计。
+
+### 6.4 网关反代（Nginx Proxy Manager）
+
+1. **Proxy Host**：Forward Hostname/IP 填 `<APP_SERVER_IP>`，Forward Port `8100`，开启 **Block Common Exploits**；如需 WebSocket 也一并开启。
+2. **SSL**：选择 Let's Encrypt，勾选 **Force SSL**、**HTTP/2 Support**、**HSTS Enabled**。域名 DNS 的 A 记录需先指向网关公网 IP，并放通 80（HTTP-01 校验）与 443。
+3. **Advanced** 粘贴（大文件上传与长任务必需）：
+
+```nginx
+client_max_body_size 2g;
+proxy_read_timeout 600s;
+proxy_send_timeout 600s;
+
+# 媒体支持 Range 拖动播放
+location /media/ {
+    proxy_pass http://<APP_SERVER_IP>:8100;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_buffering off;
+}
+```
+
+> NPM 会自动补齐 `Host`、`X-Real-IP`、`X-Forwarded-For`、`X-Forwarded-Proto`。如使用自建 Nginx，请参考 [deploy/nginx.conf](deploy/nginx.conf)（已包含 TLS、Range 播放、`/metrics` 内网白名单）。
+
+### 6.5 端口清单
+
+| 端口 | 服务 | 暴露范围 | 是否必需 |
+|---|---|---|---|
+| `8100` | 应用（uvicorn） | 内网 / 127.0.0.1 | 必需 |
+| `80` | 网关 HTTP（证书校验、跳转） | 公网 | 必需 |
+| `443` | 网关 HTTPS | 公网 | 必需 |
+| `81` | Nginx Proxy Manager 管理台 | 仅 127.0.0.1 | 必需（不建议公网） |
+| `8090` | CVAT（可选外部标注引擎） | 内网 | 可选 |
+| `8080` | Label Studio（可选） | 内网 | 可选；与 NPM 的 80/8080 规划冲突时需改端口 |
+| `8001` | labelU（可选） | 内网 | 可选 |
+| `11434` | Ollama | 仅 127.0.0.1 | 可选 |
+| `9000/9001` | MinIO API / 控制台 | 内网 | 可选 |
+| `9090` | Prometheus（抓取 `/metrics`） | 内网 | 可选 |
+| `3100` | Loki | 内网 | 可选 |
+
+操作系统防火墙只需放通 `80/443`（网关）与应用机上的 `8100`（仅网关来源）。`/metrics` 在 `deploy/nginx.conf` 中默认只允许 `10.0.0.0/8` 与 `127.0.0.1`。
+
+### 6.6 域名与备案
+
+- 中国大陆节点的云服务器，域名需完成 **ICP 备案** 后才能正常使用 80/443；未备案时云厂商会拦截 HTTP/HTTPS 访问。
+- 未完成备案前可先用「公网 IP + 非 80/443 端口」访问，或使用已备案的其他域名做临时入口。
+- 正式域名确定后，在平台「系统设置 → OIDC SSO」中把回调地址配置为 `https://<DOMAIN>/api/auth/sso/callback`（未配置时按当前请求的 `base_url` 自动推导，因此反代必须正确传递 `X-Forwarded-Proto` 与 `Host`）。
+
+### 6.7 首次上线检查
+
+```bash
+# 1. 健康检查
+curl -fsS http://<APP_SERVER_IP>:8100/health
+
+# 2. 外网 HTTPS
+curl -I https://<DOMAIN>/
+
+# 3. 上传上限（应返回 200/201，而非 413）
+curl -b cookie.txt -F "file=@big.zip" https://<DOMAIN>/api/import
+
+# 4. 媒体 Range（应返回 206 Partial Content）
+curl -I -H "Range: bytes=0-1023" https://<DOMAIN>/media/<demo-file>
+
+# 5. 修改默认口令、开启 MFA、配置 IP 白名单与审计留存
+```
+
+---
+
+## 7. 功能详解
+
+### 7.1 多租户平台控制台
 
 入口：`#/console`
 
@@ -239,7 +434,7 @@ rm -f data/chunke.db data/chunke.db-* data/tmp/*
 
 相关接口：`/api/platform/overview`、`/api/tenants/{id}/quota`、`/api/usage`、`/api/billing/policy`、`/api/integrations*`、`/api/monitoring/*`。
 
-### 5.2 组织、角色与任务级权限
+### 7.2 组织、角色与任务级权限
 
 - 平台角色：`platform_admin` / `tenant_admin` / `project_manager` / `annotator` / `reviewer` / `acceptor` / `client`
 - 项目角色：`manager` / `annotator` / `reviewer` / `acceptor` / `viewer`
@@ -252,7 +447,7 @@ rm -f data/chunke.db data/chunke.db-* data/tmp/*
 
 上下文与租户：`GET /api/context` 返回当前入口空间、租户、组织/团队、项目与待办计数；`GET /api/tenants/switchable`、`POST /api/tenant/switch` 用于切换已加入租户。
 
-### 5.3 数据集与作业中心
+### 7.3 数据集与作业中心
 
 - 导入：文件、ZIP、URL、FTP、HDFS、S3/MinIO 兼容源；大文件分片上传与断点续传。
 - 版本：快照、逐条 diff、回滚、内容哈希。
@@ -262,7 +457,7 @@ rm -f data/chunke.db data/chunke.db-* data/tmp/*
 
 接口：`/api/import`、`/api/import/url`、`/api/datasets*`、`/api/jobs*`、`GET/POST /api/datasets/{ds_id}/versions`。
 
-### 5.4 任务大厅与任务包
+### 7.4 任务大厅与任务包
 
 - 任务大厅按项目/模态/优先级筛选，支持勾选领取与整包领取。
 - 任务包支持按包分配、提交、质检与包级退回。
@@ -271,7 +466,7 @@ rm -f data/chunke.db data/chunke.db-* data/tmp/*
 
 接口：`/api/task-hall`、`/api/task-hall/claim`、`/api/task-packages*`。
 
-### 5.5 模板编排与模板驱动表单
+### 7.5 模板编排与模板驱动表单
 
 入口：`#/templates` → 模板编排器。
 
@@ -290,7 +485,7 @@ GET  /api/tasks/{tid}/form                  按任务解析模板、灰度与已
 POST /api/tasks/{tid}/form                  保存表单值
 ```
 
-### 5.6 多模态工作台
+### 7.6 多模态工作台
 
 | 模态 | 能力 |
 |---|---|
@@ -320,7 +515,7 @@ POST /api/tasks/{tid}/form                  保存表单值
 
 接口：`GET/POST /api/tasks/{tid}/annotation/extras`、`/api/tasks/{tid}/annotation/history`、`/api/tasks/{tid}/tracks`。
 
-### 5.7 交互式算子
+### 7.7 交互式算子
 
 统一入口：`POST /api/operators/run`
 
@@ -340,9 +535,9 @@ POST /api/tasks/{tid}/form                  保存表单值
 
 多算子问答对比：`POST /api/qa/compare`，并排返回「内置抽取式 / 模板生成 / 外部模型」结果与来源 `start/end`。
 
-未配置外部地址时返回 `provider=builtin` 与 `note` 字段，说明当前为降级结果。
+未配置外部地址时返回 `provider=builtin` 与 `note` 字段，说明当前为降级结果；完全无可用实现时明确报错。
 
-### 5.8 智能质检
+### 7.8 智能质检
 
 - 算子：错别字/拼写、标点规范、语法与句式、Markdown/HTML、LaTeX 公式。
 - 规则配置：启用开关、错误/警告权重、通过阈值、最大问题数、自定义词、组合规则。
@@ -358,7 +553,7 @@ POST /api/qc/operators/run         对文本运行质检算子
 GET  /api/qc/operators             算子目录
 ```
 
-### 5.9 集成、监控与安全
+### 7.9 集成、监控与安全
 
 - **双向集成**：`/api/integrations` 增删改查、`/test` 连通性、`/push`、`/pull`、入站 `/api/integrations/inbound`。
 - **监控**：`/metrics`、`/api/monitoring/summary`、Prometheus/Loki/数据湖地址可配置，支持手动推送指标。
@@ -366,7 +561,7 @@ GET  /api/qc/operators             算子目录
 - **认证**：PBKDF2 口令、HttpOnly Cookie 会话、TOTP MFA、OIDC SSO、SCIM 2.0、API Key。
 - **数据保护**：IP 白名单、媒体短时 Token、下载策略、全屏水印、审计 CSV 导出、TC609 证据包。
 
-### 5.10 质检与验收闭环
+### 7.10 质检与验收闭环
 
 任务状态机：
 
@@ -392,7 +587,7 @@ POST /api/tasks/batch-accept         批量验收：{ "task_ids": [], "result": 
 GET  /api/quality/error-types        驳回错误类型分布
 ```
 
-### 5.11 生产线能力（语音赛道）
+### 7.11 生产线能力（语音赛道）
 
 - **时长配额任务包**：`task_packages.quota_minutes/used_minutes` + `tasks.est_minutes`（音频任务按时长自动回填）；任务大厅展示「目标时长/已分配/剩余」，领取时校验并扣减，超员拒绝并给出原因。
 - **双轨计价**：`billing.mode = per_item | per_hour`，平台控制台分别维护元/千条与元/小时单价，用量看板统计已完成时长。
@@ -403,18 +598,18 @@ GET  /api/quality/error-types        驳回错误类型分布
 - **段级工作明细**：质检可选择「问题段定位」记录到段（`qc_records.item_index`），「明细」弹窗展示每段的起止/文本/质检结论/意见。
 - **AI 助手**：右下角悬浮气泡，读取当前任务的规范模板与历史质检意见做检索式问答；配置 `operator.llm.url` 后切换真实大模型。
 
-### 5.12 标注规范模板库与违规预警
+### 7.12 标注规范模板库与违规预警
 
 - **规范模板库**：模板中心「标注规范模板库」支持创建/编辑可复用规范（适用模态 + 条文 + 示例截图/PDF 附件），并可绑定到项目（`PATCH /api/projects/{pid}` 的 `spec_id`）。
 - **工作台实时展示**：图片/语音工作台右侧常驻规范面板，逐条展示规范要点，示例图点击放大。
 - **违规即时预警**：保存标注时自动运行项目规则引擎（`quality_rules`），响应携带 `violations` 并在工作台顶部弹预警条；提交时若有 error 级违规返回 `428 confirm_required`，确认后可 `force` 强制提交交由质检复核。
 
-### 5.13 外部数据集导入
+### 7.13 外部数据集导入
 
 `scripts/import_datasets.py` 把本机已下载的公开数据集一键导入为标注任务（幂等，按项目+任务名去重）：
 
 ```bash
-python3 scripts/import_datasets.py --root /Volumes/ORICO/data/datasets --only all
+python3 scripts/import_datasets.py --root /data/datasets --only all
 ```
 
 | 数据源 | 目标项目 | 说明 |
@@ -424,7 +619,7 @@ python3 scripts/import_datasets.py --root /Volumes/ORICO/data/datasets --only al
 | `nuscenes` | 智驾-点云目标标框 | nuScenes mini LIDAR_TOP 点云，按微秒时间戳匹配 CAM_FRONT 图作为附件 |
 | `dair` | 城市治理-人车流量检测 | DAIR-V2X-C（需镜像包含图像文件；仅标注包的镜像会自动跳过） |
 
-### 5.14 结算中心
+### 7.14 结算中心
 
 按项目与周期把已交付任务汇总成结算单，完成「产能—质量—收入」闭环：
 
@@ -434,7 +629,7 @@ python3 scripts/import_datasets.py --root /Volumes/ORICO/data/datasets --only al
 - **权限**：创建/确认为租户管理员或项目经理；支付为平台/租户管理员；列表与明细对执行类角色（标注/质检/验收）不可见。
 - 接口：`GET /api/settlements/preview`（可结算预览+预估金额）、`GET/POST /api/settlements`、`GET /api/settlements/{sid}`、`POST /confirm`、`/pay`、`DELETE`；创建时明细写入失败自动回滚结算单（事务安全）。
 
-### 5.15 邀请制注册与审批
+### 7.15 邀请制注册与审批
 
 平台不开放自由注册，新成员凭邀请码加入组织：
 
@@ -445,7 +640,7 @@ python3 scripts/import_datasets.py --root /Volumes/ORICO/data/datasets --only al
 
 ---
 
-## 6. 演示路径
+## 8. 演示路径
 
 三大基础场景（语音 / 图片 / 文本）已预置真实演示数据，登录 `wangmin` 即可在「我的任务」中直接标注：
 
@@ -454,7 +649,7 @@ python3 scripts/import_datasets.py --root /Volumes/ORICO/data/datasets --only al
 | 语音 | 语音-客服话术质检 | 客服来电-20261123-001/002 | 波形播放、FunASR 预识别、分段转写、说话人/情绪/事件、业务分类 |
 | 图片 | 城市治理-人车流量检测 | 路口抓拍-曼哈顿-001 等 | 画布直绘多边形/分割/关键点、Grounding DINO 预识别、名称下拉、CSV 导出、类别筛选、整图分类 |
 | 文本 | 文本-用户评论标注 | 评论标注-0001/0002 | 语料自动加载、嵌套实体、预识别实体、情感极性/强度、层级分类、语义匹配 |
-| 语音工作台 | 拉框标注列表页：「我标注中的任务」（时长/共 N 框/已标注/待标注 + 继续标注）与「待领取任务池」（开始标注一键领取），草稿实时保存 |
+| 语音工作台 | 拉框标注列表页 | 「我标注中的任务」「待领取任务池」 | 时长/共 N 框/已标注/待标注、继续标注、一键领取、草稿实时保存 |
 | 3D 点云 | 智驾-点云目标标框 | kitti-点云-000006 等 | three.js 透视渲染、双视图 2D 投影联动、AI 预标注、框拖拽/分割、4D 帧序列 |
 
 多模态演示项目：`demo-v4-multi`（演示-视频/文档/大模型/多模态）
@@ -486,9 +681,9 @@ python3 scripts/import_datasets.py --root /Volumes/ORICO/data/datasets --only al
 
 ---
 
-## 7. API 摘要
+## 9. API 摘要
 
-完整 OpenAPI：`GET /docs`（Swagger UI）或 `GET /api/v1/openapi.json`。
+完整 OpenAPI：`GET /docs`（Swagger UI）。
 
 | 分组 | 代表接口 |
 |---|---|
@@ -511,7 +706,7 @@ python3 scripts/import_datasets.py --root /Volumes/ORICO/data/datasets --only al
 
 ---
 
-## 8. 配置项
+## 10. 配置项
 
 配置写入 `settings` 表，可在平台控制台/设置页维护，也可通过对应运维接口保存。
 
@@ -527,20 +722,47 @@ python3 scripts/import_datasets.py --root /Volumes/ORICO/data/datasets --only al
 | `mfa_required` | 是否强制 MFA |
 | `media_token_ttl` | 媒体短时 Token 有效期 |
 | `log_retention_days` | 审计日志留存天数 |
-| `sso_provider` / `sso_authorize_url` / `sso_token_url` / `sso_client_id` / `sso_client_secret` / `sso_redirect_uri` | OIDC SSO |
+| `sso_provider` / `sso_discovery` / `sso_authorize_url` / `sso_token_url` / `sso_client_id` / `sso_client_secret` / `sso_redirect_uri` / `sso_default_role` | OIDC SSO |
 | `scim_token` / `integration.inbound_token` | SCIM 与入站集成 Token |
-| `billing.price_per_k` | 计量单价（元/千条） |
+| `billing.price_per_k` / `billing.mode` | 计量单价（元/千条）/ 计价模式（per_item、per_hour） |
 
 环境变量：
 
 | 变量 | 说明 |
 |---|---|
-| `CK_SECRET_KEY` | 凭据加密主密钥；未设置时使用 `data/secret.key`（首次自动生成） |
-| `CK_PUBLIC_URL` | 对外访问地址，用于 OIDC 回调拼接 |
+| `CK_SECRET_KEY` | 凭据加密主密钥；未设置时使用 `data/secret.key`（首次自动生成）。生产环境建议显式设置并妥善备份 |
+| `CK_LLM_URL` / `CK_OPENAI_BASE_URL` | OpenAI 兼容大模型服务地址（优先于本机 Ollama 发现） |
+| `CK_LLM_MODEL` | 大模型名称 |
+| `CK_LLM_KEY` | 大模型服务密钥（Ollama 默认为 `ollama`） |
+
+> `docker-compose.yml` 中的 `CK_PUBLIC_URL` 目前仅作为部署标注保留；应用本身通过请求头 `X-Forwarded-Proto` / `Host` 推导对外地址。如需固定 OIDC 回调，请在设置中填写 `sso_redirect_uri`。
 
 ---
 
-## 9. 测试与校验
+## 11. 数据、备份与恢复
+
+- 默认数据库：`data/chunke.db`（WAL），启动时自动迁移与补齐 schema。备份时请同时复制 `chunke.db`、`chunke.db-wal`、`chunke.db-shm`，或先停服再复制。
+- 媒体目录：`data/media/`，任务媒体经 `task_media` 关联；支持本地与 S3 兼容存储。
+- 备份目录：`data/backups/`（已被 `.gitignore` 忽略）。
+- 凭据加密密钥：`data/secret.key` 或 `CK_SECRET_KEY`（不入库）。**丢失密钥将无法解密已保存的第三方凭据。**
+- 主要数据表：`tenants`、`tenant_members`、`users`、`orgs`、`teams`、`projects`、`project_members`、`task_roles`、`tasks`、`annotations`、`annotation_versions`、`acceptance_records`、`appeal_records`、`exam_papers`、`exam_records`、`templates`、`template_layouts`、`template_versions`、`spec_templates`、`datasets`、`dataset_versions`、`dataset_items`、`workflows`、`task_packages`、`rework_events`、`qc_records`、`quality_rules`、`settlements`、`settlement_items`、`invitations`、`sessions`、`operators`、`operator_runs`、`integration_endpoints`、`sync_logs`、`secret_vault`、`api_keys`、`security_events`、`capacity_snapshots`。
+
+**手动备份示例**
+
+```bash
+# 在线热备（SQLite backup API 也可，这里用 sqlite3 自带命令）
+sqlite3 data/chunke.db ".backup 'data/backups/chunke-$(date +%Y%m%d-%H%M).db'"
+
+# 媒体与配置
+tar czf data/backups/media-$(date +%Y%m%d).tar.gz data/media
+cp data/secret.key data/backups/secret.key.bak
+```
+
+平台内也提供 `/api/ops/backup`、`/api/ops/backups`、`/api/ops/backups/{bid}/restore` 的在线备份与恢复能力。
+
+---
+
+## 12. 测试与压测
 
 ```bash
 # 语法检查
@@ -581,29 +803,39 @@ curl -s -b /tmp/ck.jar -H 'Content-Type: application/json' \
 
 ---
 
-## 10. 数据与存储
+## 13. 故障排查
 
-- 默认数据库：`data/chunke.db`（WAL），启动时自动迁移与补齐 schema。
-- 媒体目录：`data/media/`，任务媒体经 `task_media` 关联；支持本地与 S3 兼容存储。
-- 备份目录：`data/backups/`（已被 `.gitignore` 忽略）。
-- 凭据加密密钥：`data/secret.key` 或 `CK_SECRET_KEY`（不入库）。
-- 主要数据表：`tenants`、`tenant_members`、`users`、`orgs`、`teams`、`projects`、`project_members`、`task_roles`、`tasks`、`annotations`、`annotation_versions`、`acceptance_records`、`appeal_records`、`exam_papers`、`exam_records`、`templates`、`template_layouts`、`template_versions`、`spec_templates`、`datasets`、`dataset_versions`、`dataset_items`、`workflows`、`task_packages`、`rework_events`、`qc_records`、`quality_rules`、`settlements`、`settlement_items`、`invitations`、`sessions`、`operators`、`operator_runs`、`integration_endpoints`、`sync_logs`、`secret_vault`、`api_keys`、`security_events`、`capacity_snapshots`。
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| 上传大文件返回 **413** | 反代默认请求体上限 1 MB | 在 NPM Advanced / Nginx 中设置 `client_max_body_size 2g;`；应用侧无需额外配置 |
+| 登录成功但立刻掉登录、接口 401 | 反代未传 `X-Forwarded-Proto`，或 IP 与域名混用导致 Cookie 域不一致 | 统一通过 `https://<DOMAIN>` 访问；确认反代传递 `Host` 与 `X-Forwarded-Proto`；Cookie 为 SameSite=Lax，跨站脚本嵌入不适用 |
+| 视频/音频无法拖动进度、返回 200 全量 | 未透传 `Range` 或开启了缓冲 | 反代不要改写 `Range`，`/media/` 关闭 `proxy_buffering`，超时设 600s（参考 [deploy/nginx.conf](deploy/nginx.conf)） |
+| 语音/图像预识别不可用 | `FUNASR_PY`、模型目录（`app/prelabel.py`）、ONNX 模型路径（`app/overlap.py`）仍指向开发机 | 改为目标机实际路径，并确认模型权重已下载 |
+| OCR/分割/LLM 算子报错 | 未安装对应依赖或未配置外部服务 | 安装 `rapidocr_onnxruntime`/`opencv-python-headless`，或配置 `operator.<name>.url`；未配置时系统会明确提示而非返回假结果 |
+| `database is locked` | 多 worker 或多进程同时写 SQLite | 保持 `--workers 1`；高并发写入迁移 PostgreSQL |
+| 端口 8080 被占用 | 与 NPM 的 HTTP 端口或本机其他服务冲突 | 修改 docker-compose 中 Nginx 映射端口，或调整 NPM 端口规划 |
+| `GET /metrics` 返回 403 | 白名单限制 | 从 `10.0.0.0/8` 或 `127.0.0.1` 访问，或按需修改 [deploy/nginx.conf](deploy/nginx.conf) 的 `allow/deny` |
+| 80/443 无法访问、出现运营商拦截页 | 域名未完成 ICP 备案 | 完成备案，或临时改用已备案域名/IP + 非 80/443 端口 |
+| 长任务执行超过 60 秒被断 | 反代读超时过短 | 设置 `proxy_read_timeout 600s; proxy_send_timeout 600s;` |
+| 静态页面 404 或白屏 | 直接以子路径部署但未配置前缀 | 本平台默认部署在域名根路径；如需子路径，请在反代做路径重写并同步前端路由 |
 
 ---
 
-## 11. 外部依赖与已知限制
+## 14. 外部依赖与已知限制
 
 **需要外部条件的能力**
 
-- 本地 AI 依赖（演示/生产前安装）：`uv pip install rapidocr_onnxruntime opencv-python-headless`；LLM 需安装 Ollama 并拉取模型（如 `ollama pull qwen3`）或在系统设置填写 OpenAI 兼容地址 `operator.llm.url`。未安装时对应算子明确报错，不输出伪造结果。
+- 本地 AI 依赖（演示/生产前安装）：`pip install rapidocr_onnxruntime opencv-python-headless`；LLM 需安装 Ollama 并拉取模型（如 `ollama pull qwen3`），或在系统设置填写 OpenAI 兼容地址 `operator.llm.url`。未安装时对应算子明确报错，不输出伪造结果。
+- FunASR 语音转写：需要独立 Python 3.10 venv 与 Paraformer/CAM++ 权重；路径见 `app/prelabel.py` 顶部常量；未配置时不影响其他模态。
+- 图像检测：Grounding DINO 需 `torch` + `transformers` 与 HF 缓存权重，YOLOv8n 需 `ultralytics` 与权重文件；部署环境应能访问模型源（内网可用离线权重）。
+- S3/MinIO：使用对象存储时需额外安装 `boto3`，并在设置中切换 `storage.driver`。
 - 等保三级测评、信创硬件实测、200 用户压测：需在交付环境执行并出具报告。
-- FunASR 语音转写：需要独立 Python 3.10 venv 与模型权重，路径见 `app/prelabel.py` 顶部常量；未安装时不影响其他模态。
-- 点云渲染/大模型评测等重依赖能力，建议在具备 GPU 的环境部署。
+- 点云渲染/大模型评测等重依赖能力，建议在具备 GPU 的环境部署；无 GPU 时 CPU 可运行，但推理较慢。
 
 **当前限制**
 
 - 单机 SQLite 架构，超大规模并发建议迁移 PostgreSQL 并增加对象存储。
-- 视频抽帧与转码依赖本机 ffmpeg。
+- 视频抽帧与转码依赖本机 ffmpeg；长音频切分对非 wav 格式同样依赖 ffmpeg。
 - 点云 AI 预标注为聚类+PCA 真实算法（非模型），作预识别供人工核对；生产精度可接外部检测服务。
 - 点云工作台已支持 3D 框交互、点云分割（RLE）、车道线、4D 帧序列与 2D 投影联动；**点级语义分割**与真实连续点云序列（流式 PCD 帧）尚未实现。
 - 视频跟踪内置匀速运动估计降级，生产精度可接 `operator.track.url`。
@@ -613,6 +845,18 @@ curl -s -b /tmp/ck.jar -H 'Content-Type: application/json' \
 
 ---
 
-## 12. License
+## 15. 安全说明
+
+- **默认口令必须修改**：所有演示账号初始密码均为 `chunke123`，上线前请重置或停用。建议开启 `mfa_required`。
+- **Cookie 会话**：HttpOnly + SameSite=Lax，12 小时过期；请始终通过 HTTPS 访问。反向代理需正确传递 `X-Forwarded-Proto`，否则浏览器可能拒绝写入 Cookie。
+- **密钥管理**：`CK_SECRET_KEY` / `data/secret.key` 用于加密第三方凭据，务必纳入密钥管理并单独备份，不要提交到仓库。
+- **网络暴露面**：应用只需对网关开放 `8100`；数据库、模型服务（Ollama 11434）、MinIO、Prometheus、NPM 管理台（81）均不应直接暴露公网。
+- **上传与下载**：默认限制 2 GB 请求体；媒体访问支持短时 Token 与下载策略；如需更强隔离，可将 `data/media` 挂载到独立磁盘并限制系统用户权限。
+- **审计**：登录、质检、验收、结算、集成同步等关键动作写入审计日志，可通过审计导出与 TC609 证据包留存。
+- **公开仓库注意事项**：本 README 与代码不包含生产口令、私钥或真实公网地址；部署时请使用占位符替换，不要把服务器凭据写入文档或提交历史。
+
+---
+
+## 16. License
 
 Proprietary © 杭州春科数据科技有限公司。未经授权不得复制、分发或用于商业用途。
