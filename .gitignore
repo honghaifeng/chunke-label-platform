@@ -49,6 +49,12 @@ docs/github-recovery-codes.txt
 *.log
 /tmp/
 
+# Node / 前端原型（prototype/vendor-workspace）
+node_modules/
+.vite/
+*.local
+prototype/**/dist/
+
 # 环境变量 & 密钥
 .env
 .env.*

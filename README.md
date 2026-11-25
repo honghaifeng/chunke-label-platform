@@ -21,6 +21,21 @@
 
 旧链接（如 `#/tasks`、`#/qc`）会自动重定向到当前入口对应的三段式路由，不影响已有书签。
 
+### 供应商工作台高保真原型（`prototype/vendor-workspace/`）
+
+仓库内另附一套独立的 **Vue 3 + Vite** 前端原型，还原钉钉「ding-tag」标注平台供应商侧（`/vendor/*`）的页面与交互，用于设计评审与客户演示，不依赖本仓库后端：
+
+```bash
+cd prototype/vendor-workspace
+npm install
+npm run dev          # http://127.0.0.1:5173
+```
+
+- 演示账号：`chunke_001` / `demo123456`（任意密码均可，演示数据）。
+- 覆盖长音频拉框标注、质检、返修、交付验收、数据统计、错题与组织管理。
+- 其中 15 个页面已按真实站 1440×1000 DOM 实测逐像素校准。
+- 详细说明见 [prototype/vendor-workspace/README.md](prototype/vendor-workspace/README.md)。
+
 ---
 
 ## 1. 核心能力
