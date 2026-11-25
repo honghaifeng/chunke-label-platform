@@ -694,6 +694,22 @@ python3 scripts/import_datasets.py --root /data/datasets --only all
 14. 成员管理 → 批量导入，粘贴 `zhangsan,张三,标注员,chunke123` 演示逐行校验。
 15. 运维：监控摘要、备份、审计导出。
 
+### 8.1 供应商工作台高保真原型（可选演示）
+
+`prototype/vendor-workspace/` 是一套独立可运行的 **Vue 3 + Vite + TypeScript + Pinia** 前端原型，用于还原钉钉「ding-tag」标注平台供应商侧（`/vendor/*`）的页面与交互，适合设计评审与客户演示，无需启动 FastAPI 后端。
+
+```bash
+cd prototype/vendor-workspace
+npm install
+npm run dev          # http://127.0.0.1:5173
+```
+
+- 演示账号：`chunke_001` / `demo123456`（密码不校验，纯演示）。
+- 覆盖范围：长音频拉框标注、质检、返修、交付验收、数据统计、错题广场、组织与成员管理、各类配置页，共 50+ 页面。
+- 还原精度：15 个核心页面按真实站 1440×1000 DOM 实测逐像素校准（页面头、表格、按钮、分段切换、空态、分页）。
+- 数据说明：全部为内存中的演示数据，刷新即还原；成员、任务、返修/错题/挂起数量与真实演示账号口径一致，不包含任何真实凭据。
+- 详细路由清单、目录结构、设计令牌与已知边界见 [prototype/vendor-workspace/README.md](prototype/vendor-workspace/README.md)。
+
 ---
 
 ## 9. API 摘要
