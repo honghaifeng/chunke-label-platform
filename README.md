@@ -40,7 +40,7 @@
 | 多语言 | 中 / 英 / 越三语界面（顶栏一键切换，本地持久化），覆盖导航、登录、工作台、任务中心、状态与常用按钮；词典集中可扩展 |
 | 数据管理 | 项目级「数据管理」页：数据资产统计（条目/总时长/任务包/项目）、四类上传入口（本地/续传/长音频切分/作业队列）、可搜索数据资产表 |
 | 模态工作台 | 语音/图像/点云独立生产台：生产 KPI（标注中/返修中/待质检/已完成）、继续生产卡（继续标注或一键领取并标注）、返修区、我的队列 |
-| 生产线与结算 | 任务包**时长配额**（目标/已分配/剩余，领取按 est_minutes 扣减）与**双轨计价**（按件/按时长，项目级 billing.mode）；长音频**切分工序**（作业中心一键切成子任务）；**考试门禁**（项目可选开关，未通过不能领取）；**申诉仲裁**（验收驳回可申诉，仲裁留痕）；**错题本**（驳回错误类型按人聚合）；**AI 助手**（读取任务规范与质检记录问答，可接大模型） |
+| 生产线与结算 | 任务包**时长配额**（目标/已分配/剩余，领取按 est_minutes 扣减）与**双轨计价**（按件/按时长，项目级 billing.mode）；长音频**切分工序**（作业中心一键切成子任务）；**考试门禁**（项目可选开关，未通过不能领取）；**申诉仲裁**（验收驳回可申诉，仲裁留痕）；**错题本+错题广场**（驳回错误类型按人聚合 + 团队匿名广场）；**结算中心**（已交付任务按周期生成结算单：草稿→确认→支付）；**邀请制注册与审批**（邀请码加入组织，直进/审批两种模式）；**AI 助手**（读取任务规范与质检记录问答，可接大模型） |
 | 交互式算子 | **本地真实实现，无伪造输出**：OCR=RapidOCR（ONNX 中文识别，真实文本+置信度）；SAM 类分割=GrabCut 图割/区域生长（OpenCV 真实算法，框/点提示）；LLM 润色/QA 生成/AI 助手=Ollama（自动发现本机模型）或 OpenAI 兼容服务；文档问答=抽取式检索（带出处）+LLM 生成双路；ASR=FunASR worker；图像检测=Grounding DINO/YOLO worker；视频跟踪=关键帧插值+运动估计（如实标注）；均可再配置 `operator.<name>.url` 切换更强模型 |
 | 智能质检 | 规则引擎 + 质检算子库 + 阈值/权重/组合规则 + 字符级定位高亮；驳回错误类型（漏标/错标/框选偏差等）与分布统计 |
 | 集成与运维 | 双向集成端点、Prometheus/Loki/数据湖、备份恢复、升级回滚、TLS 反向代理 |
@@ -384,7 +384,7 @@ GET  /api/quality/error-types        驳回错误类型分布
 - **长音频切分工序**：作业中心「长音频切分」上传音频按固定时长切成子任务（wav 原生，其余走 ffmpeg），自动携带时长，可专人切分、分轮标注。
 - **考试门禁**：项目级可选开关（默认关）；`exam_papers/exam_records` 试卷与成绩，运营服务「上岗考试」页签管理/应考；开启后未通过考试的任务大厅领取被拦截。
 - **申诉仲裁**：验收驳回后标注员可申请仲裁（任务挂起 `appeal` 态、标注锁定），平台/项目经理仲裁「维持驳回/改判通过」，全程留痕并通知双方。
-- **错题本**：`/api/my/errors` 把 `qc_records.error_types` 按人聚合（管理角色可查团队成员），「我的错题/团队错题」页支持跳转任务复盘。
+- **错题本**：`/api/my/errors` 把 `qc_records.error_types` 按人聚合（管理角色可查团队成员），「我的错题/团队错题」页支持跳转任务复盘；`?square=1` 提供团队匿名「错题广场」（错误类型分布 + 全员近期错题，仅管理角色可见），把质量数据沉淀为培训素材。
 - **段级工作明细**：质检可选择「问题段定位」记录到段（`qc_records.item_index`），「明细」弹窗展示每段的起止/文本/质检结论/意见。
 - **AI 助手**：右下角悬浮气泡，读取当前任务的规范模板与历史质检意见做检索式问答；配置 `operator.llm.url` 后切换真实大模型。
 
@@ -408,6 +408,25 @@ python3 scripts/import_datasets.py --root /Volumes/ORICO/data/datasets --only al
 | `kitti_lidar` | 智驾-点云目标标框 | velodyne 点云（3 万点）+ 标定矩阵精确换算 3D 框 + 同帧相机图（双视图投影联动） |
 | `nuscenes` | 智驾-点云目标标框 | nuScenes mini LIDAR_TOP 点云，按微秒时间戳匹配 CAM_FRONT 图作为附件 |
 | `dair` | 城市治理-人车流量检测 | DAIR-V2X-C（需镜像包含图像文件；仅标注包的镜像会自动跳过） |
+
+### 5.14 结算中心
+
+按项目与周期把已交付任务汇总成结算单，完成「产能—质量—收入」闭环：
+
+- **可结算口径**：任务 `status='done'` 且最新验收非驳回，未被其他结算单锁定（`settlement_items` 唯一锁定）；无验收记录的任务按 `updated_at` 兜底计入周期。
+- **双轨计价**：金额随平台计费策略自动计算——`per_item` = 条数 × 元/千条 ÷ 1000；`per_hour` = 合计 `est_minutes` × 元/小时；创建时可覆盖单价，计费模式快照进结算单（`mode` 列）。
+- **状态机**：`draft（草稿）→ confirmed（已确认，明细锁定）→ paid（已支付）`；草稿可删除并释放明细任务，已支付留痕 `paid_at`。
+- **权限**：创建/确认为租户管理员或项目经理；支付为平台/租户管理员；列表与明细对执行类角色（标注/质检/验收）不可见。
+- 接口：`GET /api/settlements/preview`（可结算预览+预估金额）、`GET/POST /api/settlements`、`GET /api/settlements/{sid}`、`POST /confirm`、`/pay`、`DELETE`；创建时明细写入失败自动回滚结算单（事务安全）。
+
+### 5.15 邀请制注册与审批
+
+平台不开放自由注册，新成员凭邀请码加入组织：
+
+- **两种模式**：`direct` 注册即入组织（租户/组织/团队/角色按邀请预置）；`approval` 先注册账号，管理员在「成员管理 → 邀请与审批」通过后才分配组织，全程通知留痕。
+- **邀请管理**：租户/平台管理员创建邀请（角色/方式/姓名/备注/有效期 7 天），生成 `#/join?token=` 链接与 12 位邀请码，支持复制、取消；待审批申请人单独置顶成队列。
+- **注册入口**：登录页「邀请注册」Tab，支持邀请链接直达预填；注册接口校验邀请有效性（存在/未使用/未过期）、账号唯一性与密码复杂度策略，成功后自动登录。
+- 接口：`POST /api/invitations`、`GET /api/invitations`、`POST /api/invitations/{id}/cancel`、`POST /api/invitations/{id}/decide`、`POST /api/auth/register`。
 
 ---
 
@@ -458,7 +477,7 @@ python3 scripts/import_datasets.py --root /Volumes/ORICO/data/datasets --only al
 
 | 分组 | 代表接口 |
 |---|---|
-| 认证与上下文 | `POST /api/login`、`GET /api/me`、`GET /api/context`、`GET /api/tenants/switchable`、`POST /api/tenant/switch`、`GET /api/auth/mfa/*`、`GET /api/auth/sso/start` |
+| 认证与上下文 | `POST /api/login`、`POST /api/auth/register`（邀请制注册）、`GET /api/me`、`GET /api/context`、`GET /api/tenants/switchable`、`POST /api/tenant/switch`、`GET /api/auth/mfa/*`、`GET /api/auth/sso/start` |
 | 任务 | `GET /api/tasks`、`GET /api/tasks/{tid}`、`POST /api/tasks/{tid}/annotation`、`/submit`、`/review`、`/accept`、`GET /api/acceptance` |
 | 组织与成员 | `GET /api/org/tree`、`POST /api/members`、`PATCH /api/members/{uid}`、`POST /api/members/import`、`POST /api/members/import-batch` |
 | 模板 | `GET/PUT /api/templates/{tid}/layout`、`GET/POST /api/tasks/{tid}/form` |
@@ -469,6 +488,8 @@ python3 scripts/import_datasets.py --root /Volumes/ORICO/data/datasets --only al
 | 任务治理 | `/api/task-hall`、`/api/task-packages`、`/api/workflows` |
 | 平台 | `/api/platform/overview`、`/api/usage`、`/api/billing/policy`、`/api/integrations` |
 | 运维 | `/metrics`、`/api/monitoring/summary`、`/api/ops/*` |
+| 结算 | `GET /api/settlements/preview`、`GET/POST /api/settlements`、`GET /api/settlements/{sid}`、`POST /api/settlements/{sid}/confirm`、`/pay`、`DELETE /api/settlements/{sid}` |
+| 邀请与审批 | `POST /api/invitations`、`GET /api/invitations`、`POST /api/invitations/{id}/cancel`、`POST /api/invitations/{id}/decide` |
 | 开放 API | `/api/v1/*`（API Key）、`/scim/v2/*`（SCIM Token） |
 
 分页与错误约定：列表接口使用 `page`/`limit`，错误统一返回 `{"detail": "..."}` 并带对应 HTTP 状态码。
@@ -551,7 +572,7 @@ curl -s -b /tmp/ck.jar -H 'Content-Type: application/json' \
 - 媒体目录：`data/media/`，任务媒体经 `task_media` 关联；支持本地与 S3 兼容存储。
 - 备份目录：`data/backups/`（已被 `.gitignore` 忽略）。
 - 凭据加密密钥：`data/secret.key` 或 `CK_SECRET_KEY`（不入库）。
-- 主要数据表：`tenants`、`tenant_members`、`users`、`orgs`、`teams`、`projects`、`project_members`、`task_roles`、`tasks`、`annotations`、`annotation_versions`、`acceptance_records`、`templates`、`template_layouts`、`template_versions`、`datasets`、`dataset_versions`、`dataset_items`、`workflows`、`task_packages`、`rework_events`、`qc_records`、`quality_rules`、`spec_templates`、`sessions`、`operators`、`operator_runs`、`integration_endpoints`、`sync_logs`、`secret_vault`、`api_keys`、`security_events`、`capacity_snapshots`。
+- 主要数据表：`tenants`、`tenant_members`、`users`、`orgs`、`teams`、`projects`、`project_members`、`task_roles`、`tasks`、`annotations`、`annotation_versions`、`acceptance_records`、`appeal_records`、`exam_papers`、`exam_records`、`templates`、`template_layouts`、`template_versions`、`spec_templates`、`datasets`、`dataset_versions`、`dataset_items`、`workflows`、`task_packages`、`rework_events`、`qc_records`、`quality_rules`、`settlements`、`settlement_items`、`invitations`、`sessions`、`operators`、`operator_runs`、`integration_endpoints`、`sync_logs`、`secret_vault`、`api_keys`、`security_events`、`capacity_snapshots`。
 
 ---
 

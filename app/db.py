@@ -424,6 +424,50 @@ CREATE TABLE IF NOT EXISTS spec_templates(
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS settlements(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  code TEXT UNIQUE NOT NULL,
+  project_id INTEGER NOT NULL,
+  title TEXT NOT NULL DEFAULT '',
+  period_start TEXT NOT NULL DEFAULT '',
+  period_end TEXT NOT NULL DEFAULT '',
+  item_count INTEGER NOT NULL DEFAULT 0,
+  unit_price REAL NOT NULL DEFAULT 0,
+  amount REAL NOT NULL DEFAULT 0,
+  mode TEXT NOT NULL DEFAULT 'per_item',
+  status TEXT NOT NULL DEFAULT 'draft',
+  remark TEXT NOT NULL DEFAULT '',
+  created_by INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  confirmed_at TEXT,
+  paid_at TEXT
+);
+CREATE TABLE IF NOT EXISTS settlement_items(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  settlement_id INTEGER NOT NULL,
+  task_id INTEGER NOT NULL,
+  task_name TEXT NOT NULL DEFAULT '',
+  accepted_at TEXT NOT NULL DEFAULT '',
+  minutes REAL NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS invitations(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  token TEXT UNIQUE NOT NULL,
+  tenant_id INTEGER NOT NULL,
+  org_id INTEGER,
+  team_id INTEGER,
+  role TEXT NOT NULL DEFAULT 'annotator',
+  name TEXT NOT NULL DEFAULT '',
+  mode TEXT NOT NULL DEFAULT 'direct',
+  status TEXT NOT NULL DEFAULT 'pending',
+  invited_by INTEGER NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  join_user_id INTEGER,
+  created_at TEXT NOT NULL,
+  expires_at TEXT,
+  decided_by INTEGER,
+  decided_at TEXT
+);
 CREATE TABLE IF NOT EXISTS annotation_versions(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   annotation_id INTEGER NOT NULL,
@@ -775,8 +819,14 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_service_tickets_project ON service_tickets(project_id,status);
             CREATE INDEX IF NOT EXISTS idx_agreements_user ON confidentiality_agreements(user_id,status);
             CREATE INDEX IF NOT EXISTS idx_training_records_course ON training_records(course_id,status);
+            CREATE INDEX IF NOT EXISTS idx_settlements_project ON settlements(project_id,status);
+            CREATE INDEX IF NOT EXISTS idx_settlement_items_settlement ON settlement_items(settlement_id);
+            CREATE INDEX IF NOT EXISTS idx_settlement_items_task ON settlement_items(task_id);
+            CREATE INDEX IF NOT EXISTS idx_invitations_tenant ON invitations(tenant_id,status);
+            CREATE INDEX IF NOT EXISTS idx_invitations_token ON invitations(token);
             """
         )
+        _ensure_column(conn, "settlements", "mode", "TEXT NOT NULL DEFAULT 'per_item'")
         conn.commit()
 
     if rows("SELECT id FROM users LIMIT 1"):

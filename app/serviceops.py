@@ -10,12 +10,13 @@ from __future__ import annotations
 
 import csv
 import io
+import uuid
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 
-from . import auth, db
+from . import auth, db, ops
 
 router = APIRouter()
 
@@ -596,3 +597,295 @@ def update_training_record(rid: int, body: dict, user: dict = Depends(me)):
     db.execute(f"UPDATE training_records SET {sets} WHERE id=?", tuple(fields.values()) + (rid,))
     db.log(user["id"], "training_record_update", f"record:{rid}", ",".join(fields.keys()))
     return {"ok": True}
+
+
+# ------------------------------------------------------------------ 结算中心
+SETTLE_STATUS = {"draft": "草稿", "confirmed": "已确认", "paid": "已支付"}
+
+
+def _billable_rows(project_id: int, period_start: str, period_end: str) -> list[dict]:
+    """已交付（done，最新验收非驳回）且未被任何结算单锁定的任务，按验收时间过滤。"""
+    args: list = [project_id]
+    period = ""
+    if period_start:
+        period += " AND COALESCE(a.created_at,t.updated_at)>=?"
+        args.append(period_start.strip() + (" 00:00:00" if len(period_start.strip()) == 10 else ""))
+    if period_end:
+        period += " AND COALESCE(a.created_at,t.updated_at)<=?"
+        args.append(period_end.strip() + (" 23:59:59" if len(period_end.strip()) == 10 else ""))
+    return db.rows(
+        "SELECT t.id,t.name,t.est_minutes,COALESCE(a.created_at,t.updated_at) accepted_at FROM tasks t"
+        " LEFT JOIN acceptance_records a ON a.task_id=t.id"
+        " AND a.id=(SELECT MAX(id) FROM acceptance_records WHERE task_id=t.id)"
+        " WHERE t.project_id=? AND t.status='done' AND t.deleted=0"
+        " AND (a.result IS NULL OR a.result='approved')" + period +
+        " AND NOT EXISTS(SELECT 1 FROM settlement_items si WHERE si.task_id=t.id)"
+        " ORDER BY a.created_at",
+        tuple(args),
+    )
+
+
+def _unit_price(explicit: float | None = None) -> tuple[str, float]:
+    mode = ops.get_setting("billing.mode", "per_item") or "per_item"
+    if explicit and explicit > 0:
+        return mode, float(explicit)
+    if mode == "per_hour":
+        return mode, float(ops.get_setting("billing.price_per_hour", "25") or 25)
+    return mode, float(ops.get_setting("billing.price_per_k", "12") or 12)
+
+
+@router.get("/api/settlements/preview")
+def settle_preview(project_id: int, period_start: str = "", period_end: str = "", user: dict = Depends(me)):
+    p = _manage(user, project_id)
+    items = _billable_rows(project_id, period_start, period_end)
+    mode, unit = _unit_price()
+    return {
+        "project": {"id": p["id"], "name": p["name"]},
+        "items": items,
+        "count": len(items),
+        "mode": mode,
+        "unit_price": unit,
+        "minutes": round(sum(float(x.get("est_minutes") or 0) for x in items), 2),
+    }
+
+
+@router.get("/api/settlements")
+def settle_list(project_id: int = 0, user: dict = Depends(me)):
+    if user["platform_role"] not in ("platform_admin", "tenant_admin", "project_manager"):
+        raise HTTPException(403, "仅管理类角色可查看结算")
+    ids = auth.visible_project_ids(user)
+    if not ids:
+        return {"settlements": []}
+    marks = ",".join("?" * len(ids))
+    cond = f"s.project_id IN ({marks})"
+    args: list = list(ids)
+    if project_id:
+        cond += " AND s.project_id=?"
+        args.append(project_id)
+    rows_ = db.rows(
+        "SELECT s.*, p.name project_name, u.name creator_name FROM settlements s"
+        " JOIN projects p ON p.id=s.project_id LEFT JOIN users u ON u.id=s.created_by"
+        f" WHERE {cond} ORDER BY s.id DESC LIMIT 200",
+        tuple(args),
+    )
+    for r in rows_:
+        r["status_label"] = SETTLE_STATUS.get(r["status"], r["status"])
+    return {"settlements": rows_}
+
+
+@router.post("/api/settlements")
+def settle_create(body: dict, user: dict = Depends(me)):
+    pid = int(body.get("project_id") or 0)
+    p = _manage(user, pid)
+    period_start = str(body.get("period_start") or "").strip()
+    period_end = str(body.get("period_end") or "").strip()
+    task_ids = [int(x) for x in (body.get("task_ids") or [])]
+    billable = _billable_rows(pid, period_start, period_end)
+    if task_ids:
+        billable = [x for x in billable if x["id"] in task_ids]
+    if not billable:
+        raise HTTPException(400, "所选周期内没有可结算的已验收任务（或均已在其他结算单中）")
+    mode, unit = _unit_price(float(body.get("unit_price") or 0) or None)
+    minutes = round(sum(float(x.get("est_minutes") or 0) for x in billable), 2)
+    amount = round(minutes * unit, 2) if mode == "per_hour" else round(len(billable) * unit / 1000.0, 2)
+    seq = int(db.row("SELECT COUNT(*) c FROM settlements")["c"]) + 1
+    code = "ST" + db.now()[:10].replace("-", "") + str(pid).zfill(3) + str(seq).zfill(3)
+    sid = db.execute(
+        "INSERT INTO settlements(code,project_id,title,period_start,period_end,item_count,unit_price,amount,mode,status,remark,created_by,created_at)"
+        " VALUES(?,?,?,?,?,?,?,?,?,'draft',?,?,?)",
+        (code, pid, str(body.get("title") or f"{p['name']} 结算"), period_start, period_end,
+         len(billable), unit, amount, mode, str(body.get("remark") or ""), user["id"], db.now()),
+    )
+    try:
+        for x in billable:
+            db.execute(
+                "INSERT INTO settlement_items(settlement_id,task_id,task_name,accepted_at,minutes) VALUES(?,?,?,?,?)",
+                (sid, x["id"], x["name"], x["accepted_at"], float(x.get("est_minutes") or 0)),
+            )
+    except Exception:
+        db.execute("DELETE FROM settlement_items WHERE settlement_id=?", (sid,))
+        db.execute("DELETE FROM settlements WHERE id=?", (sid,))
+        raise
+    db.log(user["id"], "settlement_create", f"settlement:{sid}", f"{code} {len(billable)} 项 ¥{amount}")
+    return {"ok": True, "id": sid, "code": code, "amount": amount, "count": len(billable)}
+
+
+@router.get("/api/settlements/{sid}")
+def settle_detail(sid: int, user: dict = Depends(me)):
+    if user["platform_role"] not in ("platform_admin", "tenant_admin", "project_manager"):
+        raise HTTPException(403, "仅管理类角色可查看结算")
+    s = db.row(
+        "SELECT s.*, p.name project_name, u.name creator_name FROM settlements s"
+        " JOIN projects p ON p.id=s.project_id LEFT JOIN users u ON u.id=s.created_by WHERE s.id=?",
+        (sid,),
+    )
+    if not s:
+        raise HTTPException(404, "结算单不存在")
+    if s["project_id"] not in auth.visible_project_ids(user) and not auth.is_admin(user):
+        raise HTTPException(403, "无权查看该结算单")
+    items = db.rows("SELECT * FROM settlement_items WHERE settlement_id=? ORDER BY accepted_at", (sid,))
+    return {"settlement": s, "items": items, "status_label": SETTLE_STATUS.get(s["status"], s["status"])}
+
+
+@router.post("/api/settlements/{sid}/confirm")
+def settle_confirm(sid: int, user: dict = Depends(me)):
+    s = db.row("SELECT * FROM settlements WHERE id=?", (sid,))
+    if not s:
+        raise HTTPException(404, "结算单不存在")
+    _manage(user, s["project_id"])
+    if s["status"] != "draft":
+        raise HTTPException(400, "仅草稿状态可确认")
+    db.execute("UPDATE settlements SET status='confirmed', confirmed_at=? WHERE id=?", (db.now(), sid))
+    db.log(user["id"], "settlement_confirm", f"settlement:{sid}", s["code"])
+    return {"ok": True, "status": "confirmed"}
+
+
+@router.post("/api/settlements/{sid}/pay")
+def settle_pay(sid: int, body: dict, user: dict = Depends(me)):
+    s = db.row("SELECT * FROM settlements WHERE id=?", (sid,))
+    if not s:
+        raise HTTPException(404, "结算单不存在")
+    if not (auth.is_admin(user) or user.get("platform_role") == "tenant_admin"):
+        raise HTTPException(403, "仅平台/租户管理员可执行支付")
+    if s["status"] != "confirmed":
+        raise HTTPException(400, "仅已确认的结算单可支付")
+    db.execute(
+        "UPDATE settlements SET status='paid', paid_at=?, remark=? WHERE id=?",
+        (db.now(), str(body.get("remark") or s["remark"] or ""), sid),
+    )
+    db.log(user["id"], "settlement_pay", f"settlement:{sid}", s["code"])
+    return {"ok": True, "status": "paid"}
+
+
+@router.delete("/api/settlements/{sid}")
+def settle_delete(sid: int, user: dict = Depends(me)):
+    s = db.row("SELECT * FROM settlements WHERE id=?", (sid,))
+    if not s:
+        raise HTTPException(404, "结算单不存在")
+    _manage(user, s["project_id"])
+    if s["status"] != "draft":
+        raise HTTPException(400, "仅草稿状态可删除")
+    db.execute("DELETE FROM settlement_items WHERE settlement_id=?", (sid,))
+    db.execute("DELETE FROM settlements WHERE id=?", (sid,))
+    db.log(user["id"], "settlement_delete", f"settlement:{sid}", s["code"])
+    return {"ok": True}
+
+
+# ------------------------------------------------------------------ 邀请与审批
+INVITE_ROLES = {
+    "annotator": "标注员", "reviewer": "质检员", "acceptor": "验收员",
+    "project_manager": "项目经理", "tenant_admin": "租户管理员", "client": "客户",
+}
+INVITE_STATUS = {
+    "pending": "待使用", "used": "已加入", "rejected": "已拒绝", "cancelled": "已取消",
+}
+INVITE_MODE = {"direct": "直接加入", "approval": "需审批"}
+
+
+def _invite_out(r: dict) -> dict:
+    d = dict(r)
+    d["role_label"] = INVITE_ROLES.get(d.get("role"), d.get("role"))
+    d["status_label"] = INVITE_STATUS.get(d.get("status"), d.get("status"))
+    d["mode_label"] = INVITE_MODE.get(d.get("mode"), d.get("mode"))
+    tenant = db.row("SELECT name FROM tenants WHERE id=?", (d.get("tenant_id"),)) if d.get("tenant_id") else None
+    d["tenant_name"] = (tenant or {}).get("name", "—")
+    inviter = db.row("SELECT name FROM users WHERE id=?", (d.get("invited_by"),)) if d.get("invited_by") else None
+    d["inviter_name"] = (inviter or {}).get("name", "—")
+    joiner = db.row("SELECT username,name FROM users WHERE id=?", (d.get("join_user_id"),)) if d.get("join_user_id") else None
+    d["joiner_name"] = (joiner or {}).get("name", "")
+    return d
+
+
+def _invite_admin(user: dict) -> None:
+    if auth.is_admin(user) or user.get("platform_role") == "tenant_admin":
+        return
+    raise HTTPException(403, "仅平台/租户管理员可管理邀请")
+
+
+@router.post("/api/invitations")
+def invite_create(body: dict, user: dict = Depends(me)):
+    _invite_admin(user)
+    tenant_id = int(body.get("tenant_id") or user.get("tenant_id") or 0)
+    if not tenant_id:
+        raise HTTPException(400, "当前账号未归属租户，无法发起邀请")
+    role = str(body.get("role") or "annotator")
+    if role not in INVITE_ROLES:
+        raise HTTPException(400, "非法角色")
+    mode = str(body.get("mode") or "direct")
+    if mode not in INVITE_MODE:
+        raise HTTPException(400, "非法加入方式")
+    token = uuid.uuid4().hex[:12]
+    iid = db.execute(
+        "INSERT INTO invitations(token,tenant_id,org_id,team_id,role,name,mode,status,invited_by,note,created_at,expires_at)"
+        " VALUES(?,?,?,?,?,?,?,'pending',?,?,?,?)",
+        (token, tenant_id, int(body.get("org_id") or 0) or None, int(body.get("team_id") or 0) or None,
+         role, str(body.get("name") or "").strip(), mode, user["id"],
+         str(body.get("note") or "").strip(), db.now(),
+         (datetime.now() + timedelta(days=int(body.get("days") or 7))).strftime("%Y-%m-%d %H:%M:%S")),
+    )
+    db.log(user["id"], "invite_create", f"invite:{iid}", f"{INVITE_ROLES[role]}/{INVITE_MODE[mode]}")
+    r = db.row("SELECT * FROM invitations WHERE id=?", (iid,))
+    out = _invite_out(r)
+    out["url"] = f"#/join?token={token}"
+    return {"ok": True, "invitation": out}
+
+
+@router.get("/api/invitations")
+def invite_list(status: str = "", user: dict = Depends(me)):
+    _invite_admin(user)
+    cond = "1=1"
+    args: list = []
+    if not auth.is_admin(user):
+        cond = "i.tenant_id=?"
+        args.append(user.get("tenant_id") or 0)
+    if status:
+        cond += " AND i.status=?"
+        args.append(status)
+    rows_ = db.rows(
+        f"SELECT i.* FROM invitations i WHERE {cond} ORDER BY i.id DESC LIMIT 200",
+        tuple(args),
+    )
+    return {"invitations": [_invite_out(r) for r in rows_]}
+
+
+@router.post("/api/invitations/{iid}/cancel")
+def invite_cancel(iid: int, user: dict = Depends(me)):
+    _invite_admin(user)
+    inv = db.row("SELECT * FROM invitations WHERE id=?", (iid,))
+    if not inv:
+        raise HTTPException(404, "邀请不存在")
+    if inv["status"] != "pending":
+        raise HTTPException(400, "仅待使用的邀请可取消")
+    db.execute("UPDATE invitations SET status='cancelled', decided_by=?, decided_at=? WHERE id=?", (user["id"], db.now(), iid))
+    db.log(user["id"], "invite_cancel", f"invite:{iid}", inv["token"][:6])
+    return {"ok": True}
+
+
+@router.post("/api/invitations/{iid}/decide")
+def invite_decide(iid: int, body: dict, user: dict = Depends(me)):
+    _invite_admin(user)
+    inv = db.row("SELECT * FROM invitations WHERE id=?", (iid,))
+    if not inv:
+        raise HTTPException(404, "邀请不存在")
+    if inv["status"] != "pending" or not inv.get("join_user_id"):
+        raise HTTPException(400, "该邀请暂无待审批的注册申请")
+    approve = bool(body.get("approve"))
+    if approve:
+        db.execute(
+            "UPDATE users SET tenant_id=?, org_id=?, team_id=?, platform_role=? WHERE id=?",
+            (inv["tenant_id"], inv.get("org_id"), inv.get("team_id"), inv["role"], inv["join_user_id"]),
+        )
+        db.execute(
+            "UPDATE invitations SET status='used', decided_by=?, decided_at=? WHERE id=?",
+            (user["id"], db.now(), iid),
+        )
+        db.notify(inv["join_user_id"], "加入申请已通过", "您已被接纳为组织成员，请重新进入工作台", "system", "")
+        db.log(user["id"], "invite_approve", f"invite:{iid}", f"user:{inv['join_user_id']}")
+    else:
+        db.execute(
+            "UPDATE invitations SET status='rejected', decided_by=?, decided_at=? WHERE id=?",
+            (user["id"], db.now(), iid),
+        )
+        db.notify(inv["join_user_id"], "加入申请未获通过", str(body.get("note") or "如有疑问请联系管理员"), "system", "")
+        db.log(user["id"], "invite_reject", f"invite:{iid}", f"user:{inv['join_user_id']}")
+    return {"ok": True, "approved": approve}

@@ -143,6 +143,52 @@ def login(body: dict, request: Request):
     return resp
 
 
+@app.post("/api/auth/register")
+def register(body: dict, request: Request):
+    """邀请制注册：平台不开放自由注册，须凭有效邀请码加入组织。"""
+    username = (body.get("username") or "").strip().lower()
+    name = (body.get("name") or "").strip()
+    password = body.get("password") or ""
+    token = (body.get("invite_token") or "").strip().lower()
+    if not username or len(username) < 3:
+        raise HTTPException(400, "账号至少 3 个字符")
+    if not name:
+        raise HTTPException(400, "请填写姓名")
+    pwd_err = advanced.check_password(password)
+    if pwd_err:
+        raise HTTPException(400, pwd_err)
+    inv = db.row("SELECT * FROM invitations WHERE token=?", (token,)) if token else None
+    if not inv:
+        raise HTTPException(404, "邀请码无效，请联系管理员重新获取")
+    if inv["status"] != "pending":
+        raise HTTPException(400, "邀请码已失效")
+    if inv.get("expires_at") and inv["expires_at"] < db.now():
+        raise HTTPException(400, "邀请码已过期，请联系管理员重新获取")
+    if db.row("SELECT 1 ok FROM users WHERE lower(username)=?", (username,)):
+        raise HTTPException(409, "账号名已被占用")
+    direct = inv["mode"] == "direct"
+    uid = db.execute(
+        "INSERT INTO users(username,name,password_hash,platform_role,status,tenant_id,org_id,team_id,created_at)"
+        " VALUES(?,?,?,?, 'active', ?,?,?,?)",
+        (username, name, db.hash_password(password), inv["role"],
+         inv["tenant_id"] if direct else None, inv.get("org_id") if direct else None,
+         inv.get("team_id") if direct else None, db.now()),
+    )
+    if direct:
+        db.execute(
+            "UPDATE invitations SET status='used', join_user_id=?, decided_at=? WHERE id=?",
+            (uid, db.now(), inv["id"]),
+        )
+    else:
+        db.execute("UPDATE invitations SET join_user_id=? WHERE id=?", (uid, inv["id"]))
+    db.log(uid, "register", "invite", f"{username} 通过邀请注册（{'直接加入' if direct else '待审批'}）")
+    user = db.row("SELECT * FROM users WHERE id=?", (uid,))
+    session = auth.create_session(user["id"])
+    resp = JSONResponse({"ok": True, "user": _public_user(user), "need_approval": not direct})
+    resp.set_cookie(auth.COOKIE, session, httponly=True, samesite="lax", max_age=60 * 60 * 12)
+    return resp
+
+
 @app.post("/api/logout")
 def logout(request: Request):
     auth.destroy_session(request.cookies.get(auth.COOKIE))
@@ -1341,8 +1387,41 @@ def segments_detail(tid: int, user: dict = Depends(me)):
 
 
 @app.get("/api/my/errors")
-def my_errors(user_id: int = 0, user: dict = Depends(me)):
-    """错题本：质检驳回记录按错误类型聚合。标注员默认看自己；管理类角色可查团队成员。"""
+def my_errors(user_id: int = 0, square: int = 0, user: dict = Depends(me)):
+    """错题本：质检驳回记录按错误类型聚合。标注员默认看自己；管理类角色可查团队成员。
+    square=1 时返回租户可见范围内的匿名「错题广场」聚合视图。"""
+    ids = auth.visible_project_ids(user)
+    if not ids:
+        return {"items": [], "by_type": [], "total": 0}
+    marks = ",".join("?" * len(ids))
+    if square:
+        if user["platform_role"] not in (
+            "platform_admin", "tenant_admin", "project_manager", "reviewer",
+        ) and auth.project_role(user, 0) != "manager":
+            raise HTTPException(403, "仅管理类角色可查看错题广场")
+        rows_ = db.rows(
+            "SELECT q.id,q.task_id,q.error_types,q.comment,q.item_index,q.created_at,"
+            " t.name task_name,t.media_type modality"
+            " FROM qc_records q JOIN tasks t ON t.id=q.task_id"
+            f" WHERE q.result='rejected' AND t.deleted=0 AND t.project_id IN ({marks})"
+            " ORDER BY q.id DESC LIMIT 300",
+            tuple(ids),
+        )
+        counts: dict[str, int] = {}
+        for r in rows_:
+            try:
+                types = json.loads(r.get("error_types") or "[]")
+            except (TypeError, ValueError):
+                types = []
+            for t in types:
+                counts[t] = counts.get(t, 0) + 1
+            r["error_types"] = types
+            r.pop("comment", None)
+        return {
+            "items": rows_,
+            "by_type": [{"type": k, "count": v} for k, v in sorted(counts.items(), key=lambda x: -x[1])],
+            "total": len(rows_),
+        }
     target = user_id or user["id"]
     if target != user["id"] and user["platform_role"] not in (
         "platform_admin", "tenant_admin", "project_manager", "reviewer",

@@ -75,7 +75,7 @@ const I18N = {
   zh: {
     'brand.tag': '春科标注', 'brand.full': '春科数据标注平台', 'brand.space': '项目平台',
     'nav.dashboard': '工作台', 'nav.tasks': '我的任务', 'nav.hall': '任务大厅', 'nav.qc': '质检中心',
-    'nav.acceptance': '验收中心', 'nav.issues': '问题清单', 'nav.errors': '我的错题', 'nav.help': '帮助中心',
+    'nav.acceptance': '验收中心', 'nav.issues': '问题清单', 'nav.errors': '我的错题', 'nav.help': '帮助中心', 'nav.settlements': '结算中心',
     'nav.prefs': '个人偏好', 'nav.projects': '项目空间', 'nav.datasets': '数据管理', 'nav.templates': '模板中心',
     'nav.workflows': '工作流', 'nav.stats': '数据统计', 'nav.members': '成员管理', 'nav.benchAudio': '语音工作台',
     'nav.benchImage': '图像工作台', 'nav.benchPc': '点云工作台', 'nav.datahub': '数据管理', 'nav.appeals': '申诉仲裁',
@@ -109,7 +109,7 @@ const I18N = {
   en: {
     'brand.tag': 'Chunke Label', 'brand.full': 'Chunke Data Labeling Platform', 'brand.space': 'Project Space',
     'nav.dashboard': 'Dashboard', 'nav.tasks': 'My Tasks', 'nav.hall': 'Task Hall', 'nav.qc': 'QC Center',
-    'nav.acceptance': 'Acceptance', 'nav.issues': 'Issues', 'nav.errors': 'My Mistakes', 'nav.help': 'Help',
+    'nav.acceptance': 'Acceptance', 'nav.issues': 'Issues', 'nav.errors': 'My Mistakes', 'nav.help': 'Help', 'nav.settlements': 'Settlements',
     'nav.prefs': 'Preferences', 'nav.projects': 'Projects', 'nav.datasets': 'Data Management', 'nav.templates': 'Templates',
     'nav.workflows': 'Workflows', 'nav.stats': 'Statistics', 'nav.members': 'Members', 'nav.benchAudio': 'Audio Workbench',
     'nav.benchImage': 'Image Workbench', 'nav.benchPc': 'Point Cloud Workbench', 'nav.datahub': 'Data Management', 'nav.appeals': 'Appeals',
@@ -146,7 +146,7 @@ const I18N = {
     'nav.acceptance': 'Nghiệm thu', 'nav.issues': 'Vấn đề', 'nav.errors': 'Lỗi của tôi', 'nav.help': 'Trợ giúp',
     'nav.prefs': 'Tùy chọn', 'nav.projects': 'Dự án', 'nav.datasets': 'Quản lý dữ liệu', 'nav.templates': 'Mẫu',
     'nav.workflows': 'Quy trình', 'nav.stats': 'Thống kê', 'nav.members': 'Thành viên', 'nav.benchAudio': 'Bàn làm việc âm thanh',
-    'nav.benchImage': 'Bàn làm việc hình ảnh', 'nav.benchPc': 'Bàn làm việc điểm 3D', 'nav.datahub': 'Quản lý dữ liệu', 'nav.appeals': 'Khiếu nại',
+    'nav.benchImage': 'Bàn làm việc hình ảnh', 'nav.benchPc': 'Bàn làm việc điểm 3D', 'nav.datahub': 'Quản lý dữ liệu', 'nav.appeals': 'Khiếu nại', 'nav.settlements': 'Quyết toán',
     'login.title': 'Đăng nhập nền tảng Chunke', 'login.username': 'Tên đăng nhập', 'login.password': 'Mật khẩu', 'login.submit': 'Đăng nhập',
     'login.slogan': 'Gán nhãn đa phương thức · KC thông minh · Vòng giao hàng',
     'dash.hello': 'Hôm nay:', 'dash.pending': 'tác vụ chờ gán nhãn,', 'dash.reviewing': 'đang chờ kiểm tra', 'dash.total': 'Tổng tác vụ',
@@ -306,6 +306,18 @@ function confirmModal(title, text, okText = '确认', danger = false) {
   });
 }
 
+function copyText(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => toast('已复制到剪贴板', 'ok')).catch(() => fallbackCopy(text));
+  } else fallbackCopy(text);
+}
+function fallbackCopy(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text; document.body.appendChild(ta); ta.select();
+  try { document.execCommand('copy'); toast('已复制到剪贴板', 'ok'); } catch (e) { toast('复制失败，请手动复制', 'warn'); }
+  document.body.removeChild(ta);
+}
+
 /* ---------------- 登录 ---------------- */
 function renderLogin() {
   document.title = T('brand.full') + ' · Login';
@@ -333,6 +345,8 @@ function renderLogin() {
     </div>
     <div class="login-right">
       <div class="login-card">
+        <div class="seg-tabs" style="margin-bottom:14px"><button id="lg-tab-login" class="active">登录</button><button id="lg-tab-join">邀请注册</button></div>
+        <div id="lg-login-box">
         <h2>登录工作台</h2>
         <div class="sub">使用平台账号进入，或联系管理员开通</div>
         <form id="login-form">
@@ -343,6 +357,19 @@ function renderLogin() {
         <div class="login-hint">
           体验账号（密码 <code>chunke123</code>）<br/>
           平台管理员 <code>admin</code> · 项目经理 <code>liuxiao</code> · 标注员 <code>wangmin</code> · 质检员 <code>zhoulan</code>
+        </div>
+        </div>
+        <div id="lg-join-box" style="display:none">
+        <h2>邀请注册</h2>
+        <div class="sub">平台不开放自由注册，凭邀请码加入组织</div>
+        <form id="join-form">
+          <div class="field"><label>邀请码</label><input class="input mono" name="invite_token" id="join-token" placeholder="12 位邀请码" required /></div>
+          <div class="field"><label>姓名</label><input class="input" name="name" id="join-name" placeholder="真实姓名" required /></div>
+          <div class="field"><label>账号</label><input class="input" name="username" id="join-user" autocomplete="username" placeholder="至少 3 个字符" required /></div>
+          <div class="field"><label>密码</label><input class="input" type="password" name="password" id="join-pass" autocomplete="new-password" placeholder="至少 8 位，含大小写/数字/符号中三类" required /></div>
+          <button class="btn primary lg" type="submit" id="join-btn">注册并进入</button>
+        </form>
+        <div class="login-hint">注册即代表同意平台保密与安全规范；「需审批」模式下账号需管理员通过后才能进入工作台。</div>
         </div>
       </div>
     </div>
@@ -362,6 +389,38 @@ function renderLogin() {
       btn.disabled = false; btn.textContent = '进入平台';
     }
   };
+  const tabLogin = $('#lg-tab-login'), tabJoin = $('#lg-tab-join');
+  const showJoin = () => {
+    tabLogin.classList.remove('active'); tabJoin.classList.add('active');
+    $('#lg-login-box').style.display = 'none'; $('#lg-join-box').style.display = '';
+  };
+  const showLogin = () => {
+    tabJoin.classList.remove('active'); tabLogin.classList.add('active');
+    $('#lg-join-box').style.display = 'none'; $('#lg-login-box').style.display = '';
+  };
+  tabLogin.onclick = showLogin; tabJoin.onclick = showJoin;
+  const m = (location.hash.match(/[#/]join\?.*token=([a-z0-9]+)/) || location.hash.match(/token=([a-z0-9]+)/) || [])[1];
+  if (m) { $('#join-token').value = m; showJoin(); }
+  $('#join-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const btn = $('#join-btn');
+    btn.disabled = true; btn.textContent = '正在注册…';
+    try {
+      const r = await api('/api/auth/register', { method: 'POST', body: {
+        invite_token: $('#join-token').value.trim(), name: $('#join-name').value.trim(),
+        username: $('#join-user').value.trim(), password: $('#join-pass').value,
+      } });
+      state.user = r.user;
+      state.context = null; state.space = ''; state.pid = 0;
+      location.hash = '';
+      await boot();
+      if (r.need_approval) toast('注册成功，加入申请已提交，请等待管理员审批', 'warn');
+      else toast(`欢迎加入，${r.user.name}`, 'ok');
+    } catch (err) {
+      toast(err.message, 'err');
+      btn.disabled = false; btn.textContent = '注册并进入';
+    }
+  };
 }
 
 /* ---------------- 外壳 ---------------- */
@@ -372,6 +431,7 @@ const ADMIN_NAV = [
   ['projects', '全部项目', 'projects'],
   ['stats', '平台统计', 'stats'],
   ['service', '运营服务', 'shield'],
+  ['settlements', '结算中心', 'clock'],
   ['openapi', '开放平台', 'key'],
   ['ops', '运维中心', 'settings'],
   ['console', '平台控制台', 'shield'],
@@ -391,6 +451,7 @@ const TENANT_NAV = [
   ['members', '成员管理', 'members'],
   ['stats', '数据统计', 'stats'],
   ['service', '运营服务', 'shield'],
+  ['settlements', '结算中心', 'clock'],
 ];
 
 const PROJECT_NAV = [
@@ -493,7 +554,7 @@ function shell(active, content, crumb = '') {
     const navKey = { dashboard: 'nav.dashboard', tasks: 'nav.tasks', hall: 'nav.hall', qc: 'nav.qc',
       acceptance: 'nav.acceptance', issues: 'nav.issues', errors: 'nav.errors', help: 'nav.help',
       preferences: 'nav.prefs', projects: 'nav.projects', datasets: 'nav.datasets', templates: 'nav.templates',
-      workflows: 'nav.workflows', stats: 'nav.stats', members: 'nav.members', appeals: 'nav.appeals',
+      workflows: 'nav.workflows', stats: 'nav.stats', members: 'nav.members', appeals: 'nav.appeals', settlements: 'nav.settlements',
       'bench-audio': 'nav.benchAudio', 'bench-image': 'nav.benchImage', 'bench-pc': 'nav.benchPc' }[key];
     const text = navKey ? T(navKey) : label;
     return `<a class="nav-item ${active === key ? 'active' : ''}" href="${href || hrefFor(key)}" title="${esc(text)}" aria-current="${active === key ? 'page' : 'false'}">${icon(ico)}<span>${esc(text)}</span>${badge}</a>`;
@@ -726,6 +787,7 @@ async function route() {
     else if (page === 'members') await pageMembers();
     else if (page === 'errors') await pageErrors();
     else if (page === 'appeals') await pageAppeals();
+    else if (page === 'settlements') await pageSettlements();
     else if (page === 'datahub') await pageDataHub();
     else if (page === 'bench') await pageBench(query);
     else if (page === 'stats') await pageStats();
@@ -3946,6 +4008,27 @@ async function pageErrors() {
           <td class="right"><a class="btn sm ghost" href="#/annotate/${it.task_id}">查看任务</a></td></tr>`).join('') || '<tr><td colspan="6" class="empty">没有错题记录，保持！</td></tr>'}</tbody>
       </table></div></div>`;
   };
+  const drawSquare = async () => {
+    const box = $('#errors-body');
+    box.innerHTML = '<div class="hint">加载错题广场…</div>';
+    try {
+      const d = await api('/api/my/errors?square=1');
+      box.innerHTML = `
+        <div class="grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:14px">
+          <div class="kpi"><div class="kpi-label">团队累计驳回</div><div class="kpi-value">${d.total}</div></div>
+          ${(d.by_type || []).slice(0, 3).map((t) => `<div class="kpi"><div class="kpi-label">${esc(t.type)}</div><div class="kpi-value">${t.count}</div><div class="kpi-delta">次</div></div>`).join('')}
+        </div>
+        <div class="card"><div class="card-head"><h3 class="card-title">全员近期错题（匿名）</h3><span class="card-sub">按错误类型沉淀为培训素材</span></div><div class="table-wrap"><table class="table">
+          <thead><tr><th>任务</th><th>模态</th><th>错误类型</th><th>时间</th><th class="right">操作</th></tr></thead>
+          <tbody>${(d.items || []).slice(0, 100).map((it) => `<tr>
+            <td><div class="name">${esc(it.task_name)}</div><div class="sub">#${it.task_id}${it.item_index >= 0 ? ` · 第 ${it.item_index + 1} 段` : ''}</div></td>
+            <td><span class="tag">${esc(it.modality || '—')}</span></td>
+            <td>${(it.error_types || []).map((t) => `<span class="chip danger">${esc(t)}</span>`).join(' ') || '—'}</td>
+            <td class="mono">${esc((it.created_at || '').slice(5, 16))}</td>
+            <td class="right"><a class="btn sm ghost" href="#/annotate/${it.task_id}">查看任务</a></td></tr>`).join('') || '<tr><td colspan="5" class="empty">广场空空如也，保持！</td></tr>'}</tbody>
+        </table></div></div>`;
+    } catch (e) { box.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+  };
   let members = [];
   if (isManager) {
     try { members = (await api('/api/members')).members || []; } catch (e) { members = []; }
@@ -3953,6 +4036,7 @@ async function pageErrors() {
   const content = `
     <div class="page-head"><div><h1 class="page-title">错题本</h1><p class="page-sub">质检驳回按错误类型聚合，把每次返修变成可复习的资产</p></div>
       ${isManager && members.length ? `<div class="page-actions"><select class="select" id="err-user" style="width:180px"><option value="">全部成员</option>${members.map((m) => `<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select></div>` : ''}</div>
+    ${isManager ? '<div class="seg-tabs" style="margin-bottom:14px"><button data-ertab="mine" class="active">我的错题</button><button data-ertab="square">错题广场</button></div>' : ''}
     <div id="errors-body"></div>`;
   mount('errors', '错题本', content);
   try {
@@ -3960,6 +4044,13 @@ async function pageErrors() {
   } catch (e) {
     $('#errors-body').innerHTML = `<div class="empty"><b>加载失败</b>${esc(e.message)}</div>`;
   }
+  $$('[data-ertab]').forEach((b) => {
+    b.onclick = () => {
+      $$('[data-ertab]').forEach((x) => x.classList.toggle('active', x === b));
+      if (b.dataset.ertab === 'square') drawSquare();
+      else api(`/api/my/errors${$('#err-user') ? `?user_id=${$('#err-user').value || 0}` : ''}`).then(draw).catch((e) => { $('#errors-body').innerHTML = `<div class="empty">${esc(e.message)}</div>`; });
+    };
+  });
   const sel = $('#err-user');
   if (sel) sel.onchange = async () => draw(await api(`/api/my/errors?user_id=${sel.value || 0}`));
 }
@@ -4016,6 +4107,102 @@ async function pageAppeals() {
       };
     };
   });
+}
+
+/* ---------------- 结算中心 ---------------- */
+async function pageSettlements() {
+  const projects = (state.projects || []).filter((p) => p.status !== 'archived');
+  const isPayer = ['platform_admin', 'tenant_admin'].includes(state.user.platform_role);
+  const canManage = isPayer || ['project_manager'].includes(state.user.platform_role) || can('member.read');
+  const data = await api('/api/settlements').catch(() => ({ settlements: [] }));
+  const rows = data.settlements || [];
+  const stChip = { draft: '<span class="chip pending">草稿</span>', confirmed: '<span class="chip annotating">已确认</span>', paid: '<span class="chip done">已支付</span>' };
+  const content = `
+    <div class="page-head"><div><h1 class="page-title">结算中心</h1><p class="page-sub">按项目与周期汇总已验收任务生成结算单：草稿 → 确认 → 支付</p></div>
+      <div class="page-actions">${canManage ? '<button class="btn primary" id="st-new">' + icon('plus') + ' 新建结算单</button>' : ''}</div></div>
+    <div class="grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:14px">
+      <div class="kpi"><div class="kpi-label">结算单数</div><div class="kpi-value">${rows.length}</div></div>
+      <div class="kpi"><div class="kpi-label">已支付金额</div><div class="kpi-value">¥${rows.filter((s) => s.status === 'paid').reduce((a, s) => a + (s.amount || 0), 0).toFixed(2)}</div></div>
+      <div class="kpi"><div class="kpi-label">待支付</div><div class="kpi-value">¥${rows.filter((s) => s.status === 'confirmed').reduce((a, s) => a + (s.amount || 0), 0).toFixed(2)}</div></div>
+      <div class="kpi"><div class="kpi-label">锁定任务</div><div class="kpi-value">${rows.reduce((a, s) => a + (s.item_count || 0), 0)}</div></div>
+    </div>
+    <div class="card"><div class="table-wrap"><table class="table">
+      <thead><tr><th>结算单</th><th>项目</th><th>结算周期</th><th>明细</th><th>状态</th><th class="right">操作</th></tr></thead>
+      <tbody>${rows.map((s) => `<tr>
+        <td><div class="name">${esc(s.title)}</div><div class="sub mono">${esc(s.code)} · 创建 ${esc(s.creator_name || '')}</div></td>
+        <td>${esc(s.project_name)}</td>
+        <td class="mono">${esc(s.period_start || '—')} ~ ${esc(s.period_end || '—')}</td>
+        <td>${s.item_count} 项${s.amount != null ? `<div class="sub">¥${s.amount.toFixed ? s.amount.toFixed(2) : s.amount} · 单价 ${s.unit_price}/${s.mode === 'per_hour' ? '小时' : '千条'}</div>` : ''}</td>
+        <td>${stChip[s.status] || esc(s.status)}${s.status === 'paid' && s.paid_at ? `<div class="sub mono">${esc(s.paid_at.slice(0, 16))}</div>` : ''}</td>
+        <td class="right">
+          <button class="btn sm ghost" data-view="${s.id}">明细</button>
+          ${s.status === 'draft' && canManage ? `<button class="btn sm" data-confirm="${s.id}">确认</button><button class="btn sm ghost danger" data-del="${s.id}">删除</button>` : ''}
+          ${s.status === 'confirmed' && isPayer ? `<button class="btn sm primary" data-pay="${s.id}">支付</button>` : ''}
+        </td></tr>`).join('') || '<tr><td colspan="6" class="empty">暂无结算单，点击右上角新建</td></tr>'}</tbody>
+    </table></div></div>`;
+  mount('settlements', '结算中心', content);
+
+  const openDetail = async (sid) => {
+    const d = await api(`/api/settlements/${sid}`);
+    const s = d.settlement;
+    openModal(`<div class="modal-head"><h3>${esc(s.title)} · ${esc(s.code)}</h3><button class="x" data-close>×</button></div>
+      <div class="modal-body" style="max-height:60vh;overflow:auto">
+        <div class="hint" style="margin-bottom:8px">${esc(s.project_name)} · ${esc(s.period_start || '—')} ~ ${esc(s.period_end || '—')} · ${d.status_label} · 共 ${s.item_count} 项 · ¥${s.amount}</div>
+        <table class="table"><thead><tr><th>任务</th><th>验收时间</th><th>时长(h)</th></tr></thead>
+        <tbody>${(d.items || []).map((it) => `<tr><td>${esc(it.task_name)}<div class="sub mono">#${it.task_id}</div></td><td class="mono">${esc((it.accepted_at || '').slice(0, 16))}</td><td>${it.minutes || '—'}</td></tr>`).join('')}</tbody></table>
+      </div>
+      <div class="modal-foot"><button class="btn ghost" data-close>关闭</button></div>`, 'wide');
+  };
+  $$('[data-view]').forEach((b) => (b.onclick = () => openDetail(b.dataset.view)));
+  $$('[data-confirm]').forEach((b) => (b.onclick = async () => {
+    if (!await confirmModal('确认结算单？', '确认后明细锁定，进入待支付状态。', '确认')) return;
+    await api(`/api/settlements/${b.dataset.confirm}/confirm`, { method: 'POST', body: {} });
+    toast('已确认', 'ok'); pageSettlements();
+  }));
+  $$('[data-pay]').forEach((b) => (b.onclick = async () => {
+    if (!await confirmModal('标记为已支付？', '记录支付完成时间，结算闭环。', '支付')) return;
+    await api(`/api/settlements/${b.dataset.pay}/pay`, { method: 'POST', body: {} });
+    toast('已支付', 'ok'); pageSettlements();
+  }));
+  $$('[data-del]').forEach((b) => (b.onclick = async () => {
+    if (!await confirmModal('删除结算单？', '仅删除草稿，任务明细释放可重新结算。', '删除', true)) return;
+    await api(`/api/settlements/${b.dataset.del}`, { method: 'DELETE' });
+    toast('已删除', 'ok'); pageSettlements();
+  }));
+  const btn = $('#st-new');
+  if (btn) btn.onclick = () => {
+    openModal(`<div class="modal-head"><h3>新建结算单</h3><button class="x" data-close>×</button></div>
+      <div class="modal-body">
+        <div class="field"><label>项目</label><select class="select" id="st-proj">${projects.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></div>
+        <div class="grid two-col">
+          <div class="field"><label>周期开始</label><input class="input" type="date" id="st-start" /></div>
+          <div class="field"><label>周期结束</label><input class="input" type="date" id="st-end" /></div>
+        </div>
+        <div class="field"><label>结算单价（留空用平台计费策略）</label><input class="input" type="number" id="st-price" placeholder="按件：元/千条；按时：元/小时" /></div>
+        <div class="field"><label>备注</label><input class="input" id="st-remark" placeholder="如 11月第1期" /></div>
+        <div class="hint" id="st-prev" style="line-height:1.8">选择项目与周期后显示可结算任务预览</div>
+      </div>
+      <div class="modal-foot"><button class="btn ghost" data-close>取消</button><button class="btn primary" id="st-ok" disabled>生成结算单</button></div>`, 'wide');
+    const prev = async () => {
+      const pid = $('#st-proj').value;
+      const ps = $('#st-start').value, pe = $('#st-end').value;
+      if (!pid) return;
+      try {
+        const r = await api(`/api/settlements/preview?project_id=${pid}&period_start=${ps}&period_end=${pe}`);
+        $('#st-prev').innerHTML = `可结算 <b>${r.count}</b> 项 · 合计 <b>${r.minutes}</b> 小时 · 计费模式 <b>${r.mode === 'per_hour' ? '按小时' : '按件'}</b> · 默认单价 <b>${r.unit_price}</b>（${r.count ? `预计 ¥${(r.mode === 'per_hour' ? r.minutes * r.unit_price : r.count * r.unit_price / 1000).toFixed(2)}` : '无可结算任务'}）`;
+        $('#st-ok').disabled = !r.count;
+      } catch (e) { $('#st-prev').textContent = e.message; $('#st-ok').disabled = true; }
+    };
+    $('#st-proj').onchange = prev; $('#st-start').onchange = prev; $('#st-end').onchange = prev; prev();
+    $('#st-ok').onclick = async () => {
+      const r = await api('/api/settlements', { method: 'POST', body: {
+        project_id: Number($('#st-proj').value), period_start: $('#st-start').value, period_end: $('#st-end').value,
+        unit_price: Number($('#st-price').value) || 0, remark: $('#st-remark').value.trim(),
+        title: `${projects.find((p) => String(p.id) === $('#st-proj').value).name} ${$('#st-remark').value.trim() || '结算'}`,
+      } });
+      closeModal(); toast(`结算单 ${r.code} 已生成（${r.count} 项 ¥${r.amount}）`, 'ok'); pageSettlements();
+    };
+  };
 }
 
 
@@ -4430,7 +4617,8 @@ async function pageMembers() {
   const content = `
     <div class="page-head"><div><h1 class="page-title">成员管理</h1><p class="page-sub">平台角色决定功能权限，项目角色决定数据可见范围</p></div>
       <div class="page-actions">${canManage ? `<button class="btn" id="btn-import-user">${icon('upload')} 批量导入</button><button class="btn primary" id="btn-new-user">${icon('plus')} 新增成员</button>` : ''}</div></div>
-    <div class="grid two-col">
+    <div class="seg-tabs" style="margin-bottom:14px"><button data-mtab="members" class="active">成员</button><button data-mtab="invites">邀请与审批</button></div>
+    <div id="tab-members"><div class="grid two-col">
       <div class="card"><div class="card-head"><h3 class="card-title">平台成员</h3><span class="card-sub">${data.members.length} 人</span></div>
         <div class="table-wrap"><table class="table"><thead><tr><th>成员</th><th>平台角色</th><th>项目数</th><th>状态</th><th class="right">操作</th></tr></thead>
         <tbody>${data.members.map((m) => {
@@ -4460,8 +4648,67 @@ async function pageMembers() {
           • 所有跨项目访问在后端二次校验，不依赖前端隐藏</div>
         </div>
       </div>
-    </div>`;
+    </div></div>
+    <div id="tab-invites" style="display:none"></div>`;
   mount('members', '成员管理', content);
+  const drawInvites = async () => {
+    const box = $('#tab-invites');
+    if (!box) return;
+    const isInviteAdmin = isAdmin || state.user.platform_role === 'tenant_admin';
+    if (!isInviteAdmin) { box.innerHTML = '<div class="empty"><b>仅平台/租户管理员可管理邀请</b></div>'; return; }
+    let list = [];
+    try { list = (await api('/api/invitations')).invitations || []; } catch (e) { box.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+    const stChip = { pending: '<span class="chip pending">待使用</span>', used: '<span class="chip done">已加入</span>', rejected: '<span class="chip danger">已拒绝</span>', cancelled: '<span class="chip plain">已取消</span>' };
+    const needApproval = list.filter((i) => i.status === 'pending' && i.join_user_id);
+    box.innerHTML = `
+      ${needApproval.length ? `<div class="card" style="margin-bottom:14px;border-color:rgba(245,158,11,.5)"><div class="card-head"><h3 class="card-title">待审批加入申请</h3><span class="card-sub">${needApproval.length} 人</span></div>
+        <div class="table-wrap"><table class="table"><thead><tr><th>申请人</th><th>角色</th><th>申请时间</th><th class="right">操作</th></tr></thead>
+        <tbody>${needApproval.map((i) => `<tr><td>${esc(i.joiner_name || '—')}<div class="sub">邀请人 ${esc(i.inviter_name)}</div></td>
+          <td><span class="tag">${esc(i.role_label)}</span></td><td class="mono">${esc((i.created_at || '').slice(5, 16))}</td>
+          <td class="right"><button class="btn sm primary" data-approve="${i.id}">通过</button> <button class="btn sm ghost danger" data-reject="${i.id}">拒绝</button></td></tr>`).join('')}</tbody></table></div></div>` : ''}
+      <div class="grid two-col">
+        <div class="card"><div class="card-head"><h3 class="card-title">发起邀请</h3><span class="card-sub">邀请码注册，无需公开注册入口</span></div><div class="card-body">
+          <div class="grid two-col">
+            <div class="field"><label>角色</label><select class="select" id="inv-role">${roleOptions.map(([k, v]) => `<option value="${k}" ${k === 'annotator' ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
+            <div class="field"><label>加入方式</label><select class="select" id="inv-mode"><option value="direct">直接加入</option><option value="approval">需审批</option></select></div>
+          </div>
+          <div class="field"><label>受邀人姓名（可选）</label><input class="input" id="inv-name" placeholder="如 张三" /></div>
+          <div class="field"><label>备注（可选）</label><input class="input" id="inv-note" placeholder="如 语音一组 11月入职" /></div>
+          <button class="btn primary" id="inv-go">生成邀请链接</button>
+          <div id="inv-out" style="margin-top:10px"></div>
+        </div></div>
+        <div class="card"><div class="card-head"><h3 class="card-title">邀请记录</h3><span class="card-sub">${list.length} 条</span></div>
+          <div class="table-wrap"><table class="table"><thead><tr><th>受邀人/角色</th><th>方式</th><th>状态</th><th class="right">操作</th></tr></thead>
+          <tbody>${list.map((i) => `<tr>
+            <td>${esc(i.name || i.joiner_name || '—')}<div class="sub"><span class="tag">${esc(i.role_label)}</span> ${esc(i.note || '')}</div></td>
+            <td>${esc(i.mode_label)}</td>
+            <td>${stChip[i.status] || esc(i.status)}${i.status === 'pending' && !i.join_user_id ? `<div class="sub mono">${esc((i.expires_at || '').slice(0, 10))} 过期</div>` : ''}</td>
+            <td class="right">${i.status === 'pending' && !i.join_user_id ? `<button class="btn sm ghost" data-copy="${i.token}">复制邀请码</button> <button class="btn sm ghost danger" data-cancel="${i.id}">取消</button>` : `<span class="hint mono">${esc(i.token.slice(0, 6))}…</span>`}</td>
+          </tr>`).join('') || '<tr><td colspan="4" class="empty">暂无邀请记录</td></tr>'}</tbody></table></div></div>
+      </div>`;
+    $('#inv-go').onclick = async () => {
+      const r = await api('/api/invitations', { method: 'POST', body: { role: $('#inv-role').value, mode: $('#inv-mode').value, name: $('#inv-name').value.trim(), note: $('#inv-note').value.trim() } });
+      const url = location.origin + '/' + r.invitation.url;
+      $('#inv-out').innerHTML = `<div style="border:1px solid rgba(16,185,129,.4);background:rgba(16,185,129,.08);border-radius:8px;padding:10px">
+        <div class="hint" style="margin-bottom:6px">邀请已生成，发送给受邀人打开注册：</div>
+        <div class="mono" style="word-break:break-all">${esc(url)}</div>
+        <div class="filters" style="margin-top:8px"><input class="input mono" value="${esc(r.invitation.token)}" readonly style="width:140px" /><button class="btn sm" id="inv-copy">复制链接</button></div></div>`;
+      $('#inv-copy').onclick = () => { copyText(url); };
+      drawInvites();
+    };
+    $$('[data-copy]').forEach((b) => (b.onclick = () => copyText(`${location.origin}/#/join?token=${b.dataset.copy}`)));
+    $$('[data-cancel]').forEach((b) => (b.onclick = async () => { await api(`/api/invitations/${b.dataset.cancel}/cancel`, { method: 'POST', body: {} }); toast('已取消', 'ok'); drawInvites(); }));
+    $$('[data-approve]').forEach((b) => (b.onclick = async () => { await api(`/api/invitations/${b.dataset.approve}/decide`, { method: 'POST', body: { approve: true } }); toast('已通过', 'ok'); drawInvites(); }));
+    $$('[data-reject]').forEach((b) => (b.onclick = async () => { await api(`/api/invitations/${b.dataset.reject}/decide`, { method: 'POST', body: { approve: false } }); toast('已拒绝', 'ok'); drawInvites(); }));
+  };
+  $$('[data-mtab]').forEach((b) => {
+    b.onclick = () => {
+      $$('[data-mtab]').forEach((x) => x.classList.toggle('active', x === b));
+      $('#tab-members').style.display = b.dataset.mtab === 'members' ? '' : 'none';
+      $('#tab-invites').style.display = b.dataset.mtab === 'invites' ? '' : 'none';
+    };
+  });
+  drawInvites();
   $('#btn-new-user') && ($('#btn-new-user').onclick = newUserModal);
   $('#btn-import-user') && ($('#btn-import-user').onclick = importUserModal);
   $$('[data-role]').forEach((s) => (s.onchange = async () => {
